@@ -1,0 +1,154 @@
+name: Build Windows Client
+
+on:
+  workflow_dispatch:  # Solo ejecución manual
+    inputs:
+      version:
+        description: 'Versión del release (ej: 1.0.0)'
+        required: true
+        default: '1.0.0'
+      prerelease:
+        description: '¿Es una versión pre-release?'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v3
+    
+    - name: Configurar Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Instalar dependencias
+      run: |
+        python -m pip install --upgrade pip
+        pip install Flask flask-cors requests pywin32 pyinstaller
+    
+    - name: Compilar cliente
+      working-directory: ./client
+      run: |
+        pyinstaller --onefile `
+          --name "CiberMondayClient" `
+          --add-data "config.py;." `
+          --hidden-import "winreg" `
+          --hidden-import "win32serviceutil" `
+          --hidden-import "win32service" `
+          --hidden-import "win32event" `
+          --hidden-import "servicemanager" `
+          --hidden-import "protection" `
+          --hidden-import "registry_manager" `
+          --hidden-import "requests" `
+          --hidden-import "ctypes" `
+          --hidden-import "ctypes.wintypes" `
+          client.py
+    
+    - name: Compilar servicio
+      working-directory: ./client
+      run: |
+        pyinstaller --onefile `
+          --name "CiberMondayService" `
+          --add-data "config.py;." `
+          --hidden-import "winreg" `
+          --hidden-import "win32serviceutil" `
+          --hidden-import "win32service" `
+          --hidden-import "win32event" `
+          --hidden-import "servicemanager" `
+          --hidden-import "protection" `
+          --hidden-import "registry_manager" `
+          --hidden-import "requests" `
+          --hidden-import "ctypes" `
+          --hidden-import "ctypes.wintypes" `
+          service.py
+    
+    - name: Compilar watchdog
+      working-directory: ./client
+      run: |
+        pyinstaller --onefile `
+          --name "CiberMondayWatchdog" `
+          --hidden-import "winreg" `
+          --hidden-import "subprocess" `
+          watchdog.py
+    
+    - name: Verificar ejecutables generados
+      working-directory: ./client/dist
+      run: |
+        dir *.exe
+        if not exist CiberMondayClient.exe exit 1
+        if not exist CiberMondayService.exe exit 1
+        if not exist CiberMondayWatchdog.exe exit 1
+    
+    - name: Crear release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          client/dist/CiberMondayClient.exe
+          client/dist/CiberMondayService.exe
+          client/dist/CiberMondayWatchdog.exe
+          client/config.py
+          client/install_exe_service.bat
+        tag_name: v${{ github.event.inputs.version }}
+        name: CiberMonday Client v${{ github.event.inputs.version }}
+        prerelease: ${{ github.event.inputs.prerelease }}
+        body: |
+          # CiberMonday Client v${{ github.event.inputs.version }}
+          
+          Ejecutables compilados del cliente CiberMonday para Windows.
+          
+          ## 📦 Archivos incluidos
+          
+          - **CiberMondayClient.exe** - Cliente principal
+          - **CiberMondayService.exe** - Servicio de Windows
+          - **CiberMondayWatchdog.exe** - Watchdog independiente
+          - **config.py** - Archivo de configuración
+          - **install_exe_service.bat** - Instalador del servicio
+          
+          ## 🚀 Instrucciones de instalación
+          
+          1. Descarga todos los archivos del release
+          2. Edita `config.py` y cambia `SERVER_URL` por la IP de tu servidor:
+             ```python
+             SERVER_URL = "http://TU_IP_SERVIDOR:5000"
+             ```
+          3. **Opción A - Ejecución directa:**
+             - Ejecuta `CiberMondayClient.exe` como Administrador
+          
+          4. **Opción B - Como servicio (Recomendado):**
+             - Ejecuta `install_exe_service.bat` como Administrador
+             - El servicio se iniciará automáticamente
+          
+          ## 📋 Requisitos
+          
+          - Windows 10 o superior
+          - Permisos de Administrador
+          - Conexión de red al servidor
+          
+          ## 🔧 Gestión del servicio
+          
+          ```bash
+          CiberMondayService.exe start    # Iniciar
+          CiberMondayService.exe stop     # Detener
+          CiberMondayService.exe restart  # Reiniciar
+          CiberMondayService.exe remove   # Desinstalar
+          ```
+          
+          O desde `services.msc` buscando "CiberMonday Client Service"
+          
+          ## 📝 Notas
+          
+          - El cliente funciona sin conexión continua gracias al registro local de Windows
+          - Sincroniza con el servidor cada 30 segundos
+          - Bloquea automáticamente la PC cuando expira el tiempo asignado
+          
+          ---
+          
+          **Compilado el:** ${{ github.event.head_commit.timestamp || github.run_started_at }}  
+          **Commit:** ${{ github.sha }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

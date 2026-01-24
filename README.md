@@ -181,9 +181,20 @@ http://localhost:5000
 ### Opción 1: Ejecutables Pre-compilados (⭐ MÁS FÁCIL)
 
 #### Paso 1: Descargar Release
+
+**Opción A: Desde Releases existentes**
 1. Ve a **Releases** en GitHub
 2. Descarga la última versión
 3. Extrae los archivos en una carpeta
+
+**Opción B: Compilar nuevo release**
+1. Ve a **Actions** → **Build Windows Client**
+2. Haz clic en **"Run workflow"**
+3. Ingresa la versión (ej: `1.0.0`)
+4. Marca "prerelease" si es necesario
+5. Haz clic en **"Run workflow"**
+6. Espera a que termine (5-10 minutos)
+7. Ve a **Releases** para descargar los ejecutables
 
 **Archivos incluidos:**
 ```
@@ -569,6 +580,9 @@ CiberMonday/
 │
 ├── docker-compose.yml         # Docker Compose
 ├── Dockerfile.server         # Dockerfile servidor
+├── .github/
+│   └── workflows/
+│       └── build-client.yml  # GitHub Actions para compilar .exe
 ├── requirements.txt          # Dependencias
 └── README.md                 # Este archivo
 ```
