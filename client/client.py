@@ -50,12 +50,36 @@ BASE_PATH = get_base_path()
 
 # Importar configuración desde registro o GUI
 # Verificar si estamos ejecutándonos como servicio (sin GUI disponible)
+# La forma más simple: verificar el nombre del ejecutable/script
 IS_SERVICE = False
 try:
-    import win32serviceutil
-    IS_SERVICE = True
-except ImportError:
-    pass
+    # Obtener el nombre del ejecutable/script que se está ejecutando
+    if getattr(sys, 'frozen', False):
+        # Ejecutándose como .exe compilado
+        # sys.executable puede ser el ejecutable temporal de PyInstaller
+        # Usar sys.argv[0] que contiene el nombre real del ejecutable
+        if len(sys.argv) > 0:
+            script_name = os.path.basename(sys.argv[0]).lower()
+        else:
+            script_name = os.path.basename(sys.executable).lower()
+    else:
+        # Ejecutándose como script Python
+        script_name = os.path.basename(sys.argv[0]).lower() if len(sys.argv) > 0 else ''
+    
+    # Solo es servicio si es específicamente el ejecutable del servicio
+    # NO es servicio si es el cliente (CiberMondayClient.exe o client.py)
+    if 'cibermondayservice' in script_name or script_name == 'service.exe' or script_name == 'service.py':
+        # Es el servicio, no mostrar GUI
+        IS_SERVICE = True
+    elif 'cibermondayclient' in script_name or script_name == 'client.exe' or script_name == 'client.py':
+        # Es el cliente, SÍ mostrar GUI
+        IS_SERVICE = False
+    else:
+        # Por defecto, asumir que NO es servicio (podemos mostrar GUI)
+        IS_SERVICE = False
+except:
+    # Si hay algún error, asumir que no es servicio (podemos mostrar GUI)
+    IS_SERVICE = False
 
 try:
     from registry_manager import get_config_from_registry
@@ -64,7 +88,7 @@ try:
     config_data = get_config_from_registry()
     
     if not config_data or not config_data.get('server_url'):
-        # No hay configuración
+        # No hay configuración - siempre mostrar GUI si no es servicio
         if IS_SERVICE:
             # Si es servicio, usar valores por defecto y loguear error
             print("ERROR: No hay configuración guardada.")
@@ -74,9 +98,9 @@ try:
         else:
             # Si no es servicio, mostrar GUI
             try:
-                from config_gui import get_config
+                from config_gui import show_config_window
                 print("No se encontró configuración. Abriendo ventana de configuración...")
-                config_data = get_config()
+                config_data = show_config_window()
                 
                 if not config_data:
                     print("Configuración cancelada. Saliendo...")
@@ -85,7 +109,9 @@ try:
                 SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
                 CHECK_INTERVAL = config_data.get('check_interval', 5)
             except Exception as e:
+                import traceback
                 print(f"Error al mostrar GUI de configuración: {e}")
+                traceback.print_exc()
                 print("Usando valores por defecto: http://localhost:5000")
                 SERVER_URL = "http://localhost:5000"
                 CHECK_INTERVAL = 5
