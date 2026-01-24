@@ -153,12 +153,37 @@ def get_remaining_seconds():
     
     try:
         end_time_str = session_data['end_time']
+        time_limit_seconds = session_data.get('time_limit_seconds', 0)
+        start_time_str = session_data.get('start_time')
+        
+        # Intentar parsear end_time
         end_time = datetime.fromisoformat(end_time_str)
         now = datetime.now()
+        
+        # Calcular tiempo restante
         remaining = int((end_time - now).total_seconds())
+        
+        # Validación: Si el tiempo restante es mucho mayor que el time_limit, hay un problema
+        # Probablemente un problema de zona horaria. Recalcular basándose en start_time + time_limit
+        if start_time_str and time_limit_seconds > 0:
+            try:
+                start_time = datetime.fromisoformat(start_time_str)
+                # Calcular end_time correcto basándose en start_time local + time_limit
+                correct_end_time = start_time + timedelta(seconds=time_limit_seconds)
+                remaining_corrected = int((correct_end_time - now).total_seconds())
+                
+                # Si hay una gran discrepancia (> 1 hora), usar el cálculo corregido
+                if abs(remaining - remaining_corrected) > 3600:
+                    print(f"[Corrección Zona Horaria] Tiempo restante original: {remaining}s, Corregido: {remaining_corrected}s")
+                    return max(0, remaining_corrected)
+            except Exception as e:
+                print(f"[Advertencia] No se pudo corregir zona horaria: {e}")
+        
         return max(0, remaining)
     except Exception as e:
         print(f"Error al calcular tiempo restante: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def is_session_expired():
