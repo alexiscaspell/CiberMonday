@@ -39,7 +39,6 @@ jobs:
       run: |
         pyinstaller --onefile `
           --name "CiberMondayClient" `
-          --add-data "config.py;." `
           --hidden-import "winreg" `
           --hidden-import "win32serviceutil" `
           --hidden-import "win32service" `
@@ -47,6 +46,10 @@ jobs:
           --hidden-import "servicemanager" `
           --hidden-import "protection" `
           --hidden-import "registry_manager" `
+          --hidden-import "config_gui" `
+          --hidden-import "tkinter" `
+          --hidden-import "tkinter.ttk" `
+          --hidden-import "tkinter.messagebox" `
           --hidden-import "requests" `
           --hidden-import "ctypes" `
           --hidden-import "ctypes.wintypes" `
@@ -57,7 +60,6 @@ jobs:
       run: |
         pyinstaller --onefile `
           --name "CiberMondayService" `
-          --add-data "config.py;." `
           --hidden-import "winreg" `
           --hidden-import "win32serviceutil" `
           --hidden-import "win32service" `
@@ -65,6 +67,10 @@ jobs:
           --hidden-import "servicemanager" `
           --hidden-import "protection" `
           --hidden-import "registry_manager" `
+          --hidden-import "config_gui" `
+          --hidden-import "tkinter" `
+          --hidden-import "tkinter.ttk" `
+          --hidden-import "tkinter.messagebox" `
           --hidden-import "requests" `
           --hidden-import "ctypes" `
           --hidden-import "ctypes.wintypes" `
@@ -95,7 +101,6 @@ jobs:
           client/dist/CiberMondayClient.exe
           client/dist/CiberMondayService.exe
           client/dist/CiberMondayWatchdog.exe
-          client/config.py
           client/install_exe_service.bat
         tag_name: v${{ github.event.inputs.version }}
         name: CiberMonday Client v${{ github.event.inputs.version }}
@@ -110,22 +115,33 @@ jobs:
           - **CiberMondayClient.exe** - Cliente principal
           - **CiberMondayService.exe** - Servicio de Windows
           - **CiberMondayWatchdog.exe** - Watchdog independiente
-          - **config.py** - Archivo de configuración
           - **install_exe_service.bat** - Instalador del servicio
           
           ## 🚀 Instrucciones de instalación
           
-          1. Descarga todos los archivos del release
-          2. Edita `config.py` y cambia `SERVER_URL` por la IP de tu servidor:
-             ```python
-             SERVER_URL = "http://TU_IP_SERVIDOR:5000"
-             ```
+          1. Descarga **todos los archivos** del release
+          2. Extrae los archivos en una carpeta (ej: `C:\CiberMonday\`)
           3. **Opción A - Ejecución directa:**
              - Ejecuta `CiberMondayClient.exe` como Administrador
+             - **Se abrirá una ventana de configuración** la primera vez
+             - Ingresa la URL del servidor (ej: `http://192.168.1.100:5000`)
+             - La configuración se guardará automáticamente en el registro de Windows
           
           4. **Opción B - Como servicio (Recomendado):**
              - Ejecuta `install_exe_service.bat` como Administrador
-             - El servicio se iniciará automáticamente
+             - Si es la primera vez, se abrirá la ventana de configuración
+             - El servicio se iniciará automáticamente después de configurar
+          
+          **Estructura de archivos después de extraer:**
+          ```
+          C:\CiberMonday\
+          ├── CiberMondayClient.exe
+          ├── CiberMondayService.exe
+          ├── CiberMondayWatchdog.exe
+          └── install_exe_service.bat
+          ```
+          
+          **Nota**: Ya no necesitas `config.py`. La configuración se guarda en el registro de Windows y se muestra una ventana GUI la primera vez que ejecutas el cliente.
           
           ## 📋 Requisitos
           

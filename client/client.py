@@ -48,25 +48,79 @@ def get_base_path():
 
 BASE_PATH = get_base_path()
 
-# Importar configuración
+# Importar configuración desde registro o GUI
+# Verificar si estamos ejecutándonos como servicio (sin GUI disponible)
+IS_SERVICE = False
 try:
-    # Intentar importar desde el directorio del ejecutable
-    config_path = os.path.join(BASE_PATH, 'config.py')
-    if os.path.exists(config_path):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("config", config_path)
-        config = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(config)
-        SERVER_URL = getattr(config, 'SERVER_URL', 'http://localhost:5000')
-        CHECK_INTERVAL = getattr(config, 'CHECK_INTERVAL', 5)
-        CLIENT_ID_FILE = getattr(config, 'CLIENT_ID_FILE', 'client_id.txt')
-    else:
-        # Si no existe config.py, usar valores por defecto
-        SERVER_URL = "http://localhost:5000"
-        CHECK_INTERVAL = 5
-        CLIENT_ID_FILE = os.path.join(BASE_PATH, "client_id.txt")
+    import win32serviceutil
+    IS_SERVICE = True
 except ImportError:
-    # Fallback: valores por defecto
+    pass
+
+try:
+    from registry_manager import get_config_from_registry
+    
+    # Intentar obtener configuración del registro
+    config_data = get_config_from_registry()
+    
+    if not config_data or not config_data.get('server_url'):
+        # No hay configuración
+        if IS_SERVICE:
+            # Si es servicio, usar valores por defecto y loguear error
+            print("ERROR: No hay configuración guardada.")
+            print("Ejecuta CiberMondayClient.exe manualmente primero para configurar.")
+            SERVER_URL = "http://localhost:5000"
+            CHECK_INTERVAL = 5
+        else:
+            # Si no es servicio, mostrar GUI
+            try:
+                from config_gui import get_config
+                print("No se encontró configuración. Abriendo ventana de configuración...")
+                config_data = get_config()
+                
+                if not config_data:
+                    print("Configuración cancelada. Saliendo...")
+                    sys.exit(1)
+                
+                SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
+                CHECK_INTERVAL = config_data.get('check_interval', 5)
+            except Exception as e:
+                print(f"Error al mostrar GUI de configuración: {e}")
+                print("Usando valores por defecto: http://localhost:5000")
+                SERVER_URL = "http://localhost:5000"
+                CHECK_INTERVAL = 5
+    else:
+        # Configuración encontrada en registro
+        # Siempre mostrar GUI para permitir modificar (excepto si es servicio)
+        if not IS_SERVICE:
+            try:
+                from config_gui import show_config_window
+                # Mostrar ventana con valores actuales para permitir modificar
+                updated_config = show_config_window()
+                
+                if updated_config:
+                    # Usar configuración actualizada
+                    config_data = updated_config
+                    SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
+                    CHECK_INTERVAL = config_data.get('check_interval', 5)
+                else:
+                    # Usuario canceló pero hay configuración previa, usar esa
+                    SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
+                    CHECK_INTERVAL = config_data.get('check_interval', 5)
+            except Exception as e:
+                # Si falla la GUI, usar configuración del registro
+                print(f"Advertencia: No se pudo mostrar GUI de configuración: {e}")
+                SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
+                CHECK_INTERVAL = config_data.get('check_interval', 5)
+        else:
+            # Es servicio, usar configuración del registro directamente
+            SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
+            CHECK_INTERVAL = config_data.get('check_interval', 5)
+    
+    CLIENT_ID_FILE = os.path.join(BASE_PATH, "client_id.txt")
+    
+except ImportError:
+    # Fallback si no hay módulos disponibles
     SERVER_URL = "http://localhost:5000"
     CHECK_INTERVAL = 5
     CLIENT_ID_FILE = os.path.join(BASE_PATH, "client_id.txt")
@@ -341,6 +395,9 @@ def main():
     if sys.platform != 'win32':
         print("ERROR: Este cliente solo funciona en Windows.")
         sys.exit(1)
+    
+    # La configuración ya se obtuvo al inicio del script (puede mostrar GUI)
+    # Si llegamos aquí, la configuración está lista
     
     # Aplicar protecciones si están disponibles
     if PROTECTION_AVAILABLE:

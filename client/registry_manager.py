@@ -13,6 +13,7 @@ import os
 REGISTRY_KEY_PATH = r"SOFTWARE\CiberMonday"
 REGISTRY_VALUE_SESSION = "SessionData"
 REGISTRY_VALUE_CLIENT_ID = "ClientID"
+REGISTRY_VALUE_CONFIG = "Config"
 
 def get_registry_key(create=False):
     """Obtiene o crea la clave del registro"""
@@ -189,3 +190,58 @@ def get_session_info():
         'remaining_seconds': remaining,
         'is_expired': remaining <= 0
     }
+
+def save_config_to_registry(config):
+    """
+    Guarda la configuración del cliente en el registro
+    
+    Args:
+        config: dict con 'server_url' y opcionalmente 'check_interval'
+    
+    Returns:
+        bool: True si se guardó correctamente
+    """
+    try:
+        key = get_registry_key(create=True)
+        if key is None:
+            return False
+        
+        import json
+        config_data = {
+            'server_url': config.get('server_url', 'http://localhost:5000'),
+            'check_interval': config.get('check_interval', 5)
+        }
+        
+        json_data = json.dumps(config_data)
+        winreg.SetValueEx(key, "Config", 0, winreg.REG_SZ, json_data)
+        winreg.CloseKey(key)
+        return True
+    except Exception as e:
+        print(f"Error al guardar configuración en registro: {e}")
+        return False
+
+def get_config_from_registry():
+    """
+    Obtiene la configuración del cliente desde el registro
+    
+    Returns:
+        dict con configuración o None si no existe
+    """
+    try:
+        key = get_registry_key(create=False)
+        if key is None:
+            return None
+        
+        try:
+            json_data, _ = winreg.QueryValueEx(key, "Config")
+            winreg.CloseKey(key)
+            
+            import json
+            config_data = json.loads(json_data)
+            return config_data
+        except FileNotFoundError:
+            winreg.CloseKey(key)
+            return None
+    except Exception as e:
+        print(f"Error al leer configuración del registro: {e}")
+        return None

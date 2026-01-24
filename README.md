@@ -185,7 +185,7 @@ http://localhost:5000
 **Opción A: Desde Releases existentes**
 1. Ve a **Releases** en GitHub
 2. Descarga la última versión
-3. Extrae los archivos en una carpeta
+3. Extrae **todos los archivos** en una carpeta (ej: `C:\CiberMonday\`)
 
 **Opción B: Compilar nuevo release**
 1. Ve a **Actions** → **Build Windows Client**
@@ -196,23 +196,71 @@ http://localhost:5000
 6. Espera a que termine (5-10 minutos)
 7. Ve a **Releases** para descargar los ejecutables
 
-**Archivos incluidos:**
+**Archivos incluidos en el release:**
 ```
 📦 Release v1.0.0
 ├── 📄 CiberMondayClient.exe      (Cliente principal)
 ├── 📄 CiberMondayService.exe     (Servicio Windows)
 ├── 📄 CiberMondayWatchdog.exe    (Watchdog)
-├── 📄 config.py                  (Configuración)
 └── 📄 install_exe_service.bat    (Instalador)
 ```
 
-#### Paso 2: Configurar
-Edita `config.py`:
-```python
-SERVER_URL = "http://192.168.1.100:5000"  # ← IP de tu servidor
-CHECK_INTERVAL = 5
-CLIENT_ID_FILE = "client_id.txt"
+#### Paso 2: Configurar (Ventana GUI Automática)
+
+**✨ Ya no necesitas `config.py` - El cliente tiene interfaz gráfica integrada**
+
+Al ejecutar el cliente por primera vez, se abrirá automáticamente una ventana de configuración:
+
 ```
+┌─────────────────────────────────────────────┐
+│  🖥️ Configuración de CiberMonday          │
+├─────────────────────────────────────────────┤
+│                                             │
+│  Ingresa la dirección del servidor para    │
+│  conectarte:                                │
+│                                             │
+│  URL del Servidor:                          │
+│  ┌─────────────────────────────────────┐   │
+│  │ http://192.168.1.100:5000          │   │
+│  └─────────────────────────────────────┘   │
+│                                             │
+│  Ejemplos:                                   │
+│  • http://localhost:5000 (servidor local)   │
+│  • http://192.168.1.100:5000 (red local)    │
+│                                             │
+│  [Cancelar]        [Guardar y Continuar]    │
+└─────────────────────────────────────────────┘
+```
+
+**Cómo funciona:**
+1. **Primera vez**: Ejecuta `CiberMondayClient.exe` como Administrador
+   - Se abre la ventana de configuración vacía
+   - Ingresa la URL del servidor (ej: `http://192.168.1.100:5000`)
+   - Haz clic en **"Guardar y Continuar"**
+
+2. **Ejecuciones siguientes**: Cada vez que ejecutas el cliente
+   - Se abre la ventana con los valores actuales cargados
+   - Puedes modificar la URL del servidor si es necesario
+   - Haz clic en **"Actualizar y Continuar"** para guardar cambios
+   - O haz clic en **"Usar Valores Actuales"** para continuar sin cambios
+
+3. La configuración se guarda automáticamente en el registro de Windows
+4. El cliente se conectará al servidor con la configuración guardada
+
+**Estructura de archivos:**
+```
+C:\CiberMonday\
+├── CiberMondayClient.exe
+├── CiberMondayService.exe
+├── CiberMondayWatchdog.exe
+└── install_exe_service.bat
+```
+
+**Nota**: 
+- La configuración se guarda en el registro de Windows (`HKEY_LOCAL_MACHINE\SOFTWARE\CiberMonday`)
+- **Cada vez que ejecutas el cliente**, se abre la ventana de configuración con los valores actuales
+- Puedes modificar la URL del servidor en cualquier momento
+- Si haces clic en "Usar Valores Actuales", continúa con la configuración guardada sin cambios
 
 #### Paso 3: Instalar como Servicio (Recomendado)
 ```bash
@@ -237,10 +285,16 @@ pip install requests pywin32
 ```
 
 #### Paso 3: Configurar
-Edita `client/config.py`:
-```python
-SERVER_URL = "http://TU_IP_SERVIDOR:5000"
-```
+
+**Opción A: Usando la GUI (Recomendado)**
+Al ejecutar `client.py` por primera vez, se abrirá una ventana de configuración donde puedes ingresar la URL del servidor.
+
+**Opción B: Configuración manual en registro**
+Si prefieres configurar manualmente, puedes editar el registro de Windows:
+- Clave: `HKEY_LOCAL_MACHINE\SOFTWARE\CiberMonday`
+- Valor: `Config` (JSON con `server_url`)
+
+**Nota**: Ya no se usa `config.py` - la configuración se guarda en el registro de Windows.
 
 #### Paso 4: Ejecutar
 
@@ -291,9 +345,18 @@ cd server && python app.py
 ```bash
 # En la PC cliente (Windows)
 # 1. Descargar release de GitHub
-# 2. Editar config.py con IP del servidor
+# 2. Extraer archivos en una carpeta
 # 3. Ejecutar como Administrador:
+CiberMondayClient.exe
+# O instalar como servicio:
 install_exe_service.bat
+```
+
+**Primera vez - Ventana de configuración:**
+```
+Se abre automáticamente una ventana donde ingresas:
+• URL del servidor: http://192.168.1.100:5000
+• Haz clic en "Guardar y Continuar"
 ```
 
 **El cliente se registrará automáticamente:**
@@ -511,10 +574,11 @@ Error de conexión al servidor: Connection refused
    curl http://TU_IP_SERVIDOR:5000/api/health
    ```
 
-2. Verifica la configuración en `config.py`:
-   ```python
-   SERVER_URL = "http://192.168.1.100:5000"  # ← IP correcta
-   ```
+2. Verifica la configuración en el registro de Windows:
+   - Abre `regedit`
+   - Ve a `HKEY_LOCAL_MACHINE\SOFTWARE\CiberMonday`
+   - Verifica el valor `Config` (debe contener la URL del servidor)
+   - O ejecuta el cliente nuevamente para reconfigurar
 
 3. Verifica firewall:
    ```bash
