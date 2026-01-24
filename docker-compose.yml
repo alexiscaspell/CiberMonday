@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: cibermonday-server
+    ports:
+      - "${PORT:-5000}:5000"
+    environment:
+      - FLASK_ENV=production
+      - PORT=5000
+      - HOST=0.0.0.0
+    volumes:
+      # Opcional: montar logs si los agregas en el futuro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - cibermonday-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:5000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  cibermonday-network:
+    driver: bridge

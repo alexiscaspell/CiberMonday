@@ -1,0 +1,50 @@
+# Archivos a ignorar en Docker
+venv/
+env/
+ENV/
+.venv/
+virtualenv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist/
+build/
+.git/
+.gitignore
+*.md
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Cliente (no necesario para el servidor)
+client/
+build_scripts/
+.github/
+
+# Logs
+logs/
+*.log
+
+# Archivos temporales
+*.tmp
+*.bak
+*.cache
+
+# Archivos de compilación PyInstaller
+*.spec
+client/build/
+client/dist/
+
+# Variables de entorno
+.env
+.env.local
+.env.*.local

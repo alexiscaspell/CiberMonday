@@ -1,0 +1,30 @@
+# Dockerfile para compilar el cliente CiberMonday como .exe
+# NOTA: Este Dockerfile está diseñado principalmente para GitHub Actions
+# Para compilación local, es mejor usar el workflow de GitHub Actions o compilar directamente en Windows
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Instalar dependencias del sistema (necesarias para algunas librerías)
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar archivos del cliente
+COPY client/ ./client/
+COPY requirements.txt .
+COPY build_scripts/build_client.sh ./build_client.sh
+
+# Instalar dependencias de Python
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Instalar PyInstaller
+RUN pip install pyinstaller
+
+# Hacer el script ejecutable
+RUN chmod +x /app/build_client.sh
+
+# El script se ejecutará cuando se monte el contenedor
+# Los ejecutables se generarán en /app/dist/

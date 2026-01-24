@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CiberMonday - Panel de Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        
+        .status.active {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        .status.inactive {
+            background: #f44336;
+            color: white;
+        }
+        
+        .clients-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        
+        .client-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+        
+        .client-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .client-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .client-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .client-id {
+            font-size: 12px;
+            color: #666;
+            font-family: monospace;
+        }
+        
+        .time-controls {
+            margin: 15px 0;
+        }
+        
+        .time-input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        input[type="number"] {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        
+        select {
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            background: white;
+        }
+        
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+        
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #d32f2f;
+        }
+        
+        .btn-success {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #45a049;
+        }
+        
+        .btn-secondary {
+            background: #757575;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: #616161;
+        }
+        
+        .session-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+        }
+        
+        .time-remaining {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+            margin: 10px 0;
+        }
+        
+        .time-remaining.expired {
+            color: #f44336;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .actions button {
+            flex: 1;
+        }
+        
+        .refresh-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: #667eea;
+            color: white;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            transition: transform 0.2s;
+        }
+        
+        .refresh-btn:hover {
+            transform: scale(1.1);
+        }
+        
+        .no-clients {
+            text-align: center;
+            padding: 40px;
+            background: white;
+            border-radius: 10px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🖥️ CiberMonday - Panel de Control</h1>
+            <div>
+                <span class="status active" id="server-status">Servidor Activo</span>
+                <span style="margin-left: 10px; color: #666;">
+                    Clientes: <strong id="client-count">0</strong>
+                </span>
+            </div>
+        </header>
+        
+        <div class="clients-grid" id="clients-container">
+            <div class="no-clients">
+                <p>Cargando clientes...</p>
+            </div>
+        </div>
+    </div>
+    
+    <button class="refresh-btn" onclick="loadClients()" title="Actualizar">🔄</button>
+    
+    <script>
+        const API_URL = 'http://localhost:5000/api';
+        
+        function formatTime(seconds) {
+            if (seconds <= 0) return 'EXPIRADO';
+            
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            
+            if (hours > 0) {
+                return `${hours}h ${minutes}m ${secs}s`;
+            } else if (minutes > 0) {
+                return `${minutes}m ${secs}s`;
+            } else {
+                return `${secs}s`;
+            }
+        }
+        
+        async function loadClients() {
+            try {
+                const response = await fetch(`${API_URL}/clients`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    displayClients(data.clients);
+                    document.getElementById('client-count').textContent = data.clients.length;
+                }
+            } catch (error) {
+                console.error('Error al cargar clientes:', error);
+            }
+        }
+        
+        function displayClients(clients) {
+            const container = document.getElementById('clients-container');
+            
+            if (clients.length === 0) {
+                container.innerHTML = '<div class="no-clients"><p>No hay clientes registrados</p></div>';
+                return;
+            }
+            
+            container.innerHTML = clients.map(client => {
+                const session = client.current_session || null;
+                const hasSession = session !== null;
+                const isExpired = hasSession && session.remaining_seconds <= 0;
+                
+                return `
+                    <div class="client-card">
+                        <div class="client-header">
+                            <div>
+                                <div class="client-name">${client.name || 'Cliente Sin Nombre'}</div>
+                                <div class="client-id">ID: ${client.id.substring(0, 8)}...</div>
+                            </div>
+                            <span class="status ${client.is_active ? 'active' : 'inactive'}">
+                                ${client.is_active ? 'ACTIVO' : 'INACTIVO'}
+                            </span>
+                        </div>
+                        
+                        ${hasSession ? `
+                            <div class="session-info">
+                                <div>Tiempo asignado: ${formatTime(session.time_limit)}</div>
+                                <div class="time-remaining ${isExpired ? 'expired' : ''}">
+                                    ${formatTime(session.remaining_seconds)}
+                                </div>
+                                <div style="font-size: 12px; color: #666;">
+                                    Inicio: ${new Date(session.start_time).toLocaleTimeString()}
+                                </div>
+                            </div>
+                        ` : ''}
+                        
+                        <div class="time-controls">
+                            <div class="time-input-group">
+                                <input type="number" id="time-${client.id}" placeholder="Tiempo" min="1" value="60">
+                                <select id="unit-${client.id}">
+                                    <option value="minutes">Minutos</option>
+                                    <option value="hours">Horas</option>
+                                </select>
+                            </div>
+                            <button class="btn-primary" onclick="setTime('${client.id}')">
+                                Establecer Tiempo
+                            </button>
+                        </div>
+                        
+                        <div class="actions">
+                            ${hasSession ? `
+                                <button class="btn-secondary" onclick="stopSession('${client.id}')">
+                                    Detener
+                                </button>
+                            ` : ''}
+                            <button class="btn-danger" onclick="deleteClient('${client.id}')">
+                                Eliminar
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        async function setTime(clientId) {
+            const timeInput = document.getElementById(`time-${clientId}`);
+            const unitSelect = document.getElementById(`unit-${clientId}`);
+            
+            const time = parseInt(timeInput.value);
+            const unit = unitSelect.value;
+            
+            if (!time || time <= 0) {
+                alert('Por favor ingresa un tiempo válido');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/client/${clientId}/set-time`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ time, unit })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`Tiempo establecido: ${time} ${unit === 'hours' ? 'hora(s)' : 'minuto(s)'}`);
+                    loadClients();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error al establecer tiempo: ' + error.message);
+            }
+        }
+        
+        async function stopSession(clientId) {
+            if (!confirm('¿Detener la sesión de este cliente?')) return;
+            
+            try {
+                const response = await fetch(`${API_URL}/client/${clientId}/stop`, {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    loadClients();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error al detener sesión: ' + error.message);
+            }
+        }
+        
+        async function deleteClient(clientId) {
+            if (!confirm('¿Eliminar este cliente permanentemente?')) return;
+            
+            try {
+                const response = await fetch(`${API_URL}/client/${clientId}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    loadClients();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error al eliminar cliente: ' + error.message);
+            }
+        }
+        
+        // Cargar clientes al iniciar
+        loadClients();
+        
+        // Actualizar cada 5 segundos
+        setInterval(loadClients, 5000);
+    </script>
+</body>
+</html>
