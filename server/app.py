@@ -46,11 +46,15 @@ def get_clients():
         client_info = client_data.copy()
         if client_id in client_sessions:
             session = client_sessions[client_id]
+            # Convertir end_time de string ISO a datetime para calcular remaining_seconds
+            end_time = datetime.fromisoformat(session['end_time'])
+            remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
+            
             client_info['current_session'] = {
                 'time_limit': session['time_limit'],
                 'start_time': session['start_time'],
                 'end_time': session['end_time'],
-                'remaining_seconds': max(0, int((session['end_time'] - datetime.now()).total_seconds()))
+                'remaining_seconds': remaining_seconds
             }
         clients_list.append(client_info)
     

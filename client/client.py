@@ -267,6 +267,10 @@ def check_server_status(client_id):
         if response.status_code == 200:
             data = response.json()
             return data.get('client', {})
+        elif response.status_code == 404:
+            # Cliente no encontrado en el servidor (probablemente se reinició)
+            print(f"Cliente no encontrado en el servidor (404). El servidor puede haberse reiniciado.")
+            return None
         else:
             print(f"Error al obtener estado: {response.status_code}")
             return None
@@ -293,9 +297,35 @@ def sync_with_server(client_id):
     Se ejecuta periódicamente para mantener la información actualizada.
     """
     try:
-        client_data = check_server_status(client_id)
-        if client_data is None:
+        response = requests.get(
+            f"{SERVER_URL}/api/client/{client_id}/status",
+            timeout=10
+        )
+        
+        if response.status_code == 404:
+            # Cliente no encontrado - intentar re-registrarse
+            print(f"\n[Re-registro] Cliente no encontrado en el servidor. Intentando re-registrarse...")
+            new_client_id = register_new_client()
+            if new_client_id:
+                print(f"[Re-registro] Cliente re-registrado exitosamente con nuevo ID: {new_client_id}")
+                # Actualizar el client_id en el registro y archivo
+                if REGISTRY_AVAILABLE:
+                    save_client_id_to_registry(new_client_id)
+                client_id_file_path = os.path.join(BASE_PATH, os.path.basename(CLIENT_ID_FILE))
+                with open(client_id_file_path, 'w') as f:
+                    f.write(new_client_id)
+                # Retornar el nuevo ID para que se use en el loop principal
+                return new_client_id
+            else:
+                print("[Re-registro] Error: No se pudo re-registrar el cliente")
+                return False
+        
+        if response.status_code != 200:
+            print(f"Error al obtener estado: {response.status_code}")
             return False
+        
+        data = response.json()
+        client_data = data.get('client', {})
         
         session = client_data.get('session')
         
@@ -305,16 +335,33 @@ def sync_with_server(client_id):
                 clear_session_from_registry()
             return False
         
+        # Verificar que los datos de sesión sean válidos
+        time_limit = session.get('time_limit_seconds', 0)
+        start_time = session.get('start_time')
+        end_time = session.get('end_time')
+        
+        if not all([time_limit, start_time, end_time]):
+            print("Advertencia: Datos de sesión incompletos del servidor")
+            return False
+        
         # Actualizar registro local con información del servidor
         if REGISTRY_AVAILABLE:
             save_session_to_registry(
-                session['time_limit_seconds'],
-                session['start_time'],
-                session['end_time']
+                time_limit,
+                start_time,
+                end_time
             )
+            # Log para depuración
+            remaining = session.get('remaining_seconds', 0)
+            print(f"\n[Sincronización] Tiempo establecido: {time_limit}s ({time_limit//60} min), Restante: {remaining}s")
         return True
+    except requests.exceptions.RequestException as e:
+        print(f"Error de conexión al sincronizar: {e}")
+        return False
     except Exception as e:
         print(f"Error al sincronizar con servidor: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def monitor_time(client_id):
@@ -345,7 +392,11 @@ def monitor_time(client_id):
             
             # Sincronizar con servidor periódicamente
             if current_time - last_sync_time >= SYNC_INTERVAL:
-                sync_with_server(client_id)
+                sync_result = sync_with_server(client_id)
+                # Si sync_with_server retorna un nuevo client_id (re-registro), actualizarlo
+                if sync_result and isinstance(sync_result, str):
+                    print(f"[Actualización] Usando nuevo Client ID: {sync_result}")
+                    client_id = sync_result
                 last_sync_time = current_time
             
             # Leer del registro local (o del servidor si no hay registro)
@@ -354,7 +405,11 @@ def monitor_time(client_id):
                 if session_info is None:
                     # No hay sesión en registro, intentar sincronizar inmediatamente
                     if current_time - last_sync_time >= 5:  # Esperar al menos 5 segundos
-                        sync_with_server(client_id)
+                        sync_result = sync_with_server(client_id)
+                        # Si sync_with_server retorna un nuevo client_id (re-registro), actualizarlo
+                        if sync_result and isinstance(sync_result, str):
+                            print(f"[Actualización] Usando nuevo Client ID: {sync_result}")
+                            client_id = sync_result
                         last_sync_time = current_time
                         session_info = get_session_info()
                     
