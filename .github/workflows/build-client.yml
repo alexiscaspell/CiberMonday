@@ -78,11 +78,12 @@ jobs:
     
     - name: Verificar ejecutables generados
       working-directory: ./client/dist
+      shell: cmd
       run: |
         dir *.exe
-        if not exist CiberMondayClient.exe exit 1
-        if not exist CiberMondayService.exe exit 1
-        if not exist CiberMondayWatchdog.exe exit 1
+        if not exist CiberMondayClient.exe exit /b 1
+        if not exist CiberMondayService.exe exit /b 1
+        if not exist CiberMondayWatchdog.exe exit /b 1
     
     - name: Crear release
       uses: softprops/action-gh-release@v1
