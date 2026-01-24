@@ -16,6 +16,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write  # Necesario para crear releases
+      pull-requests: read  # Solo lectura para PRs
     
     steps:
     - name: Checkout código
@@ -152,4 +155,4 @@ jobs:
           **Compilado el:** ${{ github.event.head_commit.timestamp || github.run_started_at }}  
           **Commit:** ${{ github.sha }}
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
