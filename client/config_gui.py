@@ -32,7 +32,7 @@ def show_config_window():
     # Crear ventana principal
     root = tk.Tk()
     root.title("CiberMonday - Configuración del Cliente")
-    root.geometry("500x300")
+    root.geometry("500x380")
     root.resizable(False, False)
     
     # Centrar ventana
@@ -106,7 +106,33 @@ def show_config_window():
         fg="gray",
         justify=tk.LEFT
     )
-    examples_label.pack(anchor=tk.W, pady=(5, 0))
+    examples_label.pack(anchor=tk.W, pady=(5, 15))
+    
+    # Frame para intervalo de chequeo
+    interval_frame = ttk.Frame(main_frame)
+    interval_frame.pack(fill=tk.X, pady=10)
+    
+    # Etiqueta para intervalo
+    interval_label = ttk.Label(interval_frame, text="Intervalo de Sincronización (segundos):")
+    interval_label.pack(anchor=tk.W, pady=(0, 5))
+    
+    # Campo de entrada para intervalo
+    interval_var = tk.StringVar()
+    # Cargar valor actual si existe
+    current_interval = current_config.get('sync_interval', 30) if current_config else 30
+    interval_var.set(str(current_interval))
+    
+    interval_entry = ttk.Entry(interval_frame, textvariable=interval_var, width=10, font=("Arial", 10))
+    interval_entry.pack(side=tk.LEFT, pady=(0, 5))
+    
+    # Descripción del intervalo
+    interval_desc = tk.Label(
+        interval_frame,
+        text="(Cada cuántos segundos se sincroniza con el servidor. Recomendado: 30)",
+        font=("Arial", 8),
+        fg="gray"
+    )
+    interval_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
     
     # Frame para botones
     button_frame = ttk.Frame(main_frame)
@@ -125,10 +151,24 @@ def show_config_window():
             messagebox.showerror("Error", "La URL debe comenzar con http:// o https://")
             return
         
+        # Validar intervalo de sincronización
+        try:
+            sync_interval = int(interval_var.get().strip())
+            if sync_interval < 5:
+                messagebox.showerror("Error", "El intervalo de sincronización debe ser al menos 5 segundos")
+                return
+            if sync_interval > 300:
+                messagebox.showerror("Error", "El intervalo de sincronización no debe ser mayor a 300 segundos (5 minutos)")
+                return
+        except ValueError:
+            messagebox.showerror("Error", "El intervalo de sincronización debe ser un número válido")
+            return
+        
         # Guardar configuración
         config = {
             'server_url': server_url,
-            'check_interval': 5
+            'check_interval': 5,  # Mantener para compatibilidad
+            'sync_interval': sync_interval
         }
         
         if REGISTRY_AVAILABLE:
@@ -149,7 +189,8 @@ def show_config_window():
                 config_file = os.path.join(os.path.dirname(__file__), 'config.py')
                 with open(config_file, 'w') as f:
                     f.write(f'SERVER_URL = "{server_url}"\n')
-                    f.write('CHECK_INTERVAL = 5\n')
+                    f.write(f'CHECK_INTERVAL = 5\n')
+                    f.write(f'SYNC_INTERVAL = {sync_interval}\n')
                 config_result = config
                 root.quit()
                 root.destroy()
