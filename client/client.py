@@ -352,52 +352,58 @@ def sync_with_server(client_id):
             print("Advertencia: Datos de sesión incompletos del servidor")
             return False
         
-        # CORRECCIÓN DE ZONA HORARIA:
-        # En lugar de usar el end_time del servidor (que puede estar en UTC),
-        # calcular el end_time correcto basándose en el tiempo actual del cliente + time_limit
-        # Esto asegura que el cálculo del tiempo restante sea correcto independientemente de la zona horaria
+        # CÁLCULO SIMPLE: El cliente guarda su propia hora local
+        # Cuando el servidor dice "tienes X segundos restantes", el cliente guarda:
+        # end_time_local = hora_actual_cliente + X_segundos
+        # Así, el cálculo siempre será correcto: end_time_local - hora_actual_cliente = X_segundos
         from datetime import datetime, timedelta
         now_local = datetime.now()
+        remaining_from_server = session.get('remaining_seconds', 0)
         
-        # Calcular cuánto tiempo ha pasado desde que empezó la sesión en el servidor
-        try:
-            start_time_dt = datetime.fromisoformat(start_time)
-            # Calcular el tiempo transcurrido desde el inicio de la sesión
-            # Usar el remaining_seconds del servidor para saber cuánto tiempo queda
-            remaining_from_server = session.get('remaining_seconds', 0)
-            
-            # Calcular el end_time correcto: ahora + tiempo restante del servidor
-            # O alternativamente: ahora + (time_limit - tiempo ya transcurrido)
-            correct_end_time = now_local + timedelta(seconds=remaining_from_server)
-            
-            # Usar el end_time corregido para guardar en el registro
-            end_time_corrected = correct_end_time.isoformat()
-            
-            print(f"[Corrección Zona Horaria] End time servidor: {end_time}")
-            print(f"[Corrección Zona Horaria] End time corregido (local): {end_time_corrected}")
-            print(f"[Corrección Zona Horaria] Tiempo restante servidor: {remaining_from_server}s")
-            
-            end_time = end_time_corrected
-        except Exception as e:
-            print(f"[Advertencia] No se pudo corregir zona horaria, usando end_time del servidor: {e}")
+        # Calcular end_time usando la hora local del cliente
+        end_time_local = now_local + timedelta(seconds=remaining_from_server)
+        
+        # Calcular start_time local para referencia (no es crítico para el cálculo)
+        elapsed_seconds = time_limit - remaining_from_server
+        start_time_local = now_local - timedelta(seconds=elapsed_seconds)
+        
+        print(f"\n[Sincronización] Guardando en registro local:")
+        print(f"  - Tiempo establecido: {time_limit}s ({time_limit//60} min)")
+        print(f"  - Tiempo restante (servidor): {remaining_from_server}s")
+        print(f"  - Hora actual (cliente): {now_local.isoformat()}")
+        print(f"  - End time (local, guardado): {end_time_local.isoformat()}")
+        print(f"  - El cliente bloqueará cuando llegue a: {end_time_local.isoformat()}")
+        
+        # Usar los valores calculados localmente
+        end_time = end_time_local.isoformat()
+        start_time = start_time_local.isoformat()
         
         # Actualizar registro local con información del servidor
         if REGISTRY_AVAILABLE:
-            # Limpiar sesión anterior antes de guardar nueva
+            # IMPORTANTE: Limpiar completamente la sesión anterior antes de guardar nueva
+            # Esto asegura que no queden datos antiguos corruptos
             clear_session_from_registry()
             
-            # Guardar nueva sesión con end_time corregido
+            # Pequeña pausa para asegurar que el registro se limpió
+            import time as time_module
+            time_module.sleep(0.1)
+            
+            # Guardar nueva sesión con valores corregidos (start_time y end_time locales)
             success = save_session_to_registry(
                 time_limit,
-                start_time,
-                end_time
+                start_time,  # start_time corregido local
+                end_time     # end_time corregido local
             )
             
             if success:
                 # Verificar que se guardó correctamente leyendo del registro
+                import time as time_module
+                time_module.sleep(0.1)  # Pequeña pausa para asegurar que se escribió
+                
                 saved_session = get_session_from_registry()
                 if saved_session:
                     saved_end_time = saved_session.get('end_time')
+                    saved_start_time = saved_session.get('start_time')
                     saved_time_limit = saved_session.get('time_limit_seconds')
                     
                     # Calcular tiempo restante desde el registro guardado
@@ -405,35 +411,25 @@ def sync_with_server(client_id):
                         try:
                             from datetime import datetime, timedelta
                             end_time_dt = datetime.fromisoformat(saved_end_time)
-                            start_time_dt = datetime.fromisoformat(start_time) if start_time else None
                             now = datetime.now()
                             remaining_from_registry = int((end_time_dt - now).total_seconds())
                             
-                            # Calcular tiempo restante corregido basándose en start_time + time_limit
-                            remaining_corrected = None
-                            if start_time_dt and time_limit > 0:
-                                correct_end_time = start_time_dt + timedelta(seconds=time_limit)
-                                remaining_corrected = int((correct_end_time - now).total_seconds())
-                            
-                            # Log para depuración
+                            # Verificar que los valores guardados sean correctos
                             remaining = session.get('remaining_seconds', 0)
-                            print(f"\n[Sincronización] Tiempo establecido: {time_limit}s ({time_limit//60} min)")
-                            print(f"[Sincronización] Start time: {start_time}")
-                            print(f"[Sincronización] End time (servidor): {end_time}")
-                            print(f"[Sincronización] End time (guardado): {saved_end_time}")
-                            print(f"[Sincronización] Hora actual (cliente): {now.isoformat()}")
-                            print(f"[Sincronización] Restante (servidor): {remaining}s")
-                            print(f"[Sincronización] Restante (registro, original): {remaining_from_registry}s")
-                            if remaining_corrected is not None:
-                                print(f"[Sincronización] Restante (registro, corregido): {remaining_corrected}s")
+                            print(f"\n[Verificación] Registro guardado correctamente:")
+                            print(f"  - time_limit_seconds: {saved_time_limit}")
+                            print(f"  - start_time guardado: {saved_start_time}")
+                            print(f"  - end_time guardado: {saved_end_time}")
+                            print(f"  - Tiempo restante calculado: {remaining_from_registry}s ({remaining_from_registry//60} min)")
+                            print(f"  - Tiempo restante esperado (servidor): {remaining}s ({remaining//60} min)")
                             
-                            # Si hay discrepancia grande, mostrar advertencia
+                            # Si hay discrepancia, mostrar advertencia
                             if abs(remaining_from_registry - remaining) > 5:
-                                print(f"[ADVERTENCIA] Discrepancia entre servidor y registro: {abs(remaining_from_registry - remaining)}s")
-                                if remaining_corrected is not None and abs(remaining_corrected - remaining) < abs(remaining_from_registry - remaining):
-                                    print(f"[INFO] Usando cálculo corregido basado en start_time + time_limit")
+                                print(f"[ADVERTENCIA] Discrepancia: {abs(remaining_from_registry - remaining)}s")
                         except Exception as e:
                             print(f"[Error] Al verificar registro guardado: {e}")
+                            import traceback
+                            traceback.print_exc()
                     else:
                         print("[ADVERTENCIA] No se encontró end_time en el registro guardado")
                 else:
@@ -513,8 +509,8 @@ def monitor_time(client_id):
                         print(f"  - remaining_seconds calculado: {session_info.get('remaining_seconds')}")
                 
                 if session_info is None:
-                    # No hay sesión en registro, intentar sincronizar inmediatamente
-                    if current_time - last_sync_time >= 5:  # Esperar al menos 5 segundos
+                    # No hay sesión en registro, sincronizar más frecuentemente para detectar nuevos tiempos
+                    if current_time - last_sync_time >= 2:  # Sincronizar cada 2 segundos si no hay sesión
                         sync_result = sync_with_server(client_id)
                         # Si sync_with_server retorna un nuevo client_id (re-registro), actualizarlo
                         if sync_result and isinstance(sync_result, str):

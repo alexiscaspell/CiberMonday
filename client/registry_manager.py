@@ -142,7 +142,9 @@ def get_client_id_from_registry():
 
 def get_remaining_seconds():
     """
-    Calcula los segundos restantes basándose en el registro local
+    Calcula los segundos restantes basándose en el registro local.
+    El end_time en el registro siempre está en hora local del cliente,
+    por lo que el cálculo es simple y directo: end_time - ahora.
     
     Returns:
         int: Segundos restantes, o None si no hay sesión activa
@@ -152,32 +154,37 @@ def get_remaining_seconds():
         return None
     
     try:
-        end_time_str = session_data['end_time']
-        time_limit_seconds = session_data.get('time_limit_seconds', 0)
-        start_time_str = session_data.get('start_time')
+        end_time_str = session_data.get('end_time')
+        if not end_time_str:
+            return None
         
-        # Intentar parsear end_time
+        # Parsear end_time (siempre está en hora local del cliente)
         end_time = datetime.fromisoformat(end_time_str)
         now = datetime.now()
         
-        # Calcular tiempo restante
+        # Calcular tiempo restante: end_time_local - ahora_local
+        # Esto siempre será correcto porque ambos están en la misma zona horaria
         remaining = int((end_time - now).total_seconds())
         
-        # Validación: Si el tiempo restante es mucho mayor que el time_limit, hay un problema
-        # Probablemente un problema de zona horaria. Recalcular basándose en start_time + time_limit
-        if start_time_str and time_limit_seconds > 0:
-            try:
-                start_time = datetime.fromisoformat(start_time_str)
-                # Calcular end_time correcto basándose en start_time local + time_limit
-                correct_end_time = start_time + timedelta(seconds=time_limit_seconds)
-                remaining_corrected = int((correct_end_time - now).total_seconds())
-                
-                # Si hay una gran discrepancia (> 1 hora), usar el cálculo corregido
-                if abs(remaining - remaining_corrected) > 3600:
-                    print(f"[Corrección Zona Horaria] Tiempo restante original: {remaining}s, Corregido: {remaining_corrected}s")
+        # Validación básica: el tiempo restante no debería ser negativo (pero lo limitamos a 0)
+        # ni debería ser mucho mayor que el time_limit (lo cual indicaría un error)
+        time_limit_seconds = session_data.get('time_limit_seconds', 0)
+        if time_limit_seconds > 0 and remaining > time_limit_seconds * 2:
+            # Si el tiempo restante es más del doble del límite, hay un problema
+            print(f"[Advertencia] Tiempo restante ({remaining}s) es mucho mayor que el límite ({time_limit_seconds}s)")
+            print(f"  - End time en registro: {end_time_str}")
+            print(f"  - Hora actual: {now.isoformat()}")
+            # Recalcular basándose en start_time si está disponible
+            start_time_str = session_data.get('start_time')
+            if start_time_str:
+                try:
+                    start_time = datetime.fromisoformat(start_time_str)
+                    correct_end_time = start_time + timedelta(seconds=time_limit_seconds)
+                    remaining_corrected = int((correct_end_time - now).total_seconds())
+                    print(f"  - Recalculando: {remaining_corrected}s basado en start_time + time_limit")
                     return max(0, remaining_corrected)
-            except Exception as e:
-                print(f"[Advertencia] No se pudo corregir zona horaria: {e}")
+                except:
+                    pass
         
         return max(0, remaining)
     except Exception as e:
