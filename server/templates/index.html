@@ -318,6 +318,7 @@
         // Usar la URL actual del navegador como base para la API
         const API_URL = `${window.location.protocol}//${window.location.host}/api`;
         let serverUrl = '';
+        let currentClients = {};  // Cache de clientes para detectar cambios estructurales
         
         async function loadServerInfo() {
             try {
@@ -385,7 +386,7 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    displayClients(data.clients);
+                    updateClients(data.clients);
                     document.getElementById('client-count').textContent = data.clients.length;
                 }
             } catch (error) {
@@ -393,12 +394,102 @@
             }
         }
         
-        function displayClients(clients) {
+        // Verifica si hubo cambios estructurales (clientes agregados/eliminados o cambio de sesión activa/inactiva)
+        function hasStructuralChanges(clients) {
+            const newIds = new Set(clients.map(c => c.id));
+            const oldIds = new Set(Object.keys(currentClients));
+            
+            // Verificar si hay nuevos clientes o clientes eliminados
+            if (newIds.size !== oldIds.size) return true;
+            for (const id of newIds) {
+                if (!oldIds.has(id)) return true;
+            }
+            
+            // Verificar si algún cliente cambió de tener/no tener sesión
+            for (const client of clients) {
+                const oldClient = currentClients[client.id];
+                if (!oldClient) return true;
+                
+                const hadSession = oldClient.current_session !== null && oldClient.current_session !== undefined;
+                const hasSession = client.current_session !== null && client.current_session !== undefined;
+                
+                if (hadSession !== hasSession) return true;
+            }
+            
+            return false;
+        }
+        
+        // Actualiza solo los datos dinámicos sin reconstruir todo el DOM
+        function updateDynamicData(clients) {
+            for (const client of clients) {
+                // Actualizar estado activo/inactivo
+                const statusEl = document.querySelector(`#card-${client.id} .status`);
+                if (statusEl) {
+                    statusEl.className = `status ${client.is_active ? 'active' : 'inactive'}`;
+                    statusEl.textContent = client.is_active ? 'ACTIVO' : 'INACTIVO';
+                }
+                
+                // Actualizar tiempo restante si tiene sesión
+                if (client.current_session) {
+                    const session = client.current_session;
+                    const isExpired = session.remaining_seconds <= 0;
+                    
+                    const timeRemainingEl = document.querySelector(`#card-${client.id} .time-remaining`);
+                    if (timeRemainingEl) {
+                        timeRemainingEl.className = `time-remaining ${isExpired ? 'expired' : ''}`;
+                        timeRemainingEl.textContent = formatTime(session.remaining_seconds);
+                    }
+                    
+                    const timeLimitEl = document.querySelector(`#card-${client.id} .time-limit`);
+                    if (timeLimitEl) {
+                        timeLimitEl.textContent = `Tiempo asignado: ${formatTime(session.time_limit)}`;
+                    }
+                }
+                
+                // Actualizar cache
+                currentClients[client.id] = client;
+            }
+        }
+        
+        // Función principal que decide si reconstruir o solo actualizar
+        function updateClients(clients) {
             const container = document.getElementById('clients-container');
             
             if (clients.length === 0) {
                 container.innerHTML = '<div class="no-clients"><p>No hay clientes registrados</p></div>';
+                currentClients = {};
                 return;
+            }
+            
+            // Si hay cambios estructurales, reconstruir todo el DOM
+            if (hasStructuralChanges(clients)) {
+                displayClients(clients);
+            } else {
+                // Solo actualizar datos dinámicos (tiempo restante, estado)
+                updateDynamicData(clients);
+            }
+        }
+        
+        function displayClients(clients) {
+            const container = document.getElementById('clients-container');
+            
+            // Guardar valores actuales de los inputs antes de reconstruir
+            const savedInputs = {};
+            for (const id of Object.keys(currentClients)) {
+                const timeInput = document.getElementById(`time-${id}`);
+                const unitSelect = document.getElementById(`unit-${id}`);
+                if (timeInput && unitSelect) {
+                    savedInputs[id] = {
+                        time: timeInput.value,
+                        unit: unitSelect.value
+                    };
+                }
+            }
+            
+            // Actualizar cache
+            currentClients = {};
+            for (const client of clients) {
+                currentClients[client.id] = client;
             }
             
             container.innerHTML = clients.map(client => {
@@ -406,8 +497,13 @@
                 const hasSession = session !== null;
                 const isExpired = hasSession && session.remaining_seconds <= 0;
                 
+                // Usar valores guardados si existen
+                const savedInput = savedInputs[client.id];
+                const timeValue = savedInput ? savedInput.time : '60';
+                const unitValue = savedInput ? savedInput.unit : 'minutes';
+                
                 return `
-                    <div class="client-card">
+                    <div class="client-card" id="card-${client.id}">
                         <div class="client-header">
                             <div>
                                 <div class="client-name">${client.name || 'Cliente Sin Nombre'}</div>
@@ -420,7 +516,7 @@
                         
                         ${hasSession ? `
                             <div class="session-info">
-                                <div>Tiempo asignado: ${formatTime(session.time_limit)}</div>
+                                <div class="time-limit">Tiempo asignado: ${formatTime(session.time_limit)}</div>
                                 <div class="time-remaining ${isExpired ? 'expired' : ''}">
                                     ${formatTime(session.remaining_seconds)}
                                 </div>
@@ -432,10 +528,10 @@
                         
                         <div class="time-controls">
                             <div class="time-input-group">
-                                <input type="number" id="time-${client.id}" placeholder="Tiempo" min="1" value="60">
+                                <input type="number" id="time-${client.id}" placeholder="Tiempo" min="1" value="${timeValue}">
                                 <select id="unit-${client.id}">
-                                    <option value="minutes">Minutos</option>
-                                    <option value="hours">Horas</option>
+                                    <option value="minutes" ${unitValue === 'minutes' ? 'selected' : ''}>Minutos</option>
+                                    <option value="hours" ${unitValue === 'hours' ? 'selected' : ''}>Horas</option>
                                 </select>
                             </div>
                             <button class="btn-primary" onclick="setTime('${client.id}')">
