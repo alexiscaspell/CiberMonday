@@ -32,9 +32,8 @@ def show_config_window():
     # Crear ventana principal
     root = tk.Tk()
     root.title("CiberMonday - Configuración del Cliente")
-    root.geometry("700x800")
-    root.resizable(True, True)
-    root.minsize(650, 750)
+    root.geometry("600x650")
+    root.resizable(False, False)
     
     # Centrar ventana
     root.update_idletasks()
@@ -51,38 +50,9 @@ def show_config_window():
     style = ttk.Style()
     style.theme_use('clam')
     
-    # Frame para botones (primero, para que quede en la parte inferior)
-    button_container = ttk.Frame(root)
-    button_container.pack(fill=tk.X, side=tk.BOTTOM, padx=20, pady=15)
-    
-    # Frame principal con scroll (arriba de los botones)
-    canvas_frame = ttk.Frame(root)
-    canvas_frame.pack(fill=tk.BOTH, expand=True, before=button_container)
-    
-    canvas = tk.Canvas(canvas_frame)
-    scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
-    scrollable_frame = ttk.Frame(canvas)
-    
-    scrollable_frame.bind(
-        "<Configure>",
-        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-    )
-    
-    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
-    
-    # Frame principal (ahora dentro del scrollable_frame)
-    main_frame = ttk.Frame(scrollable_frame, padding="20")
+    # Frame principal
+    main_frame = ttk.Frame(root, padding="20")
     main_frame.pack(fill=tk.BOTH, expand=True)
-    
-    # Pack canvas y scrollbar
-    canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
-    
-    # Configurar scroll con mouse wheel
-    def _on_mousewheel(event):
-        canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-    canvas.bind_all("<MouseWheel>", _on_mousewheel)
     
     # Título
     title_label = tk.Label(
@@ -264,9 +234,9 @@ def show_config_window():
     )
     warning_thresholds_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
     
-    # Frame para botones (ya está creado arriba, solo crear el frame interno)
-    button_frame = ttk.Frame(button_container)
-    button_frame.pack(fill=tk.X)
+    # Frame para botones
+    button_frame = ttk.Frame(main_frame)
+    button_frame.pack(fill=tk.X, pady=(20, 0))
     
     def validate_and_save():
         """Valida y guarda la configuración"""

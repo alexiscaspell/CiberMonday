@@ -335,48 +335,10 @@ def get_client_status(client_id):
         if not client_data.get('session'):
             client_data['session'] = None
     
-    # Comparar configuración del cliente con la del servidor
-    # Solo enviar server_config si hay diferencias
+    # Incluir configuración del servidor si existe (para que el cliente la sincronice)
     server_config = clients_db[client_id].get('config', {})
     if server_config:
-        # Obtener configuración del cliente desde el query param
-        client_config_data = request.args.get('client_config')
-        client_config = {}
-        if client_config_data:
-            try:
-                import urllib.parse
-                client_config = json.loads(urllib.parse.unquote(client_config_data))
-            except:
-                pass
-        
-        # Comparar configuraciones - solo enviar si hay diferencias
-        config_changed = False
-        config_fields = ['sync_interval', 'local_check_interval', 'expired_sync_interval', 
-                        'lock_delay', 'warning_thresholds']
-        
-        for field in config_fields:
-            server_value = server_config.get(field)
-            client_value = client_config.get(field)
-            
-            # Si el servidor tiene un valor y es diferente al del cliente, hay cambio
-            if server_value is not None:
-                # Comparar listas de forma especial (warning_thresholds)
-                if field == 'warning_thresholds':
-                    if isinstance(server_value, list) and isinstance(client_value, list):
-                        if sorted(server_value) != sorted(client_value):
-                            config_changed = True
-                            break
-                    elif client_value != server_value:
-                        config_changed = True
-                        break
-                else:
-                    if client_value != server_value:
-                        config_changed = True
-                        break
-        
-        # Solo enviar server_config si hay cambios
-        if config_changed:
-            client_data['server_config'] = server_config
+        client_data['server_config'] = server_config
     
     return jsonify({
         'success': True,

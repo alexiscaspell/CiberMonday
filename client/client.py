@@ -393,11 +393,9 @@ def sync_with_server(client_id):
         client_data = data.get('client', {})
         
         # Verificar si el servidor tiene configuración actualizada para el cliente
-        # El servidor solo envía server_config cuando hay cambios
-        config_was_updated = False
         server_config = client_data.get('server_config')
         if server_config and REGISTRY_AVAILABLE:
-            # El servidor detectó cambios, sincronizarlos
+            # El servidor tiene configuración actualizada, sincronizarla
             try:
                 from registry_manager import get_config_from_registry, save_config_to_registry
                 current_config = get_config_from_registry() or {}
@@ -407,23 +405,14 @@ def sync_with_server(client_id):
                 for key in ['sync_interval', 'local_check_interval', 'expired_sync_interval', 
                            'lock_delay', 'warning_thresholds']:
                     if key in server_config:
-                        old_value = current_config.get(key)
-                        new_value = server_config[key]
-                        current_config[key] = new_value
-                        # Solo marcar como actualizado si realmente cambió
-                        if old_value != new_value:
-                            config_updated = True
+                        current_config[key] = server_config[key]
+                        config_updated = True
                 
                 if config_updated:
                     # Guardar configuración actualizada
                     current_config['server_url'] = current_config.get('server_url', SERVER_URL)
                     save_config_to_registry(current_config)
-                    print(f"[Configuración] Configuración sincronizada desde el servidor:")
-                    for key in ['sync_interval', 'local_check_interval', 'expired_sync_interval', 
-                               'lock_delay', 'warning_thresholds']:
-                        if key in server_config:
-                            print(f"  - {key}: {server_config[key]}")
-                    config_was_updated = True
+                    print(f"[Configuración] Configuración sincronizada desde el servidor")
             except Exception as e:
                 print(f"[Advertencia] Error al sincronizar configuración: {e}")
         
@@ -537,10 +526,6 @@ def sync_with_server(client_id):
                     print("[ADVERTENCIA] No se pudo leer el registro después de guardar")
             else:
                 print("[ERROR] No se pudo guardar la sesión en el registro")
-        
-        # Retornar indicador de configuración actualizada si hubo cambios
-        if config_was_updated:
-            return {'config_updated': True}
         return True
     except requests.exceptions.RequestException as e:
         print(f"Error de conexión al sincronizar: {e}")
@@ -572,43 +557,25 @@ def monitor_time(client_id):
     last_sync_time = 0
     is_expired_state = False  # Rastrear si estamos en estado de tiempo expirado
     
-    # Función para cargar configuración desde el registro
-    def load_config():
-        """Carga la configuración desde el registro"""
-        config_data = None
-        if REGISTRY_AVAILABLE:
-            try:
-                from registry_manager import get_config_from_registry
-                config_data = get_config_from_registry()
-            except:
-                pass
-        
-        # Usar valores de configuración o valores por defecto
+    # Cargar configuración desde el registro
+    config_data = None
+    if REGISTRY_AVAILABLE:
         try:
-            sync_interval = SYNC_INTERVAL_CONFIG
-        except NameError:
-            sync_interval = config_data.get('sync_interval', 30) if config_data else 30
-        
-        local_check_interval = config_data.get('local_check_interval', 1) if config_data else 1
-        expired_sync_interval = config_data.get('expired_sync_interval', 2) if config_data else 2
-        lock_delay = config_data.get('lock_delay', 2) if config_data else 2
-        warning_thresholds = config_data.get('warning_thresholds', [10, 5, 2, 1]) if config_data else [10, 5, 2, 1]
-        
-        return {
-            'sync_interval': sync_interval,
-            'local_check_interval': local_check_interval,
-            'expired_sync_interval': expired_sync_interval,
-            'lock_delay': lock_delay,
-            'warning_thresholds': warning_thresholds
-        }
+            from registry_manager import get_config_from_registry
+            config_data = get_config_from_registry()
+        except:
+            pass
     
-    # Cargar configuración inicial
-    config = load_config()
-    SYNC_INTERVAL = config['sync_interval']
-    LOCAL_CHECK_INTERVAL = config['local_check_interval']
-    EXPIRED_SYNC_INTERVAL = config['expired_sync_interval']
-    LOCK_DELAY = config['lock_delay']
-    WARNING_THRESHOLDS = config['warning_thresholds']
+    # Usar valores de configuración o valores por defecto
+    try:
+        SYNC_INTERVAL = SYNC_INTERVAL_CONFIG
+    except NameError:
+        SYNC_INTERVAL = config_data.get('sync_interval', 30) if config_data else 30
+    
+    LOCAL_CHECK_INTERVAL = config_data.get('local_check_interval', 1) if config_data else 1
+    EXPIRED_SYNC_INTERVAL = config_data.get('expired_sync_interval', 2) if config_data else 2
+    LOCK_DELAY = config_data.get('lock_delay', 2) if config_data else 2
+    WARNING_THRESHOLDS = config_data.get('warning_thresholds', [10, 5, 2, 1]) if config_data else [10, 5, 2, 1]
     
     # Rastrear qué notificaciones de tiempo ya se han mostrado
     # Para evitar mostrar la misma notificación múltiples veces
@@ -627,39 +594,11 @@ def monitor_time(client_id):
             # Sincronizar con servidor periódicamente
             if current_time - last_sync_time >= SYNC_INTERVAL:
                 sync_result = sync_with_server(client_id)
-                # Verificar si la configuración fue actualizada
-                if isinstance(sync_result, dict) and sync_result.get('config_updated'):
-                    # La configuración fue actualizada, recargarla
-                    new_config = load_config()
-                    config_changed = False
-                    
-                    if new_config['sync_interval'] != SYNC_INTERVAL:
-                        SYNC_INTERVAL = new_config['sync_interval']
-                        config_changed = True
-                    if new_config['local_check_interval'] != LOCAL_CHECK_INTERVAL:
-                        LOCAL_CHECK_INTERVAL = new_config['local_check_interval']
-                        config_changed = True
-                    if new_config['expired_sync_interval'] != EXPIRED_SYNC_INTERVAL:
-                        EXPIRED_SYNC_INTERVAL = new_config['expired_sync_interval']
-                        config_changed = True
-                    if new_config['lock_delay'] != LOCK_DELAY:
-                        LOCK_DELAY = new_config['lock_delay']
-                        config_changed = True
-                    if new_config['warning_thresholds'] != WARNING_THRESHOLDS:
-                        WARNING_THRESHOLDS = new_config['warning_thresholds']
-                        # Limpiar notificaciones mostradas cuando cambian los umbrales
-                        shown_warnings.clear()
-                        config_changed = True
-                        print(f"[Configuración] Umbrales de notificación actualizados: {WARNING_THRESHOLDS} minutos")
-                    
-                    if config_changed:
-                        print(f"[Configuración] Configuración aplicada en memoria")
                 # Si sync_with_server retorna un nuevo client_id (re-registro), actualizarlo
-                elif sync_result and isinstance(sync_result, str):
+                if sync_result and isinstance(sync_result, str):
                     print(f"[Actualización] Usando nuevo Client ID: {sync_result}")
                     client_id = sync_result
                 last_sync_time = current_time
-                
                 # Forzar re-lectura del registro después de sincronizar
                 # para asegurar que usamos los datos más recientes
                 if REGISTRY_AVAILABLE:
@@ -686,26 +625,11 @@ def monitor_time(client_id):
                     # Usar EXPIRED_SYNC_INTERVAL también para cuando no hay sesión
                     if current_time - last_sync_time >= EXPIRED_SYNC_INTERVAL:
                         sync_result = sync_with_server(client_id)
-                        # Verificar si la configuración fue actualizada
-                        if isinstance(sync_result, dict) and sync_result.get('config_updated'):
-                            new_config = load_config()
-                            if new_config['sync_interval'] != SYNC_INTERVAL:
-                                SYNC_INTERVAL = new_config['sync_interval']
-                            if new_config['local_check_interval'] != LOCAL_CHECK_INTERVAL:
-                                LOCAL_CHECK_INTERVAL = new_config['local_check_interval']
-                            if new_config['expired_sync_interval'] != EXPIRED_SYNC_INTERVAL:
-                                EXPIRED_SYNC_INTERVAL = new_config['expired_sync_interval']
-                            if new_config['lock_delay'] != LOCK_DELAY:
-                                LOCK_DELAY = new_config['lock_delay']
-                            if new_config['warning_thresholds'] != WARNING_THRESHOLDS:
-                                WARNING_THRESHOLDS = new_config['warning_thresholds']
-                                shown_warnings.clear()
                         # Si sync_with_server retorna un nuevo client_id (re-registro), actualizarlo
-                        elif sync_result and isinstance(sync_result, str):
+                        if sync_result and isinstance(sync_result, str):
                             print(f"[Actualización] Usando nuevo Client ID: {sync_result}")
                             client_id = sync_result
                         last_sync_time = current_time
-                        
                         session_info = get_session_info()
                         # Resetear last_remaining para forzar actualización de display
                         if session_info:
@@ -753,18 +677,7 @@ def monitor_time(client_id):
                 # para verificar si se asignó nuevo tiempo antes de bloquear
                 if current_time - last_sync_time >= EXPIRED_SYNC_INTERVAL:
                     sync_result = sync_with_server(client_id)
-                    # Verificar si la configuración fue actualizada
-                    if isinstance(sync_result, dict) and sync_result.get('config_updated'):
-                        new_config = load_config()
-                        if new_config['expired_sync_interval'] != EXPIRED_SYNC_INTERVAL:
-                            EXPIRED_SYNC_INTERVAL = new_config['expired_sync_interval']
-                        if new_config['lock_delay'] != LOCK_DELAY:
-                            LOCK_DELAY = new_config['lock_delay']
-                        if new_config['warning_thresholds'] != WARNING_THRESHOLDS:
-                            WARNING_THRESHOLDS = new_config['warning_thresholds']
-                            shown_warnings.clear()
-                    # Si sync_with_server retorna un nuevo client_id (re-registro), actualizarlo
-                    elif sync_result and isinstance(sync_result, str):
+                    if sync_result and isinstance(sync_result, str):
                         # Se re-registró el cliente, actualizar ID
                         print(f"[Actualización] Usando nuevo Client ID: {sync_result}")
                         client_id = sync_result
