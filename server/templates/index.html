@@ -260,6 +260,32 @@
             }
         }
         
+        // Guardar valores de campos de entrada antes de actualizar
+        function saveInputValues() {
+            const savedValues = {};
+            document.querySelectorAll('input[type="number"]').forEach(input => {
+                if (input.id.startsWith('time-')) {
+                    savedValues[input.id] = input.value;
+                }
+            });
+            document.querySelectorAll('select').forEach(select => {
+                if (select.id.startsWith('unit-')) {
+                    savedValues[select.id] = select.value;
+                }
+            });
+            return savedValues;
+        }
+        
+        // Restaurar valores de campos de entrada después de actualizar
+        function restoreInputValues(savedValues) {
+            Object.keys(savedValues).forEach(id => {
+                const element = document.getElementById(id);
+                if (element) {
+                    element.value = savedValues[id];
+                }
+            });
+        }
+        
         async function loadClients() {
             try {
                 const response = await fetch(`${API_URL}/clients`);
@@ -271,6 +297,85 @@
                 }
             } catch (error) {
                 console.error('Error al cargar clientes:', error);
+            }
+        }
+        
+        // Actualizar solo los tiempos sin recargar toda la página
+        async function updateClientTimes() {
+            try {
+                const response = await fetch(`${API_URL}/clients`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Guardar valores de entrada antes de actualizar
+                    const savedValues = saveInputValues();
+                    
+                    // Actualizar solo la información de sesión y tiempo restante
+                    data.clients.forEach(client => {
+                        const card = document.querySelector(`[data-client-id="${client.id}"]`);
+                        if (!card) return;
+                        
+                        const session = client.current_session || null;
+                        const hasSession = session !== null;
+                        const isExpired = hasSession && session.remaining_seconds <= 0;
+                        
+                        // Actualizar estado
+                        const statusElement = card.querySelector('.status');
+                        if (statusElement) {
+                            statusElement.className = `status ${client.is_active ? 'active' : 'inactive'}`;
+                            statusElement.textContent = client.is_active ? 'ACTIVO' : 'INACTIVO';
+                        }
+                        
+                        // Actualizar información de sesión
+                        let sessionInfo = card.querySelector('.session-info');
+                        if (hasSession) {
+                            if (!sessionInfo) {
+                                // Crear elemento de sesión si no existe
+                                const timeControls = card.querySelector('.time-controls');
+                                sessionInfo = document.createElement('div');
+                                sessionInfo.className = 'session-info';
+                                timeControls.parentNode.insertBefore(sessionInfo, timeControls);
+                            }
+                            sessionInfo.innerHTML = `
+                                <div>Tiempo asignado: ${formatTime(session.time_limit)}</div>
+                                <div class="time-remaining ${isExpired ? 'expired' : ''}">
+                                    ${formatTime(session.remaining_seconds)}
+                                </div>
+                                <div style="font-size: 12px; color: #666;">
+                                    Inicio: ${new Date(session.start_time).toLocaleTimeString()}
+                                </div>
+                            `;
+                        } else {
+                            // Eliminar información de sesión si no hay sesión
+                            if (sessionInfo) {
+                                sessionInfo.remove();
+                            }
+                        }
+                        
+                        // Actualizar botón de detener
+                        const actionsDiv = card.querySelector('.actions');
+                        const stopButton = actionsDiv.querySelector('.btn-secondary');
+                        if (hasSession && !stopButton) {
+                            // Agregar botón de detener si hay sesión y no existe
+                            const deleteButton = actionsDiv.querySelector('.btn-danger');
+                            const newStopButton = document.createElement('button');
+                            newStopButton.className = 'btn-secondary';
+                            newStopButton.textContent = 'Detener';
+                            newStopButton.onclick = () => stopSession(client.id);
+                            actionsDiv.insertBefore(newStopButton, deleteButton);
+                        } else if (!hasSession && stopButton) {
+                            // Eliminar botón de detener si no hay sesión
+                            stopButton.remove();
+                        }
+                    });
+                    
+                    // Restaurar valores de entrada
+                    restoreInputValues(savedValues);
+                    
+                    document.getElementById('client-count').textContent = data.clients.length;
+                }
+            } catch (error) {
+                console.error('Error al actualizar tiempos:', error);
             }
         }
         
@@ -288,7 +393,7 @@
                 const isExpired = hasSession && session.remaining_seconds <= 0;
                 
                 return `
-                    <div class="client-card">
+                    <div class="client-card" data-client-id="${client.id}">
                         <div class="client-header">
                             <div>
                                 <div class="client-name">${client.name || 'Cliente Sin Nombre'}</div>
@@ -363,14 +468,48 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    alert(`Tiempo establecido: ${time} ${unit === 'hours' ? 'hora(s)' : 'minuto(s)'}`);
-                    loadClients();
+                    // Solo actualizar los tiempos, no recargar toda la página
+                    updateClientTimes();
+                    // Mostrar notificación breve en lugar de alert
+                    showNotification(`Tiempo establecido: ${time} ${unit === 'hours' ? 'hora(s)' : 'minuto(s)'}`, 'success');
                 } else {
                     alert('Error: ' + data.message);
                 }
             } catch (error) {
                 alert('Error al establecer tiempo: ' + error.message);
             }
+        }
+        
+        // Función para mostrar notificaciones temporales
+        function showNotification(message, type = 'info') {
+            // Crear elemento de notificación si no existe
+            let notification = document.getElementById('notification');
+            if (!notification) {
+                notification = document.createElement('div');
+                notification.id = 'notification';
+                notification.style.cssText = `
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    padding: 15px 20px;
+                    border-radius: 5px;
+                    color: white;
+                    font-weight: bold;
+                    z-index: 10000;
+                    opacity: 0;
+                    transition: opacity 0.3s;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+                `;
+                document.body.appendChild(notification);
+            }
+            
+            notification.textContent = message;
+            notification.style.background = type === 'success' ? '#4CAF50' : '#f44336';
+            notification.style.opacity = '1';
+            
+            setTimeout(() => {
+                notification.style.opacity = '0';
+            }, 3000);
         }
         
         async function stopSession(clientId) {
@@ -384,7 +523,9 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    loadClients();
+                    // Solo actualizar los tiempos, no recargar toda la página
+                    updateClientTimes();
+                    showNotification('Sesión detenida', 'success');
                 } else {
                     alert('Error: ' + data.message);
                 }
@@ -404,6 +545,7 @@
                 const data = await response.json();
                 
                 if (data.success) {
+                    // Recargar toda la lista porque se eliminó un cliente
                     loadClients();
                 } else {
                     alert('Error: ' + data.message);
@@ -416,8 +558,8 @@
         // Cargar clientes al iniciar
         loadClients();
         
-        // Actualizar cada 5 segundos
-        setInterval(loadClients, 5000);
+        // Actualizar solo los tiempos cada 2 segundos (sin recargar toda la página)
+        setInterval(updateClientTimes, 2000);
     </script>
 </body>
 </html>

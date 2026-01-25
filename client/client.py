@@ -8,6 +8,7 @@ import requests
 import time
 import sys
 import os
+import json
 from datetime import datetime, timedelta
 import ctypes
 from ctypes import wintypes
@@ -35,6 +36,13 @@ try:
     REGISTRY_AVAILABLE = True
 except ImportError:
     REGISTRY_AVAILABLE = False
+
+# Importar notificaciones
+try:
+    from notifications import show_time_warning
+    NOTIFICATIONS_AVAILABLE = True
+except ImportError:
+    NOTIFICATIONS_AVAILABLE = False
 
 # Manejar rutas cuando se ejecuta como .exe (PyInstaller)
 def get_base_path():
@@ -303,12 +311,39 @@ def sync_with_server(client_id):
     """
     Sincroniza con el servidor y actualiza el registro local.
     Se ejecuta periódicamente para mantener la información actualizada.
+    Si el servidor no tiene sesión pero el cliente sí, envía la información local al servidor.
     """
     try:
-        response = requests.get(
-            f"{SERVER_URL}/api/client/{client_id}/status",
-            timeout=10
-        )
+        # Verificar si el cliente tiene una sesión activa local antes de consultar al servidor
+        local_session_data = None
+        if REGISTRY_AVAILABLE:
+            local_session_data = get_session_from_registry()
+            if local_session_data:
+                # Verificar que la sesión local no haya expirado
+                end_time_str = local_session_data.get('end_time')
+                if end_time_str:
+                    try:
+                        from datetime import datetime
+                        end_time = datetime.fromisoformat(end_time_str)
+                        remaining = int((end_time - datetime.now()).total_seconds())
+                        if remaining <= 0:
+                            local_session_data = None  # Sesión expirada, no enviar
+                    except:
+                        local_session_data = None
+        
+        # Construir URL con información de sesión local si existe
+        url = f"{SERVER_URL}/api/client/{client_id}/status"
+        if local_session_data:
+            # Enviar información de sesión local al servidor para que la recupere
+            import urllib.parse
+            session_json = json.dumps({
+                'time_limit_seconds': local_session_data.get('time_limit_seconds', 0),
+                'start_time': local_session_data.get('start_time', ''),
+                'end_time': local_session_data.get('end_time', '')
+            })
+            url += f"?session_data={urllib.parse.quote(session_json)}"
+        
+        response = requests.get(url, timeout=10)
         
         if response.status_code == 404:
             # Cliente no encontrado - intentar re-registrarse
@@ -338,9 +373,18 @@ def sync_with_server(client_id):
         session = client_data.get('session')
         
         if session is None:
-            # No hay sesión activa en el servidor, limpiar registro local
+            # Si el servidor no tiene sesión pero el cliente sí tenía una local,
+            # el servidor debería haberla recuperado. Si aún no hay sesión, limpiar registro local.
             if REGISTRY_AVAILABLE:
-                clear_session_from_registry()
+                # Esperar un momento y verificar de nuevo si el servidor recuperó la sesión
+                # (esto puede pasar si el servidor acaba de reiniciar y está procesando)
+                if local_session_data:
+                    print("[Sincronización] Servidor sin sesión, pero cliente tiene sesión local.")
+                    print("  - La sesión local se mantendrá hasta la próxima sincronización.")
+                    # No limpiar el registro local todavía, dar oportunidad al servidor
+                    return False
+                else:
+                    clear_session_from_registry()
             return False
         
         # Verificar que los datos de sesión sean válidos
@@ -465,6 +509,7 @@ def monitor_time(client_id):
     
     last_remaining = None
     last_sync_time = 0
+    is_expired_state = False  # Rastrear si estamos en estado de tiempo expirado
     # Usar intervalo de sincronización desde configuración (o 30 por defecto)
     try:
         SYNC_INTERVAL = SYNC_INTERVAL_CONFIG
@@ -472,6 +517,12 @@ def monitor_time(client_id):
         # Si no está definido, usar valor por defecto
         SYNC_INTERVAL = 30
     LOCAL_CHECK_INTERVAL = 1  # Verificar registro local cada segundo
+    EXPIRED_SYNC_INTERVAL = 2  # Sincronizar cada 2 segundos cuando está expirado
+    
+    # Rastrear qué notificaciones de tiempo ya se han mostrado
+    # Para evitar mostrar la misma notificación múltiples veces
+    shown_warnings = set()  # Almacena los umbrales ya mostrados (en minutos)
+    WARNING_THRESHOLDS = [10, 5, 2, 1]  # Umbrales en minutos
     
     print(f"Intervalo de sincronización: {SYNC_INTERVAL} segundos")
     
@@ -550,19 +601,78 @@ def monitor_time(client_id):
             
             # Verificar si expiró
             if is_expired or remaining_seconds <= 0:
-                # Bloquear continuamente mientras la sesión esté expirada
-                if last_remaining is None or last_remaining > 0:
+                # Marcar que estamos en estado expirado
+                if not is_expired_state:
+                    is_expired_state = True
+                    # Limpiar notificaciones mostradas cuando expira por primera vez
+                    shown_warnings.clear()
                     print("\n" + "=" * 50)
                     print("¡TIEMPO AGOTADO!")
                     print("La PC se bloqueará continuamente hasta que se asigne nuevo tiempo.")
                     print("=" * 50)
                 
+                # IMPORTANTE: Sincronizar con el servidor frecuentemente cuando está expirado
+                # para verificar si se asignó nuevo tiempo antes de bloquear
+                if current_time - last_sync_time >= EXPIRED_SYNC_INTERVAL:
+                    sync_result = sync_with_server(client_id)
+                    if sync_result and isinstance(sync_result, str):
+                        # Se re-registró el cliente, actualizar ID
+                        print(f"[Actualización] Usando nuevo Client ID: {sync_result}")
+                        client_id = sync_result
+                    
+                    last_sync_time = current_time
+                    
+                    # Verificar si ahora hay sesión activa después de sincronizar
+                    if REGISTRY_AVAILABLE:
+                        session_info = get_session_info()
+                        if session_info and session_info.get('remaining_seconds', 0) > 0:
+                            # Hay nuevo tiempo asignado, salir del bloqueo
+                            print("[Bloqueo] Se detectó nuevo tiempo asignado. Desbloqueando...")
+                            is_expired_state = False
+                            last_remaining = None  # Resetear para forzar actualización
+                            continue  # Salir del bloqueo y continuar normalmente
+                
                 # Bloquear la estación de trabajo
                 lock_workstation()
                 
-                # Verificar periódicamente si se asignó nuevo tiempo
-                time.sleep(2)
+                # Esperar antes de verificar de nuevo
+                time.sleep(EXPIRED_SYNC_INTERVAL)
                 continue
+            else:
+                # Si el tiempo NO está expirado pero estábamos en estado expirado,
+                # significa que se asignó nuevo tiempo
+                if is_expired_state:
+                    print("[Bloqueo] Tiempo restaurado. Desbloqueando...")
+                    is_expired_state = False
+                    shown_warnings.clear()  # Limpiar notificaciones para nueva sesión
+                    last_remaining = None  # Resetear para forzar actualización
+            
+            # Verificar si debemos mostrar notificaciones de tiempo restante
+            remaining_minutes = remaining_seconds // 60
+            
+            # Verificar cada umbral de advertencia
+            for threshold_minutes in WARNING_THRESHOLDS:
+                # Mostrar notificación si:
+                # 1. El tiempo restante está en el umbral (o justo pasó)
+                # 2. No hemos mostrado esta notificación antes
+                # 3. El tiempo restante es menor o igual al umbral
+                if (remaining_minutes <= threshold_minutes and 
+                    threshold_minutes not in shown_warnings):
+                    # Mostrar notificación
+                    if NOTIFICATIONS_AVAILABLE:
+                        show_time_warning(threshold_minutes)
+                    else:
+                        print(f"\n{'='*50}")
+                        print(f"ADVERTENCIA: Quedan {threshold_minutes} minutos")
+                        print(f"{'='*50}\n")
+                    
+                    # Marcar como mostrado
+                    shown_warnings.add(threshold_minutes)
+            
+            # Si el tiempo restante aumenta (nueva sesión asignada), limpiar notificaciones
+            if last_remaining is not None and remaining_seconds > last_remaining:
+                # Nueva sesión asignada, limpiar notificaciones mostradas
+                shown_warnings.clear()
             
             # Mostrar tiempo restante
             if last_remaining != remaining_seconds:
