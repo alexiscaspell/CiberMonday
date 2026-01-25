@@ -341,8 +341,7 @@ def sync_with_server(client_id):
             session_json = json.dumps({
                 'time_limit_seconds': local_session_data.get('time_limit_seconds', 0),
                 'start_time': local_session_data.get('start_time', ''),
-                'end_time': local_session_data.get('end_time', ''),
-                'time_disabled': local_session_data.get('time_disabled', False)
+                'end_time': local_session_data.get('end_time', '')
             })
             params.append(f"session_data={urllib.parse.quote(session_json)}")
         
