@@ -335,21 +335,45 @@ def get_client_id():
     # Si no existe, registrar nuevo cliente
     return register_new_client()
 
-def register_new_client():
-    """Registra un nuevo cliente en el servidor"""
+def register_new_client(existing_client_id=None):
+    """
+    Registra un nuevo cliente en el servidor o re-registra uno existente.
+    Si se proporciona existing_client_id, se hace re-registro conservando el ID.
+    También envía la sesión activa si existe en el registro local.
+    """
     try:
         import socket
         client_name = socket.gethostname()
         
+        # Preparar datos de registro
+        register_data = {'name': client_name}
+        
+        # Si es re-registro, incluir el ID existente
+        if existing_client_id:
+            register_data['client_id'] = existing_client_id
+        
+        # Incluir sesión activa si existe en el registro local
+        if REGISTRY_AVAILABLE:
+            session_info = get_session_info()
+            if session_info and not session_info['is_expired'] and session_info['remaining_seconds'] > 0:
+                session_data = get_session_from_registry()
+                if session_data:
+                    register_data['session'] = {
+                        'remaining_seconds': session_info['remaining_seconds'],
+                        'time_limit_seconds': session_data.get('time_limit_seconds', session_info['remaining_seconds'])
+                    }
+                    print(f"[Re-registro] Enviando sesión activa: {session_info['remaining_seconds']}s restantes")
+        
         response = requests.post(
             f"{SERVER_URL}/api/register",
-            json={'name': client_name},
+            json=register_data,
             timeout=10
         )
         
         if response.status_code == 201:
             data = response.json()
             client_id = data['client_id']
+            session_restored = data.get('session_restored', False)
             
             # Guardar el ID del cliente
             client_id_file_path = os.path.join(BASE_PATH, os.path.basename(CLIENT_ID_FILE))
@@ -360,7 +384,13 @@ def register_new_client():
             if REGISTRY_AVAILABLE:
                 save_client_id_to_registry(client_id)
             
-            print(f"Cliente registrado exitosamente. ID: {client_id}")
+            if existing_client_id:
+                print(f"Cliente re-registrado exitosamente. ID: {client_id}")
+                if session_restored:
+                    print(f"[Re-registro] Sesión restaurada en el servidor")
+            else:
+                print(f"Cliente registrado exitosamente. ID: {client_id}")
+            
             return client_id
         else:
             print(f"Error al registrar cliente: {response.status_code}")
@@ -370,6 +400,42 @@ def register_new_client():
         print(f"Error de conexión al servidor: {e}")
         print("Asegúrate de que el servidor esté ejecutándose.")
         return None
+
+def report_session_to_server(client_id):
+    """
+    Reporta la sesión activa del cliente al servidor.
+    Útil cuando el servidor perdió la información pero el cliente la tiene.
+    """
+    if not REGISTRY_AVAILABLE:
+        return False
+    
+    session_info = get_session_info()
+    if not session_info or session_info['is_expired'] or session_info['remaining_seconds'] <= 0:
+        return False
+    
+    session_data = get_session_from_registry()
+    if not session_data:
+        return False
+    
+    try:
+        response = requests.post(
+            f"{SERVER_URL}/api/client/{client_id}/report-session",
+            json={
+                'remaining_seconds': session_info['remaining_seconds'],
+                'time_limit_seconds': session_data.get('time_limit_seconds', session_info['remaining_seconds'])
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            print(f"[Reporte] Sesión reportada al servidor: {session_info['remaining_seconds']}s restantes")
+            return True
+        else:
+            print(f"[Reporte] Error al reportar sesión: {response.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"[Reporte] Error de conexión: {e}")
+        return False
 
 def check_server_status(client_id):
     """Verifica el estado del cliente en el servidor"""
@@ -420,18 +486,13 @@ def sync_with_server(client_id):
         )
         
         if response.status_code == 404:
-            # Cliente no encontrado - intentar re-registrarse
-            print(f"\n[Re-registro] Cliente no encontrado en el servidor. Intentando re-registrarse...")
-            new_client_id = register_new_client()
+            # Cliente no encontrado - intentar re-registrarse CON EL MISMO ID
+            # Esto permite que el servidor recupere la sesión del cliente
+            print(f"\n[Re-registro] Cliente no encontrado en el servidor. Intentando re-registrarse con ID existente...")
+            new_client_id = register_new_client(existing_client_id=client_id)
             if new_client_id:
-                print(f"[Re-registro] Cliente re-registrado exitosamente con nuevo ID: {new_client_id}")
-                # Actualizar el client_id en el registro y archivo
-                if REGISTRY_AVAILABLE:
-                    save_client_id_to_registry(new_client_id)
-                client_id_file_path = os.path.join(BASE_PATH, os.path.basename(CLIENT_ID_FILE))
-                with open(client_id_file_path, 'w') as f:
-                    f.write(new_client_id)
-                # Retornar el nuevo ID para que se use en el loop principal
+                print(f"[Re-registro] Cliente re-registrado exitosamente. ID: {new_client_id}")
+                # Retornar el ID (debería ser el mismo) para que se use en el loop principal
                 return new_client_id
             else:
                 print("[Re-registro] Error: No se pudo re-registrar el cliente")
@@ -447,9 +508,25 @@ def sync_with_server(client_id):
         session = client_data.get('session')
         
         if session is None:
-            # No hay sesión activa en el servidor, limpiar registro local
+            # El servidor no tiene sesión para este cliente
+            # Verificar si el cliente tiene una sesión válida localmente
             if REGISTRY_AVAILABLE:
-                clear_session_from_registry()
+                local_session = get_session_info()
+                if local_session and not local_session['is_expired'] and local_session['remaining_seconds'] > 0:
+                    # El cliente tiene una sesión válida - reportarla al servidor
+                    print(f"\n[Sincronización] Servidor sin sesión, pero cliente tiene {local_session['remaining_seconds']}s restantes")
+                    print(f"[Sincronización] Reportando sesión al servidor...")
+                    if report_session_to_server(client_id):
+                        # Sesión reportada exitosamente, no borrar registro local
+                        return True
+                    else:
+                        # No se pudo reportar, pero NO borrar la sesión local
+                        # El cliente debe seguir funcionando con su tiempo local
+                        print(f"[Sincronización] No se pudo reportar al servidor, manteniendo sesión local")
+                        return False
+                else:
+                    # No hay sesión válida localmente, limpiar registro
+                    clear_session_from_registry()
             return False
         
         # Verificar que los datos de sesión sean válidos

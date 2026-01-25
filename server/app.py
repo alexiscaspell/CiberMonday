@@ -20,11 +20,25 @@ def generate_client_id():
 
 @app.route('/api/register', methods=['POST'])
 def register_client():
-    """Registra un nuevo cliente en el sistema"""
+    """
+    Registra un nuevo cliente o re-registra uno existente.
+    Si se envía client_id, se re-registra el cliente con ese ID.
+    Si se envía session_data, se restaura la sesión del cliente.
+    """
     data = request.json
     client_name = data.get('name', 'Cliente Sin Nombre')
-    client_id = generate_client_id()
+    existing_client_id = data.get('client_id')  # ID existente para re-registro
+    session_data = data.get('session')  # Sesión activa del cliente
     
+    # Determinar si es re-registro o nuevo registro
+    if existing_client_id:
+        client_id = existing_client_id
+        is_reregister = True
+    else:
+        client_id = generate_client_id()
+        is_reregister = False
+    
+    # Registrar/actualizar cliente en la base de datos
     clients_db[client_id] = {
         'id': client_id,
         'name': client_name,
@@ -33,10 +47,32 @@ def register_client():
         'is_active': False
     }
     
+    # Si el cliente envía datos de sesión, restaurarla
+    if session_data:
+        remaining_seconds = session_data.get('remaining_seconds', 0)
+        time_limit = session_data.get('time_limit_seconds', remaining_seconds)
+        
+        if remaining_seconds > 0:
+            # Calcular end_time basado en el tiempo restante reportado
+            end_time = datetime.now() + timedelta(seconds=remaining_seconds)
+            start_time = end_time - timedelta(seconds=time_limit)
+            
+            client_sessions[client_id] = {
+                'time_limit': time_limit,
+                'start_time': start_time.isoformat(),
+                'end_time': end_time.isoformat()
+            }
+            clients_db[client_id]['is_active'] = True
+            
+            print(f"[Re-registro] Cliente {client_id[:8]}... restauró sesión con {remaining_seconds}s restantes")
+    
+    message = 'Cliente re-registrado exitosamente' if is_reregister else 'Cliente registrado exitosamente'
+    
     return jsonify({
         'success': True,
         'client_id': client_id,
-        'message': 'Cliente registrado exitosamente'
+        'message': message,
+        'session_restored': session_data is not None and client_id in client_sessions
     }), 201
 
 @app.route('/api/clients', methods=['GET'])
@@ -140,6 +176,53 @@ def get_client_status(client_id):
     return jsonify({
         'success': True,
         'client': client_data
+    }), 200
+
+@app.route('/api/client/<client_id>/report-session', methods=['POST'])
+def report_client_session(client_id):
+    """
+    Permite al cliente reportar su sesión activa al servidor.
+    Útil cuando el servidor se reinicia y pierde la información en memoria,
+    pero el cliente aún tiene su sesión guardada localmente.
+    """
+    if client_id not in clients_db:
+        return jsonify({
+            'success': False,
+            'message': 'Cliente no encontrado'
+        }), 404
+    
+    data = request.json
+    remaining_seconds = data.get('remaining_seconds', 0)
+    time_limit = data.get('time_limit_seconds', remaining_seconds)
+    
+    if remaining_seconds <= 0:
+        return jsonify({
+            'success': False,
+            'message': 'El tiempo restante debe ser mayor a 0'
+        }), 400
+    
+    # Calcular tiempos basados en lo que reporta el cliente
+    end_time = datetime.now() + timedelta(seconds=remaining_seconds)
+    start_time = end_time - timedelta(seconds=time_limit)
+    
+    client_sessions[client_id] = {
+        'time_limit': time_limit,
+        'start_time': start_time.isoformat(),
+        'end_time': end_time.isoformat()
+    }
+    clients_db[client_id]['is_active'] = True
+    
+    print(f"[Reporte] Cliente {client_id[:8]}... reportó sesión: {remaining_seconds}s restantes de {time_limit}s totales")
+    
+    return jsonify({
+        'success': True,
+        'message': f'Sesión reportada: {remaining_seconds} segundos restantes',
+        'session': {
+            'time_limit_seconds': time_limit,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'remaining_seconds': remaining_seconds
+        }
     }), 200
 
 @app.route('/api/client/<client_id>/stop', methods=['POST'])
