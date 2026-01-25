@@ -15,8 +15,6 @@ services:
     volumes:
       # Opcional: montar logs si los agregas en el futuro
       - ./logs:/app/logs
-      # Persistir datos del servidor (clientes y sesiones)
-      - ./server_data:/app/server_data
     restart: unless-stopped
     networks:
       - cibermonday-network

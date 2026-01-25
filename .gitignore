@@ -33,8 +33,6 @@ client/*.spec
 
 # Servidor
 server/__pycache__/
-server/server_data.json
-server_data/
 
 # IDE
 .vscode/

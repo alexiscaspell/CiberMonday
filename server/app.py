@@ -5,7 +5,6 @@ import uuid
 import threading
 import time
 import os
-import json
 
 app = Flask(__name__, template_folder='templates')
 CORS(app)
@@ -13,68 +12,6 @@ CORS(app)
 # Base de datos en memoria (en producción usarías una BD real)
 clients_db = {}
 client_sessions = {}
-
-# Archivo para persistir datos del servidor
-# En Docker, usar el directorio del volumen; en local, usar el directorio del servidor
-if os.path.exists('/app/server_data'):
-    # Ejecutándose en Docker
-    DATA_DIR = '/app/server_data'
-else:
-    # Ejecutándose localmente
-    DATA_DIR = os.path.dirname(__file__)
-
-# Crear directorio si no existe
-os.makedirs(DATA_DIR, exist_ok=True)
-DATA_FILE = os.path.join(DATA_DIR, 'server_data.json')
-
-def save_server_data():
-    """Guarda los datos del servidor en un archivo JSON"""
-    try:
-        data = {
-            'clients_db': clients_db,
-            'client_sessions': client_sessions,
-            'last_saved': datetime.now().isoformat()
-        }
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        print(f"Error al guardar datos del servidor: {e}")
-        return False
-
-def load_server_data():
-    """Carga los datos del servidor desde un archivo JSON"""
-    global clients_db, client_sessions
-    try:
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                clients_db = data.get('clients_db', {})
-                client_sessions = data.get('client_sessions', {})
-                
-                # Limpiar sesiones expiradas al cargar
-                now = datetime.now()
-                expired_sessions = []
-                for client_id, session in client_sessions.items():
-                    end_time = datetime.fromisoformat(session['end_time'])
-                    if end_time < now:
-                        expired_sessions.append(client_id)
-                
-                for client_id in expired_sessions:
-                    del client_sessions[client_id]
-                    if client_id in clients_db:
-                        clients_db[client_id]['is_active'] = False
-                
-                print(f"Datos del servidor cargados: {len(clients_db)} clientes, {len(client_sessions)} sesiones activas")
-                if expired_sessions:
-                    print(f"  - {len(expired_sessions)} sesiones expiradas fueron limpiadas")
-                return True
-        else:
-            print("No se encontró archivo de datos. Iniciando con base de datos vacía.")
-            return False
-    except Exception as e:
-        print(f"Error al cargar datos del servidor: {e}")
-        return False
 
 def generate_client_id():
     """Genera un ID único para cada cliente"""
@@ -94,8 +31,6 @@ def register_client():
         'total_time_used': 0,
         'is_active': False
     }
-    
-    save_server_data()
     
     return jsonify({
         'success': True,
@@ -163,7 +98,6 @@ def set_client_time(client_id):
     }
     
     clients_db[client_id]['is_active'] = True
-    save_server_data()
     
     return jsonify({
         'success': True,
@@ -186,69 +120,21 @@ def get_client_status(client_id):
     
     client_data = clients_db[client_id].copy()
     
-    # Verificar si hay sesión en el servidor
     if client_id in client_sessions:
         session = client_sessions[client_id]
         end_time = datetime.fromisoformat(session['end_time'])
         remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
         is_expired = remaining_seconds == 0
         
-        # Si la sesión expiró, limpiarla
-        if is_expired:
-            del client_sessions[client_id]
-            clients_db[client_id]['is_active'] = False
-            save_server_data()
-            client_data['session'] = None
-        else:
-            client_data['session'] = {
-                'time_limit_seconds': session['time_limit'],
-                'start_time': session['start_time'],
-                'end_time': session['end_time'],
-                'remaining_seconds': remaining_seconds,
-                'is_expired': is_expired
-            }
+        client_data['session'] = {
+            'time_limit_seconds': session['time_limit'],
+            'start_time': session['start_time'],
+            'end_time': session['end_time'],
+            'remaining_seconds': remaining_seconds,
+            'is_expired': is_expired
+        }
     else:
-        # Si el servidor no tiene sesión, verificar si el cliente reporta una sesión activa
-        # Esto permite recuperar sesiones después de reiniciar el servidor
-        client_session_data = request.args.get('session_data')
-        if client_session_data:
-            try:
-                # El cliente puede enviar su información de sesión local como parámetro
-                import urllib.parse
-                session_info = json.loads(urllib.parse.unquote(client_session_data))
-                
-                # Recuperar sesión del cliente
-                time_limit = session_info.get('time_limit_seconds', 0)
-                end_time_str = session_info.get('end_time')
-                start_time_str = session_info.get('start_time')
-                
-                if time_limit > 0 and end_time_str:
-                    end_time = datetime.fromisoformat(end_time_str)
-                    remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
-                    
-                    if remaining_seconds > 0:
-                        # Recuperar la sesión en el servidor
-                        client_sessions[client_id] = {
-                            'time_limit': time_limit,
-                            'start_time': start_time_str or datetime.now().isoformat(),
-                            'end_time': end_time_str
-                        }
-                        clients_db[client_id]['is_active'] = True
-                        save_server_data()
-                        
-                        client_data['session'] = {
-                            'time_limit_seconds': time_limit,
-                            'start_time': start_time_str or datetime.now().isoformat(),
-                            'end_time': end_time_str,
-                            'remaining_seconds': remaining_seconds,
-                            'is_expired': False
-                        }
-                        print(f"[Recuperación] Sesión recuperada para cliente {client_id}: {remaining_seconds}s restantes")
-            except Exception as e:
-                print(f"[Advertencia] Error al recuperar sesión del cliente: {e}")
-        
-        if not client_data.get('session'):
-            client_data['session'] = None
+        client_data['session'] = None
     
     return jsonify({
         'success': True,
@@ -274,7 +160,6 @@ def stop_client_session(client_id):
         clients_db[client_id]['total_time_used'] += time_used
         del client_sessions[client_id]
         clients_db[client_id]['is_active'] = False
-        save_server_data()
     
     return jsonify({
         'success': True,
@@ -294,7 +179,6 @@ def delete_client(client_id):
         del client_sessions[client_id]
     
     del clients_db[client_id]
-    save_server_data()
     
     return jsonify({
         'success': True,
@@ -316,9 +200,6 @@ def index():
     return render_template('index.html')
 
 if __name__ == '__main__':
-    # Cargar datos persistidos al iniciar
-    load_server_data()
-    
     # Obtener configuración desde variables de entorno
     host = os.getenv('HOST', '0.0.0.0')
     port = int(os.getenv('PORT', 5000))
@@ -328,7 +209,6 @@ if __name__ == '__main__':
     print("Servidor CiberMonday iniciado")
     print("=" * 50)
     print(f"API disponible en: http://{host}:{port}")
-    print(f"Datos persistidos en: {DATA_FILE}")
     print("Endpoints disponibles:")
     print("  POST   /api/register - Registrar nuevo cliente")
     print("  GET    /api/clients - Listar todos los clientes")

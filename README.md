@@ -7,7 +7,6 @@ Sistema de gestión de tiempo de uso para múltiples clientes, similar a los sof
 - [Arquitectura](#arquitectura)
 - [Instalación del Servidor](#instalación-del-servidor)
 - [Instalación del Cliente](#instalación-del-cliente)
-  - [Guía Detallada de Instalación del Cliente](client/GUIA_INSTALACION.md)
 - [Guía de Uso](#guía-de-uso)
 - [Características](#características)
 - [Solución de Problemas](#solución-de-problemas)
@@ -179,69 +178,138 @@ http://localhost:5000
 
 ## 💻 Instalación del Cliente
 
-> 📖 **Para una guía detallada paso a paso, consulta:** [`client/GUIA_INSTALACION.md`](client/GUIA_INSTALACION.md)
+### Opción 1: Ejecutables Pre-compilados (⭐ MÁS FÁCIL)
 
-### Resumen Rápido
+#### Paso 1: Descargar Release
 
-#### Opción 1: Ejecutables Pre-compilados (⭐ RECOMENDADO)
+**Opción A: Desde Releases existentes**
+1. Ve a **Releases** en GitHub
+2. Descarga la última versión
+3. Extrae **todos los archivos** en una carpeta (ej: `C:\CiberMonday\`)
 
-1. **Descargar Release:**
-   - Ve a **Releases** en GitHub y descarga la última versión
-   - O compila desde **Actions** → **Build Windows Client**
+**Opción B: Compilar nuevo release**
+1. Ve a **Actions** → **Build Windows Client**
+2. Haz clic en **"Run workflow"**
+3. Ingresa la versión (ej: `1.0.0`)
+4. Marca "prerelease" si es necesario
+5. Haz clic en **"Run workflow"**
+6. Espera a que termine (5-10 minutos)
+7. Ve a **Releases** para descargar los ejecutables
 
-2. **Extraer archivos** en una carpeta (ej: `C:\CiberMonday\`)
-
-3. **Ejecutar como Administrador:**
-   ```bash
-   CiberMondayClient.exe
-   ```
-
-4. **Configurar:**
-   - Se abrirá una ventana GUI automáticamente
-   - Ingresa la URL del servidor (ej: `http://192.168.1.100:5000`)
-   - Haz clic en "Guardar y Continuar"
-
-5. **Instalar como Servicio (Opcional pero recomendado):**
-   ```bash
-   install_exe_service.bat
-   ```
-
-**Archivos incluidos:**
+**Archivos incluidos en el release:**
 ```
-📦 Release
+📦 Release v1.0.0
 ├── 📄 CiberMondayClient.exe      (Cliente principal)
 ├── 📄 CiberMondayService.exe     (Servicio Windows)
 ├── 📄 CiberMondayWatchdog.exe    (Watchdog)
 └── 📄 install_exe_service.bat    (Instalador)
 ```
 
-#### Opción 2: Desde Código Fuente
+#### Paso 2: Configurar (Ventana GUI Automática)
 
-1. **Copiar carpeta `client`** a la PC Windows
-2. **Instalar dependencias:**
-   ```bash
-   pip install requests pywin32
-   ```
-3. **Ejecutar:**
-   ```bash
-   python client.py
-   ```
-   - Se abrirá la GUI de configuración automáticamente
-4. **O instalar como servicio:**
-   ```bash
-   install_service.bat
-   ```
+**✨ Ya no necesitas `config.py` - El cliente tiene interfaz gráfica integrada**
 
-### Características de la Configuración
+Al ejecutar el cliente por primera vez, se abrirá automáticamente una ventana de configuración:
 
-- ✅ **Interfaz gráfica integrada** - No necesitas editar archivos
-- ✅ **Configuración persistente** - Se guarda en el Registro de Windows
-- ✅ **Reconfigurable** - La ventana aparece cada vez que ejecutas el cliente
-- ✅ **Sin `config.py`** - Todo se gestiona desde la GUI
+```
+┌─────────────────────────────────────────────┐
+│  🖥️ Configuración de CiberMonday          │
+├─────────────────────────────────────────────┤
+│                                             │
+│  Ingresa la dirección del servidor para    │
+│  conectarte:                                │
+│                                             │
+│  URL del Servidor:                          │
+│  ┌─────────────────────────────────────┐   │
+│  │ http://192.168.1.100:5000          │   │
+│  └─────────────────────────────────────┘   │
+│                                             │
+│  Ejemplos:                                   │
+│  • http://localhost:5000 (servidor local)   │
+│  • http://192.168.1.100:5000 (red local)    │
+│                                             │
+│  [Cancelar]        [Guardar y Continuar]    │
+└─────────────────────────────────────────────┘
+```
 
-### Verificación
+**Cómo funciona:**
+1. **Primera vez**: Ejecuta `CiberMondayClient.exe` como Administrador
+   - Se abre la ventana de configuración vacía
+   - Ingresa la URL del servidor (ej: `http://192.168.1.100:5000`)
+   - Haz clic en **"Guardar y Continuar"**
 
-Una vez instalado, el cliente mostrará:
+2. **Ejecuciones siguientes**: Cada vez que ejecutas el cliente
+   - Se abre la ventana con los valores actuales cargados
+   - Puedes modificar la URL del servidor si es necesario
+   - Haz clic en **"Actualizar y Continuar"** para guardar cambios
+   - O haz clic en **"Usar Valores Actuales"** para continuar sin cambios
+
+3. La configuración se guarda automáticamente en el registro de Windows
+4. El cliente se conectará al servidor con la configuración guardada
+
+**Estructura de archivos:**
+```
+C:\CiberMonday\
+├── CiberMondayClient.exe
+├── CiberMondayService.exe
+├── CiberMondayWatchdog.exe
+└── install_exe_service.bat
+```
+
+**Nota**: 
+- La configuración se guarda en el registro de Windows (`HKEY_LOCAL_MACHINE\SOFTWARE\CiberMonday`)
+- **Cada vez que ejecutas el cliente**, se abre la ventana de configuración con los valores actuales
+- Puedes modificar la URL del servidor en cualquier momento
+- Si haces clic en "Usar Valores Actuales", continúa con la configuración guardada sin cambios
+
+#### Paso 3: Instalar como Servicio (Recomendado)
+```bash
+# Ejecutar como Administrador
+install_exe_service.bat
+```
+
+**O ejecutar directamente:**
+```bash
+# Ejecutar como Administrador
+CiberMondayClient.exe
+```
+
+### Opción 2: Desde Código Fuente
+
+#### Paso 1: Copiar Archivos
+Copia la carpeta `client` a la PC Windows.
+
+#### Paso 2: Instalar Dependencias
+```bash
+pip install requests pywin32
+```
+
+#### Paso 3: Configurar
+
+**Opción A: Usando la GUI (Recomendado)**
+Al ejecutar `client.py` por primera vez, se abrirá una ventana de configuración donde puedes ingresar la URL del servidor.
+
+**Opción B: Configuración manual en registro**
+Si prefieres configurar manualmente, puedes editar el registro de Windows:
+- Clave: `HKEY_LOCAL_MACHINE\SOFTWARE\CiberMonday`
+- Valor: `Config` (JSON con `server_url`)
+
+**Nota**: Ya no se usa `config.py` - la configuración se guarda en el registro de Windows.
+
+#### Paso 4: Ejecutar
+
+**Opción A: Ejecución Normal**
+```bash
+python client.py
+```
+
+**Opción B: Como Servicio (Recomendado)**
+```bash
+# Ejecutar como Administrador
+install_service.bat
+```
+
+**Salida esperada del cliente:**
 ```
 ==================================================
 Cliente CiberMonday iniciado
@@ -251,9 +319,8 @@ Servidor: http://192.168.1.100:5000
 Modo: Registro local (funciona sin conexión continua)
 Esperando asignación de tiempo...
 ==================================================
+Tiempo restante: 45m 30s
 ```
-
-**El cliente aparecerá automáticamente en el panel web del servidor.**
 
 ## 📖 Guía de Uso
 
@@ -275,15 +342,29 @@ cd server && python app.py
 
 #### 2️⃣ Instalar Cliente en PC Windows
 
-> 📖 **Consulta la guía detallada:** [`client/GUIA_INSTALACION.md`](client/GUIA_INSTALACION.md)
+```bash
+# En la PC cliente (Windows)
+# 1. Descargar release de GitHub
+# 2. Extraer archivos en una carpeta
+# 3. Ejecutar como Administrador:
+CiberMondayClient.exe
+# O instalar como servicio:
+install_exe_service.bat
+```
 
-**Resumen rápido:**
-1. Descargar release de GitHub o compilar desde código fuente
-2. Ejecutar `CiberMondayClient.exe` como Administrador
-3. Configurar URL del servidor en la ventana GUI que aparece automáticamente
-4. (Opcional) Instalar como servicio con `install_exe_service.bat`
+**Primera vez - Ventana de configuración:**
+```
+Se abre automáticamente una ventana donde ingresas:
+• URL del servidor: http://192.168.1.100:5000
+• Haz clic en "Guardar y Continuar"
+```
 
-El cliente se registrará automáticamente en el servidor y aparecerá en el panel web.
+**El cliente se registrará automáticamente:**
+```
+[Cliente] Registrando en servidor...
+[Cliente] ✅ Cliente registrado. ID: abc123-def456
+[Cliente] Esperando asignación de tiempo...
+```
 
 #### 3️⃣ Asignar Tiempo desde el Panel Web
 
