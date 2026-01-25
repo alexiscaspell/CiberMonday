@@ -228,7 +228,7 @@ def save_config_to_registry(config):
     Guarda la configuración del cliente en el registro
     
     Args:
-        config: dict con 'server_url' y opcionalmente 'check_interval'
+        config: dict con configuración completa del cliente
     
     Returns:
         bool: True si se guardó correctamente
@@ -239,9 +239,15 @@ def save_config_to_registry(config):
             return False
         
         import json
+        # Guardar todos los campos de configuración con valores por defecto
         config_data = {
             'server_url': config.get('server_url', 'http://localhost:5000'),
-            'check_interval': config.get('check_interval', 5)
+            'check_interval': config.get('check_interval', 5),
+            'sync_interval': config.get('sync_interval', 30),
+            'local_check_interval': config.get('local_check_interval', 1),
+            'expired_sync_interval': config.get('expired_sync_interval', 2),
+            'lock_delay': config.get('lock_delay', 2),
+            'warning_thresholds': config.get('warning_thresholds', [10, 5, 2, 1])
         }
         
         json_data = json.dumps(config_data)
