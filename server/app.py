@@ -268,7 +268,42 @@ def get_client_status(client_id):
     
     client_data = clients_db[client_id].copy()
     
-    # Verificar si hay sesión en el servidor
+    # PRIMERO: Verificar si el cliente está enviando su sesión local
+    # Esto tiene prioridad sobre la sesión del servidor para asegurar que siempre tenemos la información más reciente
+    client_session_data = request.args.get('session_data')
+    if client_session_data:
+        try:
+            # El cliente puede enviar su información de sesión local como parámetro
+            import urllib.parse
+            session_info = json.loads(urllib.parse.unquote(client_session_data))
+            
+            # Recuperar sesión del cliente
+            time_limit = session_info.get('time_limit_seconds', 0)
+            end_time_str = session_info.get('end_time')
+            start_time_str = session_info.get('start_time')
+            
+            if time_limit > 0 and end_time_str:
+                end_time = datetime.fromisoformat(end_time_str)
+                remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
+                
+                # Actualizar o crear la sesión en el servidor con la información del cliente
+                time_disabled = session_info.get('time_disabled', False)
+                client_sessions[client_id] = {
+                    'time_limit': time_limit,
+                    'start_time': start_time_str or datetime.now().isoformat(),
+                    'end_time': end_time_str,
+                    'time_disabled': time_disabled
+                }
+                # Actualizar flag en clients_db también
+                clients_db[client_id]['time_disabled'] = time_disabled
+                clients_db[client_id]['is_active'] = True
+                save_server_data()
+                
+                print(f"[Recuperación] Sesión actualizada desde cliente {client_id}: {remaining_seconds}s restantes")
+        except Exception as e:
+            print(f"[Advertencia] Error al recuperar sesión del cliente: {e}")
+    
+    # Verificar si hay sesión en el servidor (ahora actualizada con la del cliente si la envió)
     if client_id in client_sessions:
         session = client_sessions[client_id]
         time_disabled = session.get('time_disabled', False)
@@ -299,74 +334,35 @@ def get_client_status(client_id):
                 'is_expired': is_expired,
                 'time_disabled': time_disabled  # Incluir flag en la respuesta
             }
-            # Actualizar flag en clients_db para referencia
+            # Actualizar flag en clients_db para referencia y marcar como activo
             clients_db[client_id]['time_disabled'] = time_disabled
+            clients_db[client_id]['is_active'] = True
+            save_server_data()
     else:
-        # Verificar si se solicitó forzar sincronización
-        force_sync = clients_db[client_id].get('force_sync', False)
-        
-        # Obtener configuración del cliente si se envía
-        client_config_data = request.args.get('client_config')
-        if client_config_data:
-            try:
-                import urllib.parse
-                config_info = json.loads(urllib.parse.unquote(client_config_data))
-                # Guardar configuración del cliente en el servidor
-                clients_db[client_id]['config'] = config_info
-                # Marcar cliente como activo cuando envía su configuración
-                clients_db[client_id]['is_active'] = True
-                # Si había una solicitud de force_sync, limpiarla
-                if force_sync:
-                    clients_db[client_id].pop('force_sync', None)
-                    print(f"[Refresh] Configuración actualizada desde cliente {client_id}")
-                save_server_data()
-            except Exception as e:
-                print(f"[Advertencia] Error al recibir configuración del cliente: {e}")
-        
-        # Si el servidor no tiene sesión, verificar si el cliente reporta una sesión activa
-        # Esto permite recuperar sesiones después de reiniciar el servidor
-        client_session_data = request.args.get('session_data')
-        if client_session_data:
-            try:
-                # El cliente puede enviar su información de sesión local como parámetro
-                import urllib.parse
-                session_info = json.loads(urllib.parse.unquote(client_session_data))
-                
-                # Recuperar sesión del cliente
-                time_limit = session_info.get('time_limit_seconds', 0)
-                end_time_str = session_info.get('end_time')
-                start_time_str = session_info.get('start_time')
-                
-                if time_limit > 0 and end_time_str:
-                    end_time = datetime.fromisoformat(end_time_str)
-                    remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
-                    
-                    if remaining_seconds > 0:
-                        # Recuperar la sesión en el servidor
-                        client_sessions[client_id] = {
-                            'time_limit': time_limit,
-                            'start_time': start_time_str or datetime.now().isoformat(),
-                            'end_time': end_time_str
-                        }
-                        clients_db[client_id]['is_active'] = True
-                        save_server_data()
-                        
-                        client_data['session'] = {
-                            'time_limit_seconds': time_limit,
-                            'start_time': start_time_str or datetime.now().isoformat(),
-                            'end_time': end_time_str,
-                            'remaining_seconds': remaining_seconds,
-                            'is_expired': False
-                        }
-                        print(f"[Recuperación] Sesión recuperada para cliente {client_id}: {remaining_seconds}s restantes")
-            except Exception as e:
-                print(f"[Advertencia] Error al recuperar sesión del cliente: {e}")
-        
+        # Si no hay sesión después de procesar la del cliente, establecer None
         if not client_data.get('session'):
             client_data['session'] = None
     
-        # Verificar si se solicitó forzar sincronización
-        force_sync = clients_db[client_id].get('force_sync', False)
+    # Verificar si se solicitó forzar sincronización (esto se hace siempre, tenga o no sesión)
+    force_sync = clients_db[client_id].get('force_sync', False)
+    
+    # Obtener configuración del cliente si se envía (esto también se hace siempre)
+    client_config_data = request.args.get('client_config')
+    if client_config_data:
+        try:
+            import urllib.parse
+            config_info = json.loads(urllib.parse.unquote(client_config_data))
+            # Guardar configuración del cliente en el servidor
+            clients_db[client_id]['config'] = config_info
+            # Marcar cliente como activo cuando envía su configuración
+            clients_db[client_id]['is_active'] = True
+            # Si había una solicitud de force_sync, limpiarla
+            if force_sync:
+                clients_db[client_id].pop('force_sync', None)
+                print(f"[Refresh] Configuración actualizada desde cliente {client_id}")
+            save_server_data()
+        except Exception as e:
+            print(f"[Advertencia] Error al recibir configuración del cliente: {e}")
         
         # Comparar configuración del cliente con la del servidor
         # Solo enviar server_config si hay diferencias O si se solicitó force_sync
