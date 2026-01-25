@@ -283,6 +283,99 @@
         .copy-tooltip.show {
             opacity: 1;
         }
+        
+        /* Estilos para configuración de cliente */
+        .config-section {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+        
+        .config-toggle {
+            background: none;
+            border: none;
+            color: #667eea;
+            cursor: pointer;
+            font-size: 13px;
+            padding: 5px 0;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .config-toggle:hover {
+            text-decoration: underline;
+        }
+        
+        .config-panel {
+            display: none;
+            margin-top: 10px;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+        }
+        
+        .config-panel.open {
+            display: block;
+        }
+        
+        .config-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            gap: 10px;
+        }
+        
+        .config-row:last-child {
+            margin-bottom: 0;
+        }
+        
+        .config-label {
+            flex: 0 0 140px;
+            font-size: 13px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        .config-input {
+            flex: 1;
+            padding: 8px 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .config-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .config-help {
+            font-size: 11px;
+            color: #888;
+            margin-top: 3px;
+        }
+        
+        .btn-config {
+            padding: 8px 16px;
+            font-size: 13px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .btn-config:hover {
+            background: #5568d3;
+        }
+        
+        .config-status {
+            font-size: 12px;
+            margin-left: 10px;
+            color: #4CAF50;
+        }
     </style>
 </head>
 <body>
@@ -549,9 +642,113 @@
                                 Eliminar
                             </button>
                         </div>
+                        
+                        <div class="config-section">
+                            <button class="config-toggle" onclick="toggleConfig('${client.id}')">
+                                ⚙️ <span id="config-toggle-text-${client.id}">Mostrar configuración</span>
+                            </button>
+                            <div class="config-panel" id="config-panel-${client.id}">
+                                <div class="config-row">
+                                    <label class="config-label">Sincronización:</label>
+                                    <input type="number" class="config-input" id="config-sync-${client.id}" 
+                                           value="${client.config?.sync_interval || 30}" min="5" max="300">
+                                    <span style="font-size: 12px; color: #666;">seg</span>
+                                </div>
+                                <div class="config-help">Cada cuánto el cliente sincroniza con el servidor (mín: 5s)</div>
+                                
+                                <div class="config-row" style="margin-top: 15px;">
+                                    <label class="config-label">Alertas (seg):</label>
+                                    <input type="text" class="config-input" id="config-alerts-${client.id}" 
+                                           value="${(client.config?.alert_thresholds || [600, 300, 120, 60]).join(', ')}"
+                                           placeholder="600, 300, 120, 60">
+                                </div>
+                                <div class="config-help">Segundos en que aparecen alertas (ej: 600=10min, 300=5min, 120=2min, 60=1min)</div>
+                                
+                                <div class="config-row" style="margin-top: 15px;">
+                                    <button class="btn-config" onclick="saveConfig('${client.id}')">
+                                        💾 Guardar configuración
+                                    </button>
+                                    <span class="config-status" id="config-status-${client.id}"></span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 `;
             }).join('');
+        }
+        
+        function toggleConfig(clientId) {
+            const panel = document.getElementById(`config-panel-${clientId}`);
+            const toggleText = document.getElementById(`config-toggle-text-${clientId}`);
+            
+            if (panel.classList.contains('open')) {
+                panel.classList.remove('open');
+                toggleText.textContent = 'Mostrar configuración';
+            } else {
+                panel.classList.add('open');
+                toggleText.textContent = 'Ocultar configuración';
+            }
+        }
+        
+        async function saveConfig(clientId) {
+            const syncInput = document.getElementById(`config-sync-${clientId}`);
+            const alertsInput = document.getElementById(`config-alerts-${clientId}`);
+            const statusEl = document.getElementById(`config-status-${clientId}`);
+            
+            const syncInterval = parseInt(syncInput.value);
+            
+            // Parsear umbrales de alerta
+            const alertsStr = alertsInput.value;
+            const alertThresholds = alertsStr.split(',')
+                .map(s => parseInt(s.trim()))
+                .filter(n => !isNaN(n) && n > 0);
+            
+            if (syncInterval < 5) {
+                alert('El intervalo de sincronización mínimo es 5 segundos');
+                return;
+            }
+            
+            if (alertThresholds.length === 0) {
+                alert('Debes especificar al menos un umbral de alerta');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/client/${clientId}/config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        sync_interval: syncInterval,
+                        alert_thresholds: alertThresholds
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusEl.textContent = '✓ Guardado';
+                    statusEl.style.color = '#4CAF50';
+                    
+                    // Actualizar el input de alertas con los valores ordenados del servidor
+                    if (data.config?.alert_thresholds) {
+                        alertsInput.value = data.config.alert_thresholds.join(', ');
+                    }
+                    
+                    setTimeout(() => {
+                        statusEl.textContent = '';
+                    }, 3000);
+                } else {
+                    statusEl.textContent = '✗ Error';
+                    statusEl.style.color = '#f44336';
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                statusEl.textContent = '✗ Error';
+                statusEl.style.color = '#f44336';
+                alert('Error al guardar configuración: ' + error.message);
+            }
         }
         
         async function setTime(clientId) {

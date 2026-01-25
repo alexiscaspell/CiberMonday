@@ -13,6 +13,13 @@ CORS(app)
 # Base de datos en memoria (en producción usarías una BD real)
 clients_db = {}
 client_sessions = {}
+client_configs = {}  # Configuración de cada cliente
+
+# Configuración por defecto para clientes
+DEFAULT_CLIENT_CONFIG = {
+    'sync_interval': 30,           # Segundos entre sincronizaciones
+    'alert_thresholds': [600, 300, 120, 60],  # Alertas a los 10, 5, 2, 1 minutos
+}
 
 def generate_client_id():
     """Genera un ID único para cada cliente"""
@@ -24,11 +31,13 @@ def register_client():
     Registra un nuevo cliente o re-registra uno existente.
     Si se envía client_id, se re-registra el cliente con ese ID.
     Si se envía session_data, se restaura la sesión del cliente.
+    Si se envía config, se almacena la configuración del cliente.
     """
     data = request.json
     client_name = data.get('name', 'Cliente Sin Nombre')
     existing_client_id = data.get('client_id')  # ID existente para re-registro
     session_data = data.get('session')  # Sesión activa del cliente
+    client_config = data.get('config')  # Configuración del cliente
     
     # Determinar si es re-registro o nuevo registro
     if existing_client_id:
@@ -46,6 +55,18 @@ def register_client():
         'total_time_used': 0,
         'is_active': False
     }
+    
+    # Almacenar configuración del cliente (o usar la existente si es re-registro)
+    if client_config:
+        # El cliente envió su configuración actual
+        client_configs[client_id] = {
+            'sync_interval': client_config.get('sync_interval', DEFAULT_CLIENT_CONFIG['sync_interval']),
+            'alert_thresholds': client_config.get('alert_thresholds', DEFAULT_CLIENT_CONFIG['alert_thresholds']),
+        }
+        print(f"[Registro] Cliente {client_id[:8]}... envió configuración: sync={client_configs[client_id]['sync_interval']}s, alertas={client_configs[client_id]['alert_thresholds']}")
+    elif client_id not in client_configs:
+        # Nuevo cliente sin configuración - usar valores por defecto
+        client_configs[client_id] = DEFAULT_CLIENT_CONFIG.copy()
     
     # Si el cliente envía datos de sesión, restaurarla
     if session_data:
@@ -72,7 +93,8 @@ def register_client():
         'success': True,
         'client_id': client_id,
         'message': message,
-        'session_restored': session_data is not None and client_id in client_sessions
+        'session_restored': session_data is not None and client_id in client_sessions,
+        'config': client_configs.get(client_id, DEFAULT_CLIENT_CONFIG)
     }), 201
 
 @app.route('/api/clients', methods=['GET'])
@@ -93,6 +115,9 @@ def get_clients():
                 'end_time': session['end_time'],
                 'remaining_seconds': remaining_seconds
             }
+        
+        # Incluir configuración del cliente
+        client_info['config'] = client_configs.get(client_id, DEFAULT_CLIENT_CONFIG.copy())
         clients_list.append(client_info)
     
     return jsonify({
@@ -148,7 +173,7 @@ def set_client_time(client_id):
 
 @app.route('/api/client/<client_id>/status', methods=['GET'])
 def get_client_status(client_id):
-    """Obtiene el estado actual de un cliente"""
+    """Obtiene el estado actual de un cliente, incluyendo su configuración"""
     if client_id not in clients_db:
         return jsonify({
             'success': False,
@@ -173,9 +198,73 @@ def get_client_status(client_id):
     else:
         client_data['session'] = None
     
+    # Incluir configuración del cliente
+    client_data['config'] = client_configs.get(client_id, DEFAULT_CLIENT_CONFIG.copy())
+    
     return jsonify({
         'success': True,
         'client': client_data
+    }), 200
+
+@app.route('/api/client/<client_id>/config', methods=['GET'])
+def get_client_config(client_id):
+    """Obtiene la configuración de un cliente"""
+    if client_id not in clients_db:
+        return jsonify({
+            'success': False,
+            'message': 'Cliente no encontrado'
+        }), 404
+    
+    config = client_configs.get(client_id, DEFAULT_CLIENT_CONFIG.copy())
+    
+    return jsonify({
+        'success': True,
+        'config': config
+    }), 200
+
+@app.route('/api/client/<client_id>/config', methods=['POST'])
+def set_client_config(client_id):
+    """Modifica la configuración de un cliente"""
+    if client_id not in clients_db:
+        return jsonify({
+            'success': False,
+            'message': 'Cliente no encontrado'
+        }), 404
+    
+    data = request.json
+    
+    # Obtener configuración actual o usar defaults
+    current_config = client_configs.get(client_id, DEFAULT_CLIENT_CONFIG.copy())
+    
+    # Actualizar solo los campos enviados
+    if 'sync_interval' in data:
+        sync_interval = int(data['sync_interval'])
+        if sync_interval < 5:
+            return jsonify({
+                'success': False,
+                'message': 'El intervalo de sincronización mínimo es 5 segundos'
+            }), 400
+        current_config['sync_interval'] = sync_interval
+    
+    if 'alert_thresholds' in data:
+        thresholds = data['alert_thresholds']
+        if isinstance(thresholds, list) and all(isinstance(t, int) and t > 0 for t in thresholds):
+            # Ordenar de mayor a menor
+            current_config['alert_thresholds'] = sorted(thresholds, reverse=True)
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Los umbrales de alerta deben ser una lista de números positivos'
+            }), 400
+    
+    client_configs[client_id] = current_config
+    
+    print(f"[Config] Cliente {client_id[:8]}... configuración actualizada: {current_config}")
+    
+    return jsonify({
+        'success': True,
+        'message': 'Configuración actualizada',
+        'config': current_config
     }), 200
 
 @app.route('/api/client/<client_id>/report-session', methods=['POST'])

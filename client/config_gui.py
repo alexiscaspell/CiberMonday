@@ -32,7 +32,7 @@ def show_config_window():
     # Crear ventana principal
     root = tk.Tk()
     root.title("CiberMonday - Configuración del Cliente")
-    root.geometry("500x380")
+    root.geometry("550x450")
     root.resizable(False, False)
     
     # Centrar ventana
@@ -134,6 +134,32 @@ def show_config_window():
     )
     interval_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
     
+    # Frame para umbrales de alerta
+    alerts_frame = ttk.Frame(main_frame)
+    alerts_frame.pack(fill=tk.X, pady=10)
+    
+    # Etiqueta para alertas
+    alerts_label = ttk.Label(alerts_frame, text="Umbrales de Alerta (segundos):")
+    alerts_label.pack(anchor=tk.W, pady=(0, 5))
+    
+    # Campo de entrada para alertas
+    alerts_var = tk.StringVar()
+    # Cargar valor actual si existe
+    current_alerts = current_config.get('alert_thresholds', [600, 300, 120, 60]) if current_config else [600, 300, 120, 60]
+    alerts_var.set(', '.join(map(str, current_alerts)))
+    
+    alerts_entry = ttk.Entry(alerts_frame, textvariable=alerts_var, width=30, font=("Arial", 10))
+    alerts_entry.pack(side=tk.LEFT, pady=(0, 5))
+    
+    # Descripción de alertas
+    alerts_desc = tk.Label(
+        alerts_frame,
+        text="(ej: 600, 300, 120, 60 = alertas a 10, 5, 2, 1 min)",
+        font=("Arial", 8),
+        fg="gray"
+    )
+    alerts_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
+    
     # Frame para botones
     button_frame = ttk.Frame(main_frame)
     button_frame.pack(fill=tk.X, pady=(20, 0))
@@ -164,11 +190,28 @@ def show_config_window():
             messagebox.showerror("Error", "El intervalo de sincronización debe ser un número válido")
             return
         
+        # Validar umbrales de alerta
+        try:
+            alerts_str = alerts_var.get().strip()
+            alert_thresholds = [int(x.strip()) for x in alerts_str.split(',') if x.strip()]
+            if len(alert_thresholds) == 0:
+                messagebox.showerror("Error", "Debes especificar al menos un umbral de alerta")
+                return
+            if any(t <= 0 for t in alert_thresholds):
+                messagebox.showerror("Error", "Los umbrales de alerta deben ser números positivos")
+                return
+            # Ordenar de mayor a menor
+            alert_thresholds = sorted(alert_thresholds, reverse=True)
+        except ValueError:
+            messagebox.showerror("Error", "Los umbrales de alerta deben ser números separados por comas")
+            return
+        
         # Guardar configuración
         config = {
             'server_url': server_url,
             'check_interval': 5,  # Mantener para compatibilidad
-            'sync_interval': sync_interval
+            'sync_interval': sync_interval,
+            'alert_thresholds': alert_thresholds
         }
         
         if REGISTRY_AVAILABLE:
@@ -191,6 +234,7 @@ def show_config_window():
                     f.write(f'SERVER_URL = "{server_url}"\n')
                     f.write(f'CHECK_INTERVAL = 5\n')
                     f.write(f'SYNC_INTERVAL = {sync_interval}\n')
+                    f.write(f'ALERT_THRESHOLDS = {alert_thresholds}\n')
                 config_result = config
                 root.quit()
                 root.destroy()

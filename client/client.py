@@ -30,7 +30,9 @@ try:
         is_session_expired,
         get_session_info,
         save_client_id_to_registry,
-        get_client_id_from_registry
+        get_client_id_from_registry,
+        save_config_to_registry,
+        get_config_from_registry
     )
     REGISTRY_AVAILABLE = True
 except ImportError:
@@ -170,12 +172,38 @@ WTS_SESSION_UNLOCK = 0x00000008
 
 # ==================== SISTEMA DE ALERTAS DE TIEMPO ====================
 # Umbrales de alerta en segundos (10min, 5min, 2min, 1min)
-ALERT_THRESHOLDS = [600, 300, 120, 60]  # 10min, 5min, 2min, 1min
+# Se cargan desde la configuración del registro o se usan valores por defecto
+def get_alert_thresholds():
+    """Obtiene los umbrales de alerta desde la configuración"""
+    if REGISTRY_AVAILABLE:
+        try:
+            config = get_config_from_registry()
+            if config and 'alert_thresholds' in config:
+                thresholds = config['alert_thresholds']
+                if isinstance(thresholds, list) and len(thresholds) > 0:
+                    return sorted(thresholds, reverse=True)
+        except:
+            pass
+    return [600, 300, 120, 60]  # Valores por defecto: 10min, 5min, 2min, 1min
+
+ALERT_THRESHOLDS = get_alert_thresholds()
 
 # Diccionario para rastrear qué alertas ya se mostraron
 # Se resetea cuando se asigna nuevo tiempo
 alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
 last_known_remaining = None  # Para detectar cambios drásticos de tiempo
+
+def update_alert_thresholds(new_thresholds):
+    """Actualiza los umbrales de alerta dinámicamente"""
+    global ALERT_THRESHOLDS, alerts_shown
+    
+    if isinstance(new_thresholds, list) and len(new_thresholds) > 0:
+        new_thresholds = sorted(new_thresholds, reverse=True)
+        if new_thresholds != ALERT_THRESHOLDS:
+            print(f"[Config] Umbrales de alerta actualizados: {ALERT_THRESHOLDS} -> {new_thresholds}")
+            ALERT_THRESHOLDS = new_thresholds
+            # Reinicializar el diccionario de alertas mostradas
+            alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
 
 def reset_alerts_for_new_session(remaining_seconds):
     """
@@ -339,7 +367,7 @@ def register_new_client(existing_client_id=None):
     """
     Registra un nuevo cliente en el servidor o re-registra uno existente.
     Si se proporciona existing_client_id, se hace re-registro conservando el ID.
-    También envía la sesión activa si existe en el registro local.
+    También envía la sesión activa y configuración si existen en el registro local.
     """
     try:
         import socket
@@ -363,6 +391,14 @@ def register_new_client(existing_client_id=None):
                         'time_limit_seconds': session_data.get('time_limit_seconds', session_info['remaining_seconds'])
                     }
                     print(f"[Re-registro] Enviando sesión activa: {session_info['remaining_seconds']}s restantes")
+            
+            # Incluir configuración actual del cliente
+            config_data = get_config_from_registry()
+            if config_data:
+                register_data['config'] = {
+                    'sync_interval': config_data.get('sync_interval', 30),
+                    'alert_thresholds': config_data.get('alert_thresholds', [600, 300, 120, 60])
+                }
         
         response = requests.post(
             f"{SERVER_URL}/api/register",
@@ -374,6 +410,7 @@ def register_new_client(existing_client_id=None):
             data = response.json()
             client_id = data['client_id']
             session_restored = data.get('session_restored', False)
+            server_config = data.get('config')
             
             # Guardar el ID del cliente
             client_id_file_path = os.path.join(BASE_PATH, os.path.basename(CLIENT_ID_FILE))
@@ -383,6 +420,10 @@ def register_new_client(existing_client_id=None):
             # También guardar en registro
             if REGISTRY_AVAILABLE:
                 save_client_id_to_registry(client_id)
+                
+                # Aplicar configuración recibida del servidor
+                if server_config:
+                    apply_server_config(server_config)
             
             if existing_client_id:
                 print(f"Cliente re-registrado exitosamente. ID: {client_id}")
@@ -400,6 +441,41 @@ def register_new_client(existing_client_id=None):
         print(f"Error de conexión al servidor: {e}")
         print("Asegúrate de que el servidor esté ejecutándose.")
         return None
+
+def apply_server_config(server_config):
+    """
+    Aplica la configuración recibida del servidor.
+    Actualiza el registro local y las variables globales.
+    """
+    global SYNC_INTERVAL_CONFIG
+    
+    if not server_config:
+        return
+    
+    try:
+        # Obtener configuración actual
+        current_config = get_config_from_registry() or {}
+        
+        # Actualizar con valores del servidor
+        if 'sync_interval' in server_config:
+            new_sync = server_config['sync_interval']
+            if new_sync != current_config.get('sync_interval'):
+                print(f"[Config] Intervalo de sincronización: {current_config.get('sync_interval', 30)} -> {new_sync}")
+                current_config['sync_interval'] = new_sync
+                SYNC_INTERVAL_CONFIG = new_sync
+        
+        if 'alert_thresholds' in server_config:
+            new_thresholds = server_config['alert_thresholds']
+            update_alert_thresholds(new_thresholds)
+            current_config['alert_thresholds'] = new_thresholds
+        
+        # Guardar configuración actualizada en el registro
+        # Preservar server_url del registro local
+        current_config['server_url'] = current_config.get('server_url', SERVER_URL)
+        save_config_to_registry(current_config)
+        
+    except Exception as e:
+        print(f"[Config] Error al aplicar configuración del servidor: {e}")
 
 def report_session_to_server(client_id):
     """
@@ -504,6 +580,11 @@ def sync_with_server(client_id):
         
         data = response.json()
         client_data = data.get('client', {})
+        
+        # Aplicar configuración del servidor si está disponible
+        server_config = client_data.get('config')
+        if server_config and REGISTRY_AVAILABLE:
+            apply_server_config(server_config)
         
         session = client_data.get('session')
         

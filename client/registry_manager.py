@@ -228,7 +228,11 @@ def save_config_to_registry(config):
     Guarda la configuración del cliente en el registro
     
     Args:
-        config: dict con 'server_url' y opcionalmente 'check_interval'
+        config: dict con configuración del cliente
+            - server_url: URL del servidor
+            - check_interval: Intervalo de verificación local
+            - sync_interval: Intervalo de sincronización con el servidor
+            - alert_thresholds: Lista de segundos para alertas [600, 300, 120, 60]
     
     Returns:
         bool: True si se guardó correctamente
@@ -241,7 +245,9 @@ def save_config_to_registry(config):
         import json
         config_data = {
             'server_url': config.get('server_url', 'http://localhost:5000'),
-            'check_interval': config.get('check_interval', 5)
+            'check_interval': config.get('check_interval', 5),
+            'sync_interval': config.get('sync_interval', 30),
+            'alert_thresholds': config.get('alert_thresholds', [600, 300, 120, 60])
         }
         
         json_data = json.dumps(config_data)
@@ -270,6 +276,13 @@ def get_config_from_registry():
             
             import json
             config_data = json.loads(json_data)
+            
+            # Asegurar que todos los campos existen con valores por defecto
+            config_data.setdefault('server_url', 'http://localhost:5000')
+            config_data.setdefault('check_interval', 5)
+            config_data.setdefault('sync_interval', 30)
+            config_data.setdefault('alert_thresholds', [600, 300, 120, 60])
+            
             return config_data
         except FileNotFoundError:
             winreg.CloseKey(key)
