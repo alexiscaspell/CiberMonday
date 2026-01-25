@@ -379,6 +379,56 @@ def sync_with_server(client_id):
                 client_id_file_path = os.path.join(BASE_PATH, os.path.basename(CLIENT_ID_FILE))
                 with open(client_id_file_path, 'w') as f:
                     f.write(new_client_id)
+                
+                # IMPORTANTE: Después de re-registrarse, sincronizar inmediatamente
+                # para enviar la sesión local al servidor (si existe)
+                if local_session_data:
+                    print("[Re-registro] Enviando sesión local al servidor...")
+                    # Construir URL con información de sesión local
+                    sync_url = f"{SERVER_URL}/api/client/{new_client_id}/status"
+                    sync_params = []
+                    
+                    # Enviar información de sesión local al servidor para que la recupere
+                    import urllib.parse
+                    session_json = json.dumps({
+                        'time_limit_seconds': local_session_data.get('time_limit_seconds', 0),
+                        'start_time': local_session_data.get('start_time', ''),
+                        'end_time': local_session_data.get('end_time', '')
+                    })
+                    sync_params.append(f"session_data={urllib.parse.quote(session_json)}")
+                    
+                    # También enviar configuración del cliente
+                    if REGISTRY_AVAILABLE:
+                        try:
+                            from registry_manager import get_config_from_registry
+                            client_config = get_config_from_registry()
+                            if client_config:
+                                config_json = json.dumps({
+                                    'sync_interval': client_config.get('sync_interval', 30),
+                                    'local_check_interval': client_config.get('local_check_interval', 1),
+                                    'expired_sync_interval': client_config.get('expired_sync_interval', 2),
+                                    'lock_delay': client_config.get('lock_delay', 2),
+                                    'warning_thresholds': client_config.get('warning_thresholds', [10, 5, 2, 1])
+                                })
+                                sync_params.append(f"client_config={urllib.parse.quote(config_json)}")
+                        except:
+                            pass
+                    
+                    if sync_params:
+                        sync_url += "?" + "&".join(sync_params)
+                    
+                    # Sincronizar con el nuevo ID para recuperar la sesión
+                    try:
+                        sync_response = requests.get(sync_url, timeout=10)
+                        if sync_response.status_code == 200:
+                            sync_data = sync_response.json()
+                            sync_client_data = sync_data.get('client', {})
+                            sync_session = sync_client_data.get('session')
+                            if sync_session:
+                                print(f"[Re-registro] Sesión local recuperada en el servidor: {sync_session.get('remaining_seconds', 0)}s restantes")
+                    except Exception as e:
+                        print(f"[Advertencia] Error al sincronizar sesión después de re-registro: {e}")
+                
                 # Retornar el nuevo ID para que se use en el loop principal
                 return new_client_id
             else:
@@ -448,6 +498,7 @@ def sync_with_server(client_id):
         time_limit = session.get('time_limit_seconds', 0)
         start_time = session.get('start_time')
         end_time = session.get('end_time')
+        time_disabled = session.get('time_disabled', False)
         
         if not all([time_limit, start_time, end_time]):
             print("Advertencia: Datos de sesión incompletos del servidor")
@@ -468,12 +519,17 @@ def sync_with_server(client_id):
         elapsed_seconds = time_limit - remaining_from_server
         start_time_local = now_local - timedelta(seconds=elapsed_seconds)
         
-        print(f"\n[Sincronización] Guardando en registro local:")
-        print(f"  - Tiempo establecido: {time_limit}s ({time_limit//60} min)")
-        print(f"  - Tiempo restante (servidor): {remaining_from_server}s")
-        print(f"  - Hora actual (cliente): {now_local.isoformat()}")
-        print(f"  - End time (local, guardado): {end_time_local.isoformat()}")
-        print(f"  - El cliente bloqueará cuando llegue a: {end_time_local.isoformat()}")
+        if time_disabled:
+            print(f"\n[Sincronización] Guardando en registro local:")
+            print(f"  - Estado: Tiempo deshabilitado (bloqueo desactivado)")
+            print(f"  - Cliente permanecerá activo sin límite de tiempo")
+        else:
+            print(f"\n[Sincronización] Guardando en registro local:")
+            print(f"  - Tiempo establecido: {time_limit}s ({time_limit//60} min)")
+            print(f"  - Tiempo restante (servidor): {remaining_from_server}s")
+            print(f"  - Hora actual (cliente): {now_local.isoformat()}")
+            print(f"  - End time (local, guardado): {end_time_local.isoformat()}")
+            print(f"  - El cliente bloqueará cuando llegue a: {end_time_local.isoformat()}")
         
         # Usar los valores calculados localmente
         end_time = end_time_local.isoformat()
@@ -490,10 +546,12 @@ def sync_with_server(client_id):
             time_module.sleep(0.1)
             
             # Guardar nueva sesión con valores corregidos (start_time y end_time locales)
+            # También guardar el flag time_disabled en el registro
             success = save_session_to_registry(
                 time_limit,
                 start_time,  # start_time corregido local
-                end_time     # end_time corregido local
+                end_time,    # end_time corregido local
+                time_disabled  # flag de tiempo deshabilitado
             )
             
             if success:
@@ -719,6 +777,7 @@ def monitor_time(client_id):
                 
                 remaining_seconds = session_info['remaining_seconds']
                 is_expired = session_info['is_expired']
+                time_disabled = session_info.get('time_disabled', False)
             else:
                 # Fallback: consultar servidor directamente
                 client_data = check_server_status(client_id)
@@ -736,9 +795,10 @@ def monitor_time(client_id):
                 
                 remaining_seconds = session.get('remaining_seconds', 0)
                 is_expired = session.get('is_expired', False)
+                time_disabled = session.get('time_disabled', False)
             
-            # Verificar si expiró
-            if is_expired or remaining_seconds <= 0:
+            # Verificar si expiró (solo si el tiempo NO está deshabilitado)
+            if not time_disabled and (is_expired or remaining_seconds <= 0):
                 # Marcar que estamos en estado expirado
                 if not is_expired_state:
                     is_expired_state = True
@@ -800,6 +860,15 @@ def monitor_time(client_id):
                     last_remaining = None  # Resetear para forzar actualización
             
             # Verificar si debemos mostrar notificaciones de tiempo restante
+            # Solo mostrar notificaciones si el tiempo NO está deshabilitado
+            if time_disabled:
+                # Tiempo deshabilitado - mostrar mensaje especial
+                if last_remaining != remaining_seconds or last_remaining is None:
+                    print("\rEstado: Tiempo deshabilitado (sin límite) - Cliente activo", end='', flush=True)
+                    last_remaining = remaining_seconds
+                time.sleep(LOCAL_CHECK_INTERVAL)
+                continue
+            
             remaining_minutes = remaining_seconds // 60
             
             # Verificar cada umbral de advertencia
