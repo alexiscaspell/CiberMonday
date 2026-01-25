@@ -333,8 +333,6 @@ def sync_with_server(client_id):
         
         # Construir URL con información de sesión local si existe
         url = f"{SERVER_URL}/api/client/{client_id}/status"
-        params = []
-        
         if local_session_data:
             # Enviar información de sesión local al servidor para que la recupere
             import urllib.parse
@@ -343,27 +341,7 @@ def sync_with_server(client_id):
                 'start_time': local_session_data.get('start_time', ''),
                 'end_time': local_session_data.get('end_time', '')
             })
-            params.append(f"session_data={urllib.parse.quote(session_json)}")
-        
-        # Enviar configuración actual del cliente al servidor
-        if REGISTRY_AVAILABLE:
-            try:
-                from registry_manager import get_config_from_registry
-                client_config = get_config_from_registry()
-                if client_config:
-                    config_json = json.dumps({
-                        'sync_interval': client_config.get('sync_interval', 30),
-                        'local_check_interval': client_config.get('local_check_interval', 1),
-                        'expired_sync_interval': client_config.get('expired_sync_interval', 2),
-                        'lock_delay': client_config.get('lock_delay', 2),
-                        'warning_thresholds': client_config.get('warning_thresholds', [10, 5, 2, 1])
-                    })
-                    params.append(f"client_config={urllib.parse.quote(config_json)}")
-            except:
-                pass
-        
-        if params:
-            url += "?" + "&".join(params)
+            url += f"?session_data={urllib.parse.quote(session_json)}"
         
         response = requests.get(url, timeout=10)
         
@@ -391,30 +369,6 @@ def sync_with_server(client_id):
         
         data = response.json()
         client_data = data.get('client', {})
-        
-        # Verificar si el servidor tiene configuración actualizada para el cliente
-        server_config = client_data.get('server_config')
-        if server_config and REGISTRY_AVAILABLE:
-            # El servidor tiene configuración actualizada, sincronizarla
-            try:
-                from registry_manager import get_config_from_registry, save_config_to_registry
-                current_config = get_config_from_registry() or {}
-                
-                # Actualizar solo los campos que el servidor envió
-                config_updated = False
-                for key in ['sync_interval', 'local_check_interval', 'expired_sync_interval', 
-                           'lock_delay', 'warning_thresholds']:
-                    if key in server_config:
-                        current_config[key] = server_config[key]
-                        config_updated = True
-                
-                if config_updated:
-                    # Guardar configuración actualizada
-                    current_config['server_url'] = current_config.get('server_url', SERVER_URL)
-                    save_config_to_registry(current_config)
-                    print(f"[Configuración] Configuración sincronizada desde el servidor")
-            except Exception as e:
-                print(f"[Advertencia] Error al sincronizar configuración: {e}")
         
         session = client_data.get('session')
         
@@ -556,36 +510,21 @@ def monitor_time(client_id):
     last_remaining = None
     last_sync_time = 0
     is_expired_state = False  # Rastrear si estamos en estado de tiempo expirado
-    
-    # Cargar configuración desde el registro
-    config_data = None
-    if REGISTRY_AVAILABLE:
-        try:
-            from registry_manager import get_config_from_registry
-            config_data = get_config_from_registry()
-        except:
-            pass
-    
-    # Usar valores de configuración o valores por defecto
+    # Usar intervalo de sincronización desde configuración (o 30 por defecto)
     try:
         SYNC_INTERVAL = SYNC_INTERVAL_CONFIG
     except NameError:
-        SYNC_INTERVAL = config_data.get('sync_interval', 30) if config_data else 30
-    
-    LOCAL_CHECK_INTERVAL = config_data.get('local_check_interval', 1) if config_data else 1
-    EXPIRED_SYNC_INTERVAL = config_data.get('expired_sync_interval', 2) if config_data else 2
-    LOCK_DELAY = config_data.get('lock_delay', 2) if config_data else 2
-    WARNING_THRESHOLDS = config_data.get('warning_thresholds', [10, 5, 2, 1]) if config_data else [10, 5, 2, 1]
+        # Si no está definido, usar valor por defecto
+        SYNC_INTERVAL = 30
+    LOCAL_CHECK_INTERVAL = 1  # Verificar registro local cada segundo
+    EXPIRED_SYNC_INTERVAL = 2  # Sincronizar cada 2 segundos cuando está expirado
     
     # Rastrear qué notificaciones de tiempo ya se han mostrado
     # Para evitar mostrar la misma notificación múltiples veces
     shown_warnings = set()  # Almacena los umbrales ya mostrados (en minutos)
+    WARNING_THRESHOLDS = [10, 5, 2, 1]  # Umbrales en minutos
     
     print(f"Intervalo de sincronización: {SYNC_INTERVAL} segundos")
-    print(f"Intervalo de verificación local: {LOCAL_CHECK_INTERVAL} segundos")
-    print(f"Intervalo de sincronización (expirado): {EXPIRED_SYNC_INTERVAL} segundos")
-    print(f"Tiempo de espera antes de bloquear: {LOCK_DELAY} segundos")
-    print(f"Umbrales de notificación: {WARNING_THRESHOLDS} minutos")
     
     while True:
         try:
@@ -622,8 +561,7 @@ def monitor_time(client_id):
                 
                 if session_info is None:
                     # No hay sesión en registro, sincronizar más frecuentemente para detectar nuevos tiempos
-                    # Usar EXPIRED_SYNC_INTERVAL también para cuando no hay sesión
-                    if current_time - last_sync_time >= EXPIRED_SYNC_INTERVAL:
+                    if current_time - last_sync_time >= 2:  # Sincronizar cada 2 segundos si no hay sesión
                         sync_result = sync_with_server(client_id)
                         # Si sync_with_server retorna un nuevo client_id (re-registro), actualizarlo
                         if sync_result and isinstance(sync_result, str):
@@ -693,9 +631,6 @@ def monitor_time(client_id):
                             is_expired_state = False
                             last_remaining = None  # Resetear para forzar actualización
                             continue  # Salir del bloqueo y continuar normalmente
-                
-                # Esperar antes de bloquear (configurable)
-                time.sleep(LOCK_DELAY)
                 
                 # Bloquear la estación de trabajo
                 lock_workstation()

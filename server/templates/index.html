@@ -218,56 +218,6 @@
             border-radius: 10px;
             color: #666;
         }
-        
-        .server-info {
-            margin-top: 15px;
-            padding: 15px;
-            background: #f0f0f0;
-            border-radius: 5px;
-            border-left: 4px solid #667eea;
-        }
-        
-        .server-info h3 {
-            margin: 0 0 10px 0;
-            color: #333;
-            font-size: 14px;
-        }
-        
-        .server-url {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            background: white;
-            padding: 10px 15px;
-            border-radius: 5px;
-            font-family: monospace;
-            font-size: 14px;
-        }
-        
-        .server-url code {
-            flex: 1;
-            color: #667eea;
-            font-weight: bold;
-        }
-        
-        .copy-btn {
-            background: #4CAF50;
-            color: white;
-            border: none;
-            padding: 5px 15px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            transition: background 0.2s;
-        }
-        
-        .copy-btn:hover {
-            background: #45a049;
-        }
-        
-        .copy-btn.copied {
-            background: #2196F3;
-        }
     </style>
 </head>
 <body>
@@ -279,16 +229,6 @@
                 <span style="margin-left: 10px; color: #666;">
                     Clientes: <strong id="client-count">0</strong>
                 </span>
-            </div>
-            <div class="server-info" id="server-info" style="display: none;">
-                <h3>📍 URL del Servidor (para configurar clientes):</h3>
-                <div class="server-url">
-                    <code id="server-url-display">Cargando...</code>
-                    <button class="copy-btn" onclick="copyServerUrl()" id="copy-server-url-btn">📋 Copiar</button>
-                </div>
-                <div style="margin-top: 8px; font-size: 12px; color: #666;">
-                    <strong>IPs disponibles:</strong> <span id="server-ips">-</span>
-                </div>
             </div>
         </header>
         
@@ -495,47 +435,9 @@
                                     Detener
                                 </button>
                             ` : ''}
-                            <button class="btn-info" onclick="showConfigModal('${client.id}')" style="background: #2196F3; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; margin-right: 5px;">
-                                ⚙️ Config
-                            </button>
                             <button class="btn-danger" onclick="deleteClient('${client.id}')">
                                 Eliminar
                             </button>
-                        </div>
-                        
-                        <!-- Modal de configuración (oculto por defecto) -->
-                        <div id="config-modal-${client.id}" style="display: none; margin-top: 15px; padding: 15px; background: #f9f9f9; border-radius: 5px; border: 1px solid #ddd;">
-                            <h4 style="margin-top: 0;">⚙️ Configuración del Cliente</h4>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                                <div>
-                                    <label>Intervalo de Sincronización (s):</label>
-                                    <input type="number" id="config-sync-${client.id}" min="5" max="300" value="30" style="width: 100%; padding: 5px;">
-                                </div>
-                                <div>
-                                    <label>Verificación Local (s):</label>
-                                    <input type="number" id="config-local-${client.id}" min="1" max="60" value="1" style="width: 100%; padding: 5px;">
-                                </div>
-                                <div>
-                                    <label>Sincronización (Expirado) (s):</label>
-                                    <input type="number" id="config-expired-${client.id}" min="1" max="60" value="2" style="width: 100%; padding: 5px;">
-                                </div>
-                                <div>
-                                    <label>Tiempo de Espera Bloqueo (s):</label>
-                                    <input type="number" id="config-lock-${client.id}" min="0" max="30" value="2" style="width: 100%; padding: 5px;">
-                                </div>
-                                <div style="grid-column: 1 / -1;">
-                                    <label>Umbrales de Notificación (minutos, separados por comas):</label>
-                                    <input type="text" id="config-thresholds-${client.id}" value="10,5,2,1" style="width: 100%; padding: 5px;">
-                                </div>
-                            </div>
-                            <div style="margin-top: 15px; text-align: right;">
-                                <button onclick="saveClientConfig('${client.id}')" style="background: #4CAF50; color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; margin-right: 5px;">
-                                    Guardar
-                                </button>
-                                <button onclick="hideConfigModal('${client.id}')" style="background: #999; color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer;">
-                                    Cancelar
-                                </button>
-                            </div>
                         </div>
                     </div>
                 `;
@@ -653,159 +555,7 @@
             }
         }
         
-        // Funciones para configuración del cliente
-        async function showConfigModal(clientId) {
-            const modal = document.getElementById(`config-modal-${clientId}`);
-            if (modal.style.display === 'none') {
-                // Cargar configuración actual del cliente
-                try {
-                    const response = await fetch(`${API_URL}/client/${clientId}/config`);
-                    const data = await response.json();
-                    
-                    if (data.success && data.config) {
-                        const config = data.config;
-                        document.getElementById(`config-sync-${clientId}`).value = config.sync_interval || 30;
-                        document.getElementById(`config-local-${clientId}`).value = config.local_check_interval || 1;
-                        document.getElementById(`config-expired-${clientId}`).value = config.expired_sync_interval || 2;
-                        document.getElementById(`config-lock-${clientId}`).value = config.lock_delay || 2;
-                        document.getElementById(`config-thresholds-${clientId}`).value = (config.warning_thresholds || [10, 5, 2, 1]).join(',');
-                    }
-                } catch (error) {
-                    console.error('Error al cargar configuración:', error);
-                }
-                
-                modal.style.display = 'block';
-            } else {
-                modal.style.display = 'none';
-            }
-        }
-        
-        function hideConfigModal(clientId) {
-            document.getElementById(`config-modal-${clientId}`).style.display = 'none';
-        }
-        
-        async function saveClientConfig(clientId) {
-            const syncInterval = parseInt(document.getElementById(`config-sync-${clientId}`).value);
-            const localCheck = parseInt(document.getElementById(`config-local-${clientId}`).value);
-            const expiredSync = parseInt(document.getElementById(`config-expired-${clientId}`).value);
-            const lockDelay = parseInt(document.getElementById(`config-lock-${clientId}`).value);
-            const thresholdsStr = document.getElementById(`config-thresholds-${clientId}`).value;
-            
-            // Validar umbrales
-            let thresholds;
-            try {
-                thresholds = thresholdsStr.split(',').map(t => parseInt(t.trim())).filter(t => !isNaN(t) && t > 0);
-                thresholds.sort((a, b) => b - a); // Ordenar de mayor a menor
-            } catch (e) {
-                alert('Error: Los umbrales deben ser números separados por comas');
-                return;
-            }
-            
-            if (thresholds.length === 0) {
-                alert('Error: Debe ingresar al menos un umbral válido');
-                return;
-            }
-            
-            try {
-                const response = await fetch(`${API_URL}/client/${clientId}/config`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        sync_interval: syncInterval,
-                        local_check_interval: localCheck,
-                        expired_sync_interval: expiredSync,
-                        lock_delay: lockDelay,
-                        warning_thresholds: thresholds
-                    })
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    showNotification('Configuración guardada. El cliente la recibirá en la próxima sincronización.', 'success');
-                    hideConfigModal(clientId);
-                } else {
-                    alert('Error: ' + data.message);
-                }
-            } catch (error) {
-                alert('Error al guardar configuración: ' + error.message);
-            }
-        }
-        
-        // Cargar información del servidor
-        async function loadServerInfo() {
-            try {
-                const response = await fetch(`${API_URL}/server-info`);
-                const data = await response.json();
-                
-                if (data.success) {
-                    const serverInfoDiv = document.getElementById('server-info');
-                    const urlDisplay = document.getElementById('server-url-display');
-                    const ipsDisplay = document.getElementById('server-ips');
-                    
-                    // Mostrar URL del servidor
-                    urlDisplay.textContent = data.display_url;
-                    urlDisplay.setAttribute('data-url', data.server_url);
-                    
-                    // Mostrar IPs disponibles
-                    if (data.ip_addresses && data.ip_addresses.length > 0) {
-                        ipsDisplay.textContent = data.ip_addresses.join(', ');
-                    } else {
-                        ipsDisplay.textContent = data.primary_ip || 'No disponible';
-                    }
-                    
-                    // Mostrar el div
-                    serverInfoDiv.style.display = 'block';
-                }
-            } catch (error) {
-                console.error('Error al cargar información del servidor:', error);
-            }
-        }
-        
-        // Función para copiar URL del servidor
-        function copyServerUrl() {
-            const urlDisplay = document.getElementById('server-url-display');
-            const url = urlDisplay.getAttribute('data-url') || urlDisplay.textContent;
-            const copyBtn = document.getElementById('copy-server-url-btn');
-            
-            // Copiar al portapapeles
-            navigator.clipboard.writeText(url).then(() => {
-                // Mostrar feedback visual
-                const originalText = copyBtn.textContent;
-                copyBtn.textContent = '✓ Copiado!';
-                copyBtn.classList.add('copied');
-                
-                setTimeout(() => {
-                    copyBtn.textContent = originalText;
-                    copyBtn.classList.remove('copied');
-                }, 2000);
-            }).catch(err => {
-                // Fallback para navegadores que no soportan clipboard API
-                const textArea = document.createElement('textarea');
-                textArea.value = url;
-                textArea.style.position = 'fixed';
-                textArea.style.opacity = '0';
-                document.body.appendChild(textArea);
-                textArea.select();
-                try {
-                    document.execCommand('copy');
-                    copyBtn.textContent = '✓ Copiado!';
-                    copyBtn.classList.add('copied');
-                    setTimeout(() => {
-                        copyBtn.textContent = '📋 Copiar';
-                        copyBtn.classList.remove('copied');
-                    }, 2000);
-                } catch (err) {
-                    alert('No se pudo copiar. URL: ' + url);
-                }
-                document.body.removeChild(textArea);
-            });
-        }
-        
-        // Cargar información del servidor y clientes al iniciar
-        loadServerInfo();
+        // Cargar clientes al iniciar
         loadClients();
         
         // Actualizar solo los tiempos cada 2 segundos (sin recargar toda la página)

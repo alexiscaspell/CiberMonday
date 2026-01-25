@@ -32,7 +32,7 @@ def show_config_window():
     # Crear ventana principal
     root = tk.Tk()
     root.title("CiberMonday - Configuración del Cliente")
-    root.geometry("600x650")
+    root.geometry("500x380")
     root.resizable(False, False)
     
     # Centrar ventana
@@ -108,7 +108,7 @@ def show_config_window():
     )
     examples_label.pack(anchor=tk.W, pady=(5, 15))
     
-    # Frame para intervalo de sincronización
+    # Frame para intervalo de chequeo
     interval_frame = ttk.Frame(main_frame)
     interval_frame.pack(fill=tk.X, pady=10)
     
@@ -133,106 +133,6 @@ def show_config_window():
         fg="gray"
     )
     interval_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
-    
-    # Separador para configuración avanzada
-    separator = ttk.Separator(main_frame, orient='horizontal')
-    separator.pack(fill=tk.X, pady=(15, 10))
-    
-    # Título de configuración avanzada
-    advanced_label = tk.Label(
-        main_frame,
-        text="⚙️ Configuración Avanzada",
-        font=("Arial", 11, "bold")
-    )
-    advanced_label.pack(anchor=tk.W, pady=(0, 10))
-    
-    # Frame para intervalo de verificación local
-    local_check_frame = ttk.Frame(main_frame)
-    local_check_frame.pack(fill=tk.X, pady=5)
-    
-    local_check_label = ttk.Label(local_check_frame, text="Intervalo de Verificación Local (segundos):")
-    local_check_label.pack(anchor=tk.W, pady=(0, 5))
-    
-    local_check_var = tk.StringVar()
-    current_local_check = current_config.get('local_check_interval', 1) if current_config else 1
-    local_check_var.set(str(current_local_check))
-    
-    local_check_entry = ttk.Entry(local_check_frame, textvariable=local_check_var, width=10, font=("Arial", 10))
-    local_check_entry.pack(side=tk.LEFT, pady=(0, 5))
-    
-    local_check_desc = tk.Label(
-        local_check_frame,
-        text="(Cada cuántos segundos verifica el tiempo local. Recomendado: 1)",
-        font=("Arial", 8),
-        fg="gray"
-    )
-    local_check_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
-    
-    # Frame para intervalo de sincronización cuando está expirado
-    expired_sync_frame = ttk.Frame(main_frame)
-    expired_sync_frame.pack(fill=tk.X, pady=5)
-    
-    expired_sync_label = ttk.Label(expired_sync_frame, text="Intervalo de Sincronización (Tiempo Expirado) (segundos):")
-    expired_sync_label.pack(anchor=tk.W, pady=(0, 5))
-    
-    expired_sync_var = tk.StringVar()
-    current_expired_sync = current_config.get('expired_sync_interval', 2) if current_config else 2
-    expired_sync_var.set(str(current_expired_sync))
-    
-    expired_sync_entry = ttk.Entry(expired_sync_frame, textvariable=expired_sync_var, width=10, font=("Arial", 10))
-    expired_sync_entry.pack(side=tk.LEFT, pady=(0, 5))
-    
-    expired_sync_desc = tk.Label(
-        expired_sync_frame,
-        text="(Cada cuántos segundos sincroniza cuando el tiempo expiró. Recomendado: 2)",
-        font=("Arial", 8),
-        fg="gray"
-    )
-    expired_sync_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
-    
-    # Frame para tiempo de bloqueo (delay antes de bloquear)
-    lock_delay_frame = ttk.Frame(main_frame)
-    lock_delay_frame.pack(fill=tk.X, pady=5)
-    
-    lock_delay_label = ttk.Label(lock_delay_frame, text="Tiempo de Espera Antes de Bloquear (segundos):")
-    lock_delay_label.pack(anchor=tk.W, pady=(0, 5))
-    
-    lock_delay_var = tk.StringVar()
-    current_lock_delay = current_config.get('lock_delay', 2) if current_config else 2
-    lock_delay_var.set(str(current_lock_delay))
-    
-    lock_delay_entry = ttk.Entry(lock_delay_frame, textvariable=lock_delay_var, width=10, font=("Arial", 10))
-    lock_delay_entry.pack(side=tk.LEFT, pady=(0, 5))
-    
-    lock_delay_desc = tk.Label(
-        lock_delay_frame,
-        text="(Tiempo de espera antes de bloquear cuando se desloguea. Recomendado: 2-5)",
-        font=("Arial", 8),
-        fg="gray"
-    )
-    lock_delay_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
-    
-    # Frame para umbrales de notificación
-    warning_thresholds_frame = ttk.Frame(main_frame)
-    warning_thresholds_frame.pack(fill=tk.X, pady=5)
-    
-    warning_thresholds_label = ttk.Label(warning_thresholds_frame, text="Umbrales de Notificación (minutos, separados por comas):")
-    warning_thresholds_label.pack(anchor=tk.W, pady=(0, 5))
-    
-    warning_thresholds_var = tk.StringVar()
-    current_thresholds = current_config.get('warning_thresholds', [10, 5, 2, 1]) if current_config else [10, 5, 2, 1]
-    warning_thresholds_var.set(','.join(map(str, current_thresholds)))
-    
-    warning_thresholds_entry = ttk.Entry(warning_thresholds_frame, textvariable=warning_thresholds_var, width=30, font=("Arial", 10))
-    warning_thresholds_entry.pack(side=tk.LEFT, pady=(0, 5))
-    
-    warning_thresholds_desc = tk.Label(
-        warning_thresholds_frame,
-        text="(Minutos restantes para mostrar notificaciones. Ej: 10,5,2,1)",
-        font=("Arial", 8),
-        fg="gray"
-    )
-    warning_thresholds_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
     
     # Frame para botones
     button_frame = ttk.Frame(main_frame)
@@ -264,74 +164,11 @@ def show_config_window():
             messagebox.showerror("Error", "El intervalo de sincronización debe ser un número válido")
             return
         
-        # Validar intervalo de verificación local
-        try:
-            local_check_interval = int(local_check_var.get().strip())
-            if local_check_interval < 1:
-                messagebox.showerror("Error", "El intervalo de verificación local debe ser al menos 1 segundo")
-                return
-            if local_check_interval > 60:
-                messagebox.showerror("Error", "El intervalo de verificación local no debe ser mayor a 60 segundos")
-                return
-        except ValueError:
-            messagebox.showerror("Error", "El intervalo de verificación local debe ser un número válido")
-            return
-        
-        # Validar intervalo de sincronización cuando está expirado
-        try:
-            expired_sync_interval = int(expired_sync_var.get().strip())
-            if expired_sync_interval < 1:
-                messagebox.showerror("Error", "El intervalo de sincronización (tiempo expirado) debe ser al menos 1 segundo")
-                return
-            if expired_sync_interval > 60:
-                messagebox.showerror("Error", "El intervalo de sincronización (tiempo expirado) no debe ser mayor a 60 segundos")
-                return
-        except ValueError:
-            messagebox.showerror("Error", "El intervalo de sincronización (tiempo expirado) debe ser un número válido")
-            return
-        
-        # Validar tiempo de espera antes de bloquear
-        try:
-            lock_delay = int(lock_delay_var.get().strip())
-            if lock_delay < 0:
-                messagebox.showerror("Error", "El tiempo de espera antes de bloquear no puede ser negativo")
-                return
-            if lock_delay > 30:
-                messagebox.showerror("Error", "El tiempo de espera antes de bloquear no debe ser mayor a 30 segundos")
-                return
-        except ValueError:
-            messagebox.showerror("Error", "El tiempo de espera antes de bloquear debe ser un número válido")
-            return
-        
-        # Validar umbrales de notificación
-        try:
-            thresholds_str = warning_thresholds_var.get().strip()
-            if thresholds_str:
-                thresholds_list = [int(x.strip()) for x in thresholds_str.split(',') if x.strip()]
-                if not thresholds_list:
-                    messagebox.showerror("Error", "Debe ingresar al menos un umbral de notificación")
-                    return
-                # Validar que sean números positivos y ordenados de mayor a menor
-                if any(t <= 0 for t in thresholds_list):
-                    messagebox.showerror("Error", "Los umbrales de notificación deben ser números positivos")
-                    return
-                # Ordenar de mayor a menor
-                thresholds_list.sort(reverse=True)
-            else:
-                thresholds_list = [10, 5, 2, 1]  # Valores por defecto
-        except ValueError:
-            messagebox.showerror("Error", "Los umbrales de notificación deben ser números separados por comas (ej: 10,5,2,1)")
-            return
-        
         # Guardar configuración
         config = {
             'server_url': server_url,
             'check_interval': 5,  # Mantener para compatibilidad
-            'sync_interval': sync_interval,
-            'local_check_interval': local_check_interval,
-            'expired_sync_interval': expired_sync_interval,
-            'lock_delay': lock_delay,
-            'warning_thresholds': thresholds_list
+            'sync_interval': sync_interval
         }
         
         if REGISTRY_AVAILABLE:

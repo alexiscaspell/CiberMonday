@@ -6,7 +6,6 @@ import threading
 import time
 import os
 import json
-import socket
 
 app = Flask(__name__, template_folder='templates')
 CORS(app)
@@ -93,8 +92,7 @@ def register_client():
         'name': client_name,
         'registered_at': datetime.now().isoformat(),
         'total_time_used': 0,
-        'is_active': False,
-        'config': {}  # Configuración del cliente (se actualiza cuando el cliente sincroniza)
+        'is_active': False
     }
     
     save_server_data()
@@ -177,77 +175,6 @@ def set_client_time(client_id):
         }
     }), 200
 
-@app.route('/api/client/<client_id>/config', methods=['GET'])
-def get_client_config(client_id):
-    """Obtiene la configuración actual del cliente"""
-    if client_id not in clients_db:
-        return jsonify({
-            'success': False,
-            'message': 'Cliente no encontrado'
-        }), 404
-    
-    # La configuración del cliente se almacena en clients_db
-    client_config = clients_db[client_id].get('config', {})
-    
-    return jsonify({
-        'success': True,
-        'config': client_config
-    }), 200
-
-@app.route('/api/client/<client_id>/config', methods=['POST'])
-def update_client_config(client_id):
-    """Actualiza la configuración del cliente desde el servidor"""
-    if client_id not in clients_db:
-        return jsonify({
-            'success': False,
-            'message': 'Cliente no encontrado'
-        }), 404
-    
-    data = request.json
-    if not data:
-        return jsonify({
-            'success': False,
-            'message': 'No se proporcionaron datos de configuración'
-        }), 400
-    
-    # Validar y actualizar configuración
-    config = clients_db[client_id].get('config', {})
-    
-    # Actualizar solo los campos proporcionados
-    if 'sync_interval' in data:
-        sync_interval = int(data['sync_interval'])
-        if 5 <= sync_interval <= 300:
-            config['sync_interval'] = sync_interval
-    
-    if 'local_check_interval' in data:
-        local_check = int(data['local_check_interval'])
-        if 1 <= local_check <= 60:
-            config['local_check_interval'] = local_check
-    
-    if 'expired_sync_interval' in data:
-        expired_sync = int(data['expired_sync_interval'])
-        if 1 <= expired_sync <= 60:
-            config['expired_sync_interval'] = expired_sync
-    
-    if 'lock_delay' in data:
-        lock_delay = int(data['lock_delay'])
-        if 0 <= lock_delay <= 30:
-            config['lock_delay'] = lock_delay
-    
-    if 'warning_thresholds' in data:
-        thresholds = data['warning_thresholds']
-        if isinstance(thresholds, list) and all(isinstance(t, int) and t > 0 for t in thresholds):
-            config['warning_thresholds'] = sorted(thresholds, reverse=True)
-    
-    clients_db[client_id]['config'] = config
-    save_server_data()
-    
-    return jsonify({
-        'success': True,
-        'message': 'Configuración actualizada',
-        'config': config
-    }), 200
-
 @app.route('/api/client/<client_id>/status', methods=['GET'])
 def get_client_status(client_id):
     """Obtiene el estado actual de un cliente"""
@@ -281,18 +208,6 @@ def get_client_status(client_id):
                 'is_expired': is_expired
             }
     else:
-        # Obtener configuración del cliente si se envía
-        client_config_data = request.args.get('client_config')
-        if client_config_data:
-            try:
-                import urllib.parse
-                config_info = json.loads(urllib.parse.unquote(client_config_data))
-                # Guardar configuración del cliente en el servidor
-                clients_db[client_id]['config'] = config_info
-                save_server_data()
-            except Exception as e:
-                print(f"[Advertencia] Error al recibir configuración del cliente: {e}")
-        
         # Si el servidor no tiene sesión, verificar si el cliente reporta una sesión activa
         # Esto permite recuperar sesiones después de reiniciar el servidor
         client_session_data = request.args.get('session_data')
@@ -334,11 +249,6 @@ def get_client_status(client_id):
         
         if not client_data.get('session'):
             client_data['session'] = None
-    
-    # Incluir configuración del servidor si existe (para que el cliente la sincronice)
-    server_config = clients_db[client_id].get('config', {})
-    if server_config:
-        client_data['server_config'] = server_config
     
     return jsonify({
         'success': True,
@@ -399,65 +309,6 @@ def health_check():
         'active_clients': len(client_sessions),
         'total_clients': len(clients_db)
     }), 200
-
-@app.route('/api/server-info', methods=['GET'])
-def get_server_info():
-    """Obtiene información del servidor (IP, puerto, URL)"""
-    try:
-        # Obtener IP local
-        hostname = socket.gethostname()
-        local_ip = socket.gethostbyname(hostname)
-        
-        # Intentar obtener IP desde la request
-        remote_addr = request.remote_addr
-        request_host = request.host
-        
-        # Obtener puerto desde la request o variables de entorno
-        port = os.getenv('PORT', '5000')
-        if ':' in request_host:
-            port = request_host.split(':')[-1]
-        
-        # Construir URL
-        # Si estamos en Docker o red local, usar la IP local
-        # Si es localhost, usar localhost
-        if request_host.startswith('localhost') or request_host.startswith('127.0.0.1'):
-            server_url = f"http://{local_ip}:{port}"
-            display_url = f"http://{local_ip}:{port}"
-        else:
-            server_url = f"http://{request_host}"
-            display_url = f"http://{request_host}"
-        
-        # Obtener todas las IPs de la máquina
-        ip_addresses = []
-        try:
-            # Obtener todas las interfaces de red
-            import socket
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            primary_ip = s.getsockname()[0]
-            s.close()
-            ip_addresses.append(primary_ip)
-        except:
-            pass
-        
-        # Agregar IP local
-        if local_ip not in ip_addresses:
-            ip_addresses.append(local_ip)
-        
-        return jsonify({
-            'success': True,
-            'hostname': hostname,
-            'ip_addresses': ip_addresses,
-            'primary_ip': ip_addresses[0] if ip_addresses else local_ip,
-            'port': port,
-            'server_url': server_url,
-            'display_url': display_url
-        }), 200
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
 
 @app.route('/', methods=['GET'])
 def index():
