@@ -113,21 +113,15 @@ def get_clients():
         client_info = client_data.copy()
         if client_id in client_sessions:
             session = client_sessions[client_id]
-            time_disabled = session.get('time_disabled', False)
             # Convertir end_time de string ISO a datetime para calcular remaining_seconds
             end_time = datetime.fromisoformat(session['end_time'])
             remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
-            
-            # Si el tiempo está deshabilitado, mantener remaining_seconds muy grande
-            if time_disabled:
-                remaining_seconds = max(remaining_seconds, 999999999)
             
             client_info['current_session'] = {
                 'time_limit': session['time_limit'],
                 'start_time': session['start_time'],
                 'end_time': session['end_time'],
-                'remaining_seconds': remaining_seconds,
-                'time_disabled': time_disabled
+                'remaining_seconds': remaining_seconds
             }
         clients_list.append(client_info)
     
@@ -167,12 +161,10 @@ def set_client_time(client_id):
     client_sessions[client_id] = {
         'time_limit': total_seconds,
         'start_time': start_time.isoformat(),
-        'end_time': end_time.isoformat(),
-        'time_disabled': False  # Asegurar que el tiempo está habilitado
+        'end_time': end_time.isoformat()
     }
     
     clients_db[client_id]['is_active'] = True
-    clients_db[client_id]['time_disabled'] = False  # Limpiar flag de tiempo deshabilitado
     save_server_data()
     
     return jsonify({
@@ -181,8 +173,7 @@ def set_client_time(client_id):
         'session': {
             'time_limit_seconds': total_seconds,
             'start_time': start_time.isoformat(),
-            'end_time': end_time.isoformat(),
-            'time_disabled': False
+            'end_time': end_time.isoformat()
         }
     }), 200
 
@@ -271,23 +262,14 @@ def get_client_status(client_id):
     # Verificar si hay sesión en el servidor
     if client_id in client_sessions:
         session = client_sessions[client_id]
-        time_disabled = session.get('time_disabled', False)
         end_time = datetime.fromisoformat(session['end_time'])
         remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
+        is_expired = remaining_seconds == 0
         
-        # Si el tiempo está deshabilitado, nunca considerar expirado
-        if time_disabled:
-            is_expired = False
-            # Mantener remaining_seconds muy grande para que el cliente no bloquee
-            remaining_seconds = max(remaining_seconds, 999999999)
-        else:
-            is_expired = remaining_seconds == 0
-        
-        # Si la sesión expiró (y no es tiempo deshabilitado), limpiarla
-        if is_expired and not time_disabled:
+        # Si la sesión expiró, limpiarla
+        if is_expired:
             del client_sessions[client_id]
             clients_db[client_id]['is_active'] = False
-            clients_db[client_id].pop('time_disabled', None)  # Limpiar flag si existe
             save_server_data()
             client_data['session'] = None
         else:
@@ -296,11 +278,8 @@ def get_client_status(client_id):
                 'start_time': session['start_time'],
                 'end_time': session['end_time'],
                 'remaining_seconds': remaining_seconds,
-                'is_expired': is_expired,
-                'time_disabled': time_disabled  # Incluir flag en la respuesta
+                'is_expired': is_expired
             }
-            # Actualizar flag en clients_db para referencia
-            clients_db[client_id]['time_disabled'] = time_disabled
     else:
         # Obtener configuración del cliente si se envía
         client_config_data = request.args.get('client_config')
@@ -406,50 +385,28 @@ def get_client_status(client_id):
 
 @app.route('/api/client/<client_id>/stop', methods=['POST'])
 def stop_client_session(client_id):
-    """Detiene la sesión de un cliente estableciendo tiempo infinito (bloqueo deshabilitado)"""
+    """Detiene la sesión de un cliente"""
     if client_id not in clients_db:
         return jsonify({
             'success': False,
             'message': 'Cliente no encontrado'
         }), 404
     
-    # Calcular tiempo usado si había una sesión activa
     if client_id in client_sessions:
+        # Calcular tiempo usado
         session = client_sessions[client_id]
-        # Solo calcular tiempo usado si no es una sesión con tiempo deshabilitado
-        if not session.get('time_disabled', False):
-            start_time = datetime.fromisoformat(session['start_time'])
-            end_time = datetime.now()
-            time_used = int((end_time - start_time).total_seconds())
-            clients_db[client_id]['total_time_used'] += time_used
-    
-    # Establecer sesión con tiempo "infinito" (bloqueo deshabilitado)
-    # Usamos un valor muy grande: 999999999 segundos (~31 años)
-    unlimited_seconds = 999999999
-    start_time = datetime.now()
-    end_time = start_time + timedelta(seconds=unlimited_seconds)
-    
-    client_sessions[client_id] = {
-        'time_limit': unlimited_seconds,
-        'start_time': start_time.isoformat(),
-        'end_time': end_time.isoformat(),
-        'time_disabled': True  # Flag que indica que el bloqueo está deshabilitado
-    }
-    
-    # Marcar cliente como activo pero con tiempo deshabilitado
-    clients_db[client_id]['is_active'] = True
-    clients_db[client_id]['time_disabled'] = True
-    save_server_data()
+        start_time = datetime.fromisoformat(session['start_time'])
+        end_time = datetime.now()
+        time_used = int((end_time - start_time).total_seconds())
+        
+        clients_db[client_id]['total_time_used'] += time_used
+        del client_sessions[client_id]
+        clients_db[client_id]['is_active'] = False
+        save_server_data()
     
     return jsonify({
         'success': True,
-        'message': 'Bloqueo de tiempo deshabilitado. Cliente permanece activo sin límite de tiempo.',
-        'session': {
-            'time_limit_seconds': unlimited_seconds,
-            'start_time': start_time.isoformat(),
-            'end_time': end_time.isoformat(),
-            'time_disabled': True
-        }
+        'message': 'Sesión detenida'
     }), 200
 
 @app.route('/api/client/<client_id>', methods=['DELETE'])

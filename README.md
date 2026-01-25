@@ -142,7 +142,7 @@ Endpoints disponibles:
   GET    /api/clients - Listar todos los clientes
   POST   /api/client/<id>/set-time - Establecer tiempo
   GET    /api/client/<id>/status - Estado del cliente
-  POST   /api/client/<id>/stop - Detener sesión (deshabilitar bloqueo)
+  POST   /api/client/<id>/stop - Detener sesión
   DELETE /api/client/<id> - Eliminar cliente
 ==================================================
 ```
@@ -160,7 +160,6 @@ http://localhost:5000
 ┌─────────────────────────────────────────────────────┐
 │  🖥️ CiberMonday - Panel de Control                │
 ├─────────────────────────────────────────────────────┤
-│  Servidor: http://192.168.1.100:5000  [Copiar]    │
 │  Servidor Activo  │  Clientes: 3                   │
 ├─────────────────────────────────────────────────────┤
 │                                                    │
@@ -173,18 +172,10 @@ http://localhost:5000
 │  │             │  │             │  │          │ │
 │  │ [Establecer]│  │ [Establecer]│  │ [Establecer]│
 │  │ [Detener]   │  │ [Detener]   │  │          │ │
-│  │ [⚙️ Config] │  │ [⚙️ Config] │  │          │ │
 │  └──────────────┘  └──────────────┘  └──────────┘ │
 │                                                    │
 └─────────────────────────────────────────────────────┘
 ```
-
-**Características del Panel Web:**
-- ✅ **Actualización en tiempo real** - El tiempo restante se actualiza sin recargar la página
-- ✅ **Información del servidor** - Muestra la URL/IP del servidor para fácil configuración de clientes
-- ✅ **Configuración de clientes** - Botón ⚙️ Config para ajustar parámetros desde el servidor
-- ✅ **Estado de tiempo deshabilitado** - Muestra claramente cuando el bloqueo está desactivado
-- ✅ **Persistencia** - Los clientes y sesiones se mantienen después de reiniciar el servidor
 
 ## 💻 Instalación del Cliente
 
@@ -247,14 +238,6 @@ http://localhost:5000
 - ✅ **Configuración persistente** - Se guarda en el Registro de Windows
 - ✅ **Reconfigurable** - La ventana aparece cada vez que ejecutas el cliente
 - ✅ **Sin `config.py`** - Todo se gestiona desde la GUI
-- ✅ **Parámetros avanzados configurables**:
-  - Intervalo de sincronización con servidor (default: 30s)
-  - Intervalo de verificación local (default: 1s)
-  - Intervalo de sincronización cuando tiempo expirado (default: 2s)
-  - Tiempo de espera antes de bloquear (default: 2s)
-  - Umbrales de notificación en minutos (default: 10, 5, 2, 1)
-- ✅ **Sincronización bidireccional** - El servidor puede actualizar la configuración del cliente
-- ✅ **Actualización optimizada** - Solo se actualiza cuando hay cambios reales
 
 ### Verificación
 
@@ -316,26 +299,8 @@ El cliente se registrará automáticamente en el servidor y aparecerá en el pan
 │                                 │
 │ Tiempo asignado: 60 minutos    │
 │ Tiempo restante: 59m 45s       │
-│ Estado: Activo                 │
 │                                 │
-│ [Establecer Tiempo]             │
 │ [Detener] [Eliminar]            │
-│ [⚙️ Config]                    │
-└─────────────────────────────────┘
-```
-
-**Después de presionar "Detener":**
-```
-┌─────────────────────────────────┐
-│ PC-01 (abc123-def456)          │
-│                                 │
-│ Estado: Tiempo deshabilitado   │
-│ Bloqueo: Desactivado           │
-│ Cliente: Activo y conectado    │
-│                                 │
-│ [Establecer Tiempo]             │
-│ [Eliminar]                      │
-│ [⚙️ Config]                    │
 └─────────────────────────────────┘
 ```
 
@@ -345,26 +310,6 @@ Tiempo restante: 59m 45s
 Tiempo restante: 59m 44s
 Tiempo restante: 59m 43s
 ...
-
-[Cuando quedan 10 minutos]
-¡Atención!
-Quedan 10 minutos de tiempo
-[Entendido]
-
-[Cuando quedan 5 minutos]
-¡Atención!
-Quedan 5 minutos de tiempo
-[Entendido]
-
-[Cuando quedan 2 minutos]
-¡Atención!
-Quedan 2 minutos de tiempo
-[Entendido]
-
-[Cuando quedan 1 minuto]
-¡Atención!
-Queda 1 minuto de tiempo
-[Entendido]
 ```
 
 #### 4️⃣ Cuando Expira el Tiempo
@@ -377,51 +322,10 @@ La PC se bloqueará continuamente hasta que se asigne nuevo tiempo.
 ==================================================
 ```
 
-**Notificaciones de Tiempo:**
-- El cliente muestra alertas visuales cuando quedan 10, 5, 2 y 1 minutos
-- Las notificaciones son descartables y solo se muestran una vez por umbral
-
 **En Windows:**
 - La pantalla se bloquea automáticamente (Windows+L)
-- Si el usuario desbloquea, se vuelve a bloquear según el intervalo configurado
+- Si el usuario desbloquea, se vuelve a bloquear en 1 segundo
 - Continúa bloqueando hasta que se asigne nuevo tiempo
-- El cliente sincroniza frecuentemente con el servidor para detectar nuevo tiempo asignado
-
-#### 5️⃣ Detener Sesión (Tiempo Deshabilitado)
-
-**Desde el Panel Web:**
-- Haz clic en "Detener" en la tarjeta del cliente
-- El cliente recibirá tiempo "infinito" (bloqueo deshabilitado)
-- El cliente permanecerá **activo** y visible en el panel
-- El cliente mostrará: "Estado: Tiempo deshabilitado (sin límite) - Cliente activo"
-- La PC **NO se bloqueará** automáticamente
-
-**Para re-habilitar el bloqueo:**
-- Simplemente asigna nuevo tiempo desde el panel web
-- El bloqueo volverá a funcionar normalmente
-
-### ⚙️ Configuración Avanzada
-
-#### Desde la GUI del Cliente
-
-Al ejecutar el cliente, la ventana de configuración permite ajustar:
-
-- **URL del Servidor**: Dirección del servidor CiberMonday
-- **Intervalo de Sincronización**: Cada cuántos segundos sincroniza con el servidor (default: 30s)
-- **Intervalo de Verificación Local**: Cada cuántos segundos verifica el tiempo local (default: 1s)
-- **Intervalo de Sincronización (Tiempo Expirado)**: Cada cuántos segundos sincroniza cuando el tiempo expiró (default: 2s)
-- **Tiempo de Espera Antes de Bloquear**: Segundos de espera antes de bloquear la PC (default: 2s)
-- **Umbrales de Notificación**: Minutos en los que mostrar alertas (default: 10, 5, 2, 1)
-
-#### Desde el Panel Web del Servidor
-
-1. Haz clic en el botón **⚙️ Config** en la tarjeta del cliente
-2. Se abrirá un modal con los parámetros configurables
-3. Modifica los valores deseados
-4. Haz clic en "Guardar Configuración"
-5. El cliente recibirá y aplicará la configuración en la próxima sincronización
-
-**Nota:** La configuración solo se actualiza cuando hay cambios reales, optimizando el rendimiento.
 
 ### 🔧 Gestión del Servicio
 
@@ -484,76 +388,9 @@ curl -X POST http://localhost:5000/api/client/abc123-def456/set-time \
   -d '{"time": 60, "unit": "minutes"}'
 ```
 
-#### Detener Sesión (Deshabilitar Bloqueo)
-```bash
-curl -X POST http://localhost:5000/api/client/abc123-def456/stop
-```
-
-**Respuesta:**
-```json
-{
-  "success": true,
-  "message": "Bloqueo de tiempo deshabilitado. Cliente permanece activo sin límite de tiempo.",
-  "session": {
-    "time_limit_seconds": 999999999,
-    "time_disabled": true
-  }
-}
-```
-
 #### Ver Estado
 ```bash
 curl http://localhost:5000/api/client/abc123-def456/status
-```
-
-**Respuesta (con tiempo deshabilitado):**
-```json
-{
-  "success": true,
-  "client": {
-    "id": "abc123-def456",
-    "name": "PC-01",
-    "is_active": true,
-    "time_disabled": true,
-    "session": {
-      "time_limit_seconds": 999999999,
-      "remaining_seconds": 999999999,
-      "time_disabled": true,
-      "is_expired": false
-    }
-  }
-}
-```
-
-#### Configurar Cliente desde Servidor
-```bash
-curl -X POST http://localhost:5000/api/client/abc123-def456/config \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sync_interval": 60,
-    "local_check_interval": 2,
-    "expired_sync_interval": 3,
-    "lock_delay": 5,
-    "warning_thresholds": [15, 10, 5]
-  }'
-```
-
-#### Obtener Información del Servidor
-```bash
-curl http://localhost:5000/api/server-info
-```
-
-**Respuesta:**
-```json
-{
-  "success": true,
-  "hostname": "servidor-pc",
-  "ip_addresses": ["192.168.1.100", "10.0.0.5"],
-  "primary_ip": "192.168.1.100",
-  "port": "5000",
-  "server_url": "http://192.168.1.100:5000",
-  "display_url": "http://192.168.1.100:5000"
-}
 ```
 
 ## 🔒 Cómo Funciona el Bloqueo
@@ -567,38 +404,24 @@ curl http://localhost:5000/api/server-info
 │  │ Tiempo asignado: 60 minutos              │  │
 │  │ Inicio: 10:00                            │  │
 │  │ Fin: 11:00                               │  │
-│  │ time_disabled: false                     │  │
-│  └───────────────────────────────────────────┘  │
-│  ┌───────────────────────────────────────────┐  │
-│  │ Persistencia: server_data.json           │  │
-│  │ • Clientes registrados                    │  │
-│  │ • Sesiones activas                       │  │
 │  └───────────────────────────────────────────┘  │
 └───────────────────┬─────────────────────────────┘
                     │
                     │ Sincroniza cada 30s
-                    │ (o cada 2s si expirado)
                     ▼
 ┌─────────────────────────────────────────────────┐
 │  CLIENTE (Windows)                              │
 │  ┌───────────────────────────────────────────┐  │
 │  │ Registro: HKEY_LOCAL_MACHINE\...          │  │
-│  │ • SessionData: {tiempo, inicio, fin,      │  │
-│  │                time_disabled}             │  │
+│  │ • SessionData: {tiempo, inicio, fin}      │  │
 │  │ • ClientID: abc123-def456                 │  │
-│  │ • Config: {sync_interval, thresholds...} │  │
 │  └───────────────────────────────────────────┘  │
 │                    │                              │
 │                    │ Lee cada 1s                  │
 │                    ▼                              │
 │         ┌──────────────────────┐                 │
-│         │ ¿time_disabled?       │                 │
+│         │ ¿Tiempo expirado?    │                 │
 │         └──────┬───────────────┘                 │
-│                │                                  │
-│         ┌──────▼───────┐                         │
-│         │ ¿Tiempo      │                         │
-│         │ expirado?    │                         │
-│         └──────┬───────┘                         │
 │                │                                  │
 │         ┌──────▼───────┐                         │
 │         │ Bloquear PC  │                         │
@@ -611,51 +434,25 @@ curl http://localhost:5000/api/server-info
 
 ✅ **Funciona sin conexión continua**
 - Lee del registro local cada segundo
-- Sincroniza con servidor cada 30 segundos (configurable)
-- Sincroniza cada 2 segundos cuando el tiempo está expirado
+- Sincroniza con servidor cada 30 segundos
 
 ✅ **Resistente a cortes**
 - Si se corta la red, sigue funcionando
 - Usa el tiempo almacenado en el registro
-- Re-registra automáticamente si el servidor lo pierde
 
 ✅ **Eficiente**
 - Menor carga en el servidor
 - Verificación rápida local
-- Solo actualiza configuración cuando hay cambios del servidor
-
-✅ **Persistente**
-- El servidor guarda clientes y sesiones en disco
-- Sobrevive a reinicios del servidor
-- Recupera sesiones activas automáticamente
-
-✅ **Configurable**
-- Parámetros ajustables desde GUI del cliente
-- Configuración push desde el servidor
-- Umbrales de notificación personalizables
 
 ## ✨ Características
 
 - ✅ **Gestión centralizada** de múltiples clientes
-- ✅ **Interfaz web moderna** y fácil de usar con actualizaciones en tiempo real (AJAX)
+- ✅ **Interfaz web moderna** y fácil de usar
 - ✅ **Asignación de tiempo** en minutos u horas
 - ✅ **Bloqueo automático** de Windows cuando expira
 - ✅ **Sistema de registro local** - Funciona sin conexión continua
 - ✅ **Resistente a cortes** - Lee del registro cada segundo
 - ✅ **Sincronización eficiente** - Solo consulta servidor cada 30s
-- ✅ **Sincronización optimizada** - Solo actualiza configuración cuando hay cambios
-- ✅ **Re-registro automático** - Si el servidor pierde un cliente, se re-registra automáticamente
-- ✅ **Recuperación de sesiones** - El servidor recupera sesiones activas después de reiniciar
-- ✅ **Tiempo deshabilitado** - Función "Detener" establece tiempo infinito manteniendo cliente activo
-- ✅ **Configuración avanzada** - Parámetros configurables desde GUI y servidor:
-  - Intervalo de sincronización
-  - Intervalo de verificación local
-  - Intervalo de sincronización cuando expira
-  - Tiempo de espera antes de bloquear
-  - Umbrales de notificación personalizables
-- ✅ **Notificaciones visuales** - Alertas cuando quedan 10, 5, 2 o 1 minutos
-- ✅ **Persistencia de datos** - El servidor guarda clientes y sesiones en disco
-- ✅ **Información del servidor** - Muestra IP/URL del servidor en el panel web
 - ✅ **Compilación como .exe** - Ejecutables standalone
 - ✅ **Servicio de Windows** - Inicio automático
 - ✅ **API REST** para integración
@@ -746,31 +543,6 @@ ERROR: No se pudo instalar el servicio
    net session
    ```
 
-### ❌ El cliente aparece como inactivo después de eliminarlo
-
-**Síntomas:**
-- Eliminas un cliente desde el servidor
-- El cliente se reconecta pero aparece como inactivo
-
-**Solución:**
-- Esto es normal. El cliente se re-registra automáticamente y recupera su sesión local si tiene tiempo asignado
-- El cliente aparecerá como activo en la próxima sincronización (máximo 30 segundos)
-- Si tiene sesión local activa, se recuperará automáticamente
-
-### ❌ La configuración del servidor no se aplica en el cliente
-
-**Síntomas:**
-- Cambias configuración desde el servidor pero el cliente no la aplica
-
-**Solución:**
-1. Verifica que el cliente esté sincronizando con el servidor (cada 30s por defecto)
-2. Revisa los logs del cliente para ver mensajes como:
-   ```
-   [Configuración] Configuración sincronizada desde el servidor
-   ```
-3. La configuración solo se actualiza cuando hay cambios reales
-4. Puedes verificar la configuración actual del cliente desde el panel web (botón ⚙️ Config)
-
 ## 📁 Estructura del Proyecto
 
 ```
@@ -778,24 +550,16 @@ CiberMonday/
 ├── server/                    # Servidor Flask
 │   ├── app.py                # API principal
 │   ├── templates/
-│   │   └── index.html       # Panel web (con AJAX y configuración)
-│   ├── server_data.json     # Persistencia de datos (generado)
+│   │   └── index.html       # Panel web
 │   └── start_server.*        # Scripts de inicio
 │
 ├── client/                    # Cliente Windows
 │   ├── client.py             # Cliente principal
 │   ├── service.py            # Servicio Windows
-│   ├── watchdog.py           # Watchdog para mantener cliente activo
 │   ├── registry_manager.py   # Gestor de registro
-│   ├── config_gui.py         # GUI de configuración
-│   ├── notifications.py      # Notificaciones visuales
 │   ├── protection.py         # Protecciones
-│   ├── CiberMondayClient.spec # PyInstaller spec
-│   ├── GUIA_INSTALACION.md   # Guía detallada de instalación
+│   ├── config.py             # Configuración
 │   └── *.bat                 # Scripts de instalación
-│
-├── server_data/              # Volumen Docker (generado)
-│   └── server_data.json     # Datos persistidos
 │
 ├── docker-compose.yml         # Docker Compose
 ├── Dockerfile.server         # Dockerfile servidor

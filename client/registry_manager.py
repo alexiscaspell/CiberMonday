@@ -36,7 +36,7 @@ def get_registry_key(create=False):
         except:
             return None
 
-def save_session_to_registry(time_limit_seconds, start_time_iso, end_time_iso, time_disabled=False):
+def save_session_to_registry(time_limit_seconds, start_time_iso, end_time_iso):
     """
     Guarda la información de sesión en el registro de Windows
     
@@ -44,7 +44,6 @@ def save_session_to_registry(time_limit_seconds, start_time_iso, end_time_iso, t
         time_limit_seconds: Tiempo total en segundos
         start_time_iso: Hora de inicio en formato ISO
         end_time_iso: Hora de fin en formato ISO
-        time_disabled: Flag que indica si el bloqueo de tiempo está deshabilitado
     """
     try:
         key = get_registry_key(create=True)
@@ -54,8 +53,7 @@ def save_session_to_registry(time_limit_seconds, start_time_iso, end_time_iso, t
         session_data = {
             'time_limit_seconds': time_limit_seconds,
             'start_time': start_time_iso,
-            'end_time': end_time_iso,
-            'time_disabled': time_disabled
+            'end_time': end_time_iso
         }
         
         # Guardar como JSON en el registro
@@ -217,21 +215,12 @@ def get_session_info():
     if remaining is None:
         return None
     
-    # Verificar si el tiempo está deshabilitado
-    # Si el time_limit es muy grande (>= 999999999), asumimos que el tiempo está deshabilitado
-    time_limit = session_data.get('time_limit_seconds', 0)
-    time_disabled = time_limit >= 999999999 or session_data.get('time_disabled', False)
-    
-    # Si el tiempo está deshabilitado, nunca considerar expirado
-    is_expired = False if time_disabled else (remaining <= 0)
-    
     return {
-        'time_limit_seconds': time_limit,
+        'time_limit_seconds': session_data.get('time_limit_seconds', 0),
         'start_time': session_data.get('start_time'),
         'end_time': session_data.get('end_time'),
         'remaining_seconds': remaining,
-        'is_expired': is_expired,
-        'time_disabled': time_disabled
+        'is_expired': remaining <= 0
     }
 
 def save_config_to_registry(config):
