@@ -168,6 +168,113 @@ WTS_CURRENT_SERVER_HANDLE = 0
 WTS_SESSION_LOCK = 0x00000007
 WTS_SESSION_UNLOCK = 0x00000008
 
+# ==================== SISTEMA DE ALERTAS DE TIEMPO ====================
+# Umbrales de alerta en segundos (10min, 5min, 2min, 1min)
+ALERT_THRESHOLDS = [600, 300, 120, 60]  # 10min, 5min, 2min, 1min
+
+# Diccionario para rastrear qué alertas ya se mostraron
+# Se resetea cuando se asigna nuevo tiempo
+alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
+last_known_remaining = None  # Para detectar cambios drásticos de tiempo
+
+def reset_alerts_for_new_session(remaining_seconds):
+    """
+    Resetea las alertas cuando se detecta una nueva sesión o cambio de tiempo.
+    Solo marca como 'ya mostradas' las alertas de umbrales MAYORES al tiempo actual,
+    para evitar que se muestren en cascada si el admin reduce el tiempo drásticamente.
+    """
+    global alerts_shown, last_known_remaining
+    
+    for threshold in ALERT_THRESHOLDS:
+        if remaining_seconds <= threshold:
+            # El tiempo actual ya pasó este umbral, marcar como mostrado
+            # para evitar mostrar alertas de umbrales ya pasados
+            alerts_shown[threshold] = True
+        else:
+            # El tiempo actual es mayor a este umbral, permitir que se muestre
+            alerts_shown[threshold] = False
+    
+    last_known_remaining = remaining_seconds
+
+def check_and_show_alerts(remaining_seconds, previous_remaining=None):
+    """
+    Verifica si se debe mostrar alguna alerta basándose en el tiempo restante.
+    
+    Lógica:
+    - Si el tiempo cruzó un umbral (de arriba hacia abajo), mostrar alerta
+    - Si hubo un cambio drástico de tiempo (ej: de 60min a 1min), solo mostrar
+      la alerta del umbral actual, no todas las intermedias
+    """
+    global alerts_shown, last_known_remaining
+    
+    # Detectar si hubo un cambio drástico de tiempo (reducción de más de 2 minutos de golpe)
+    if previous_remaining is not None and previous_remaining - remaining_seconds > 120:
+        # Cambio drástico detectado - resetear alertas apropiadamente
+        reset_alerts_for_new_session(remaining_seconds)
+    
+    # Verificar cada umbral
+    for threshold in sorted(ALERT_THRESHOLDS, reverse=True):  # De mayor a menor
+        if remaining_seconds <= threshold and not alerts_shown[threshold]:
+            # Cruzamos este umbral y no se ha mostrado la alerta
+            show_time_alert(threshold, remaining_seconds)
+            alerts_shown[threshold] = True
+            # Solo mostrar una alerta a la vez
+            break
+    
+    last_known_remaining = remaining_seconds
+
+def get_alert_message(threshold, remaining_seconds):
+    """Genera el mensaje de alerta según el umbral"""
+    minutes = threshold // 60
+    
+    if threshold == 600:
+        return f"⚠️ AVISO: Te quedan 10 minutos de tiempo.\n\nGuarda tu trabajo."
+    elif threshold == 300:
+        return f"⚠️ ATENCIÓN: Te quedan 5 minutos de tiempo.\n\nPrepárate para terminar."
+    elif threshold == 120:
+        return f"🔴 ADVERTENCIA: Te quedan solo 2 minutos.\n\n¡Guarda todo ahora!"
+    elif threshold == 60:
+        return f"🚨 ¡ÚLTIMO MINUTO!\n\nLa PC se bloqueará en 1 minuto.\n¡Guarda tu trabajo inmediatamente!"
+    else:
+        return f"Quedan {minutes} minutos."
+
+def show_time_alert(threshold, remaining_seconds):
+    """
+    Muestra una ventana emergente de alerta usando la API de Windows.
+    La ventana aparece en primer plano para asegurar que el usuario la vea.
+    """
+    try:
+        message = get_alert_message(threshold, remaining_seconds)
+        
+        # Determinar el tipo de icono según la urgencia
+        if threshold <= 60:
+            icon = 0x30  # MB_ICONWARNING (triángulo amarillo con !)
+            title = "⚠️ ¡TIEMPO CASI AGOTADO!"
+        elif threshold <= 120:
+            icon = 0x30  # MB_ICONWARNING
+            title = "⚠️ Advertencia de Tiempo"
+        else:
+            icon = 0x40  # MB_ICONINFORMATION
+            title = "⏰ Aviso de Tiempo"
+        
+        # MB_OK | MB_TOPMOST | icon
+        # MB_OK = 0x0
+        # MB_TOPMOST = 0x40000 (hace que la ventana aparezca encima de todo)
+        # MB_SETFOREGROUND = 0x10000 (trae la ventana al frente)
+        flags = 0x0 | 0x40000 | 0x10000 | icon
+        
+        # Mostrar en un thread separado para no bloquear el monitoreo
+        def show_message():
+            user32.MessageBoxW(0, message, title, flags)
+        
+        alert_thread = threading.Thread(target=show_message, daemon=True)
+        alert_thread.start()
+        
+        print(f"\n[ALERTA] {title}: {threshold//60} minuto(s) restante(s)")
+        
+    except Exception as e:
+        print(f"Error al mostrar alerta: {e}")
+
 def lock_workstation():
     """
     Bloquea la estación de trabajo de Windows usando la API nativa.
@@ -378,6 +485,14 @@ def sync_with_server(client_id):
         end_time = end_time_local.isoformat()
         start_time = start_time_local.isoformat()
         
+        # Detectar si es una nueva sesión o cambio drástico de tiempo
+        # para resetear las alertas apropiadamente
+        global last_known_remaining
+        if last_known_remaining is None or abs(last_known_remaining - remaining_from_server) > 120:
+            # Nueva sesión o cambio drástico - resetear alertas
+            reset_alerts_for_new_session(remaining_from_server)
+            print(f"[Alertas] Reset de alertas. Tiempo restante: {remaining_from_server}s")
+        
         # Actualizar registro local con información del servidor
         if REGISTRY_AVAILABLE:
             # IMPORTANTE: Limpiar completamente la sesión anterior antes de guardar nueva
@@ -525,11 +640,18 @@ def monitor_time(client_id):
                     if session_info is None:
                         if last_remaining is not None:
                             print("\rEsperando asignación de tiempo...", end='', flush=True)
+                            # Si antes había sesión y ahora no, resetear alertas para próxima sesión
+                            global alerts_shown
+                            alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
                         time.sleep(LOCAL_CHECK_INTERVAL)
                         continue
                 
                 remaining_seconds = session_info['remaining_seconds']
                 is_expired = session_info['is_expired']
+                
+                # Si es la primera vez que vemos esta sesión, inicializar alertas
+                if last_remaining is None:
+                    reset_alerts_for_new_session(remaining_seconds)
             else:
                 # Fallback: consultar servidor directamente
                 client_data = check_server_status(client_id)
@@ -542,11 +664,18 @@ def monitor_time(client_id):
                 if session is None:
                     if last_remaining is not None:
                         print("\rEsperando asignación de tiempo...", end='', flush=True)
+                        # Si antes había sesión y ahora no, resetear alertas
+                        global alerts_shown
+                        alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
                     time.sleep(CHECK_INTERVAL)
                     continue
                 
                 remaining_seconds = session.get('remaining_seconds', 0)
                 is_expired = session.get('is_expired', False)
+                
+                # Si es la primera vez que vemos esta sesión, inicializar alertas
+                if last_remaining is None:
+                    reset_alerts_for_new_session(remaining_seconds)
             
             # Verificar si expiró
             if is_expired or remaining_seconds <= 0:
@@ -563,6 +692,9 @@ def monitor_time(client_id):
                 # Verificar periódicamente si se asignó nuevo tiempo
                 time.sleep(2)
                 continue
+            
+            # Verificar alertas de tiempo
+            check_and_show_alerts(remaining_seconds, last_remaining)
             
             # Mostrar tiempo restante
             if last_remaining != remaining_seconds:

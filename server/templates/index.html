@@ -218,6 +218,71 @@
             border-radius: 10px;
             color: #666;
         }
+        
+        .server-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 15px;
+            padding: 12px 15px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #e4e8eb 100%);
+            border-radius: 8px;
+            border: 1px solid #ddd;
+        }
+        
+        .server-info-label {
+            font-size: 14px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        .server-ip {
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+            background: white;
+            padding: 8px 12px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            user-select: all;
+        }
+        
+        .copy-btn {
+            padding: 8px 15px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .copy-btn:hover {
+            background: #5568d3;
+            transform: scale(1.02);
+        }
+        
+        .copy-btn.copied {
+            background: #4CAF50;
+        }
+        
+        .copy-tooltip {
+            font-size: 12px;
+            color: #4CAF50;
+            margin-left: 10px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .copy-tooltip.show {
+            opacity: 1;
+        }
     </style>
 </head>
 <body>
@@ -229,6 +294,14 @@
                 <span style="margin-left: 10px; color: #666;">
                     Clientes: <strong id="client-count">0</strong>
                 </span>
+            </div>
+            <div class="server-info">
+                <span class="server-info-label">📡 IP del Servidor:</span>
+                <span class="server-ip" id="server-url">Cargando...</span>
+                <button class="copy-btn" onclick="copyServerUrl()" id="copy-btn">
+                    📋 Copiar
+                </button>
+                <span class="copy-tooltip" id="copy-tooltip">¡Copiado!</span>
             </div>
         </header>
         
@@ -242,7 +315,53 @@
     <button class="refresh-btn" onclick="loadClients()" title="Actualizar">🔄</button>
     
     <script>
-        const API_URL = 'http://localhost:5000/api';
+        // Usar la URL actual del navegador como base para la API
+        const API_URL = `${window.location.protocol}//${window.location.host}/api`;
+        let serverUrl = '';
+        
+        async function loadServerInfo() {
+            try {
+                const response = await fetch(`${API_URL}/server-info`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    serverUrl = data.url;
+                    document.getElementById('server-url').textContent = data.url;
+                }
+            } catch (error) {
+                console.error('Error al cargar info del servidor:', error);
+                document.getElementById('server-url').textContent = 'No disponible';
+            }
+        }
+        
+        function copyServerUrl() {
+            if (!serverUrl) return;
+            
+            navigator.clipboard.writeText(serverUrl).then(() => {
+                const btn = document.getElementById('copy-btn');
+                const tooltip = document.getElementById('copy-tooltip');
+                
+                btn.classList.add('copied');
+                btn.innerHTML = '✓ Copiado';
+                tooltip.classList.add('show');
+                
+                setTimeout(() => {
+                    btn.classList.remove('copied');
+                    btn.innerHTML = '📋 Copiar';
+                    tooltip.classList.remove('show');
+                }, 2000);
+            }).catch(err => {
+                console.error('Error al copiar:', err);
+                // Fallback para navegadores antiguos
+                const textArea = document.createElement('textarea');
+                textArea.value = serverUrl;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                alert('URL copiada: ' + serverUrl);
+            });
+        }
         
         function formatTime(seconds) {
             if (seconds <= 0) return 'EXPIRADO';
@@ -412,6 +531,9 @@
                 alert('Error al eliminar cliente: ' + error.message);
             }
         }
+        
+        // Cargar información del servidor al iniciar
+        loadServerInfo();
         
         // Cargar clientes al iniciar
         loadClients();

@@ -5,6 +5,7 @@ import uuid
 import threading
 import time
 import os
+import socket
 
 app = Flask(__name__, template_folder='templates')
 CORS(app)
@@ -192,6 +193,31 @@ def health_check():
         'status': 'ok',
         'active_clients': len(client_sessions),
         'total_clients': len(clients_db)
+    }), 200
+
+def get_local_ip():
+    """Obtiene la IP local del servidor"""
+    try:
+        # Crear un socket para determinar la IP local
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        return "127.0.0.1"
+
+@app.route('/api/server-info', methods=['GET'])
+def server_info():
+    """Devuelve información del servidor (IP y puerto)"""
+    port = int(os.getenv('PORT', 5000))
+    local_ip = get_local_ip()
+    
+    return jsonify({
+        'success': True,
+        'ip': local_ip,
+        'port': port,
+        'url': f"http://{local_ip}:{port}"
     }), 200
 
 @app.route('/', methods=['GET'])
