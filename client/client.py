@@ -442,11 +442,6 @@ def sync_with_server(client_id):
         data = response.json()
         client_data = data.get('client', {})
         
-        # Verificar si el servidor solicitó forzar sincronización
-        force_sync = client_data.get('force_sync', False)
-        if force_sync:
-            print("[Refresh] El servidor solicitó sincronización inmediata")
-        
         # Verificar si el servidor tiene configuración actualizada para el cliente
         # El servidor solo envía server_config cuando hay cambios
         config_was_updated = False
@@ -602,16 +597,9 @@ def sync_with_server(client_id):
                 print("[ERROR] No se pudo guardar la sesión en el registro")
         
         # Retornar indicador de configuración actualizada si hubo cambios
-        # También retornar force_sync para que el monitor_time pueda sincronizar inmediatamente
-        result = True
         if config_was_updated:
-            result = {'config_updated': True}
-        if force_sync:
-            if isinstance(result, dict):
-                result['force_sync'] = True
-            else:
-                result = {'force_sync': True}
-        return result
+            return {'config_updated': True}
+        return True
     except requests.exceptions.RequestException as e:
         print(f"Error de conexión al sincronizar: {e}")
         return False
@@ -641,7 +629,6 @@ def monitor_time(client_id):
     last_remaining = None
     last_sync_time = 0
     is_expired_state = False  # Rastrear si estamos en estado de tiempo expirado
-    force_sync_requested = False  # Flag para sincronización inmediata solicitada por el servidor
     
     # Función para cargar configuración desde el registro
     def load_config():
@@ -696,10 +683,7 @@ def monitor_time(client_id):
             current_time = time.time()
             
             # Sincronizar con servidor periódicamente
-            # También sincronizar inmediatamente si el servidor solicitó force_sync
-            should_sync = (current_time - last_sync_time >= SYNC_INTERVAL) or force_sync_requested
-            
-            if should_sync:
+            if current_time - last_sync_time >= SYNC_INTERVAL:
                 sync_result = sync_with_server(client_id)
                 # Verificar si la configuración fue actualizada
                 if isinstance(sync_result, dict) and sync_result.get('config_updated'):
@@ -732,14 +716,6 @@ def monitor_time(client_id):
                 elif sync_result and isinstance(sync_result, str):
                     print(f"[Actualización] Usando nuevo Client ID: {sync_result}")
                     client_id = sync_result
-                # Verificar si el servidor solicitó force_sync
-                if isinstance(sync_result, dict) and sync_result.get('force_sync'):
-                    # El servidor solicitó sincronización inmediata, marcar para sincronizar en el próximo ciclo
-                    force_sync_requested = True
-                    print("[Refresh] Sincronización inmediata solicitada por el servidor")
-                else:
-                    # Limpiar flag si no hay force_sync
-                    force_sync_requested = False
                 last_sync_time = current_time
                 
                 # Forzar re-lectura del registro después de sincronizar

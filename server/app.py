@@ -302,9 +302,6 @@ def get_client_status(client_id):
             # Actualizar flag en clients_db para referencia
             clients_db[client_id]['time_disabled'] = time_disabled
     else:
-        # Verificar si se solicitó forzar sincronización
-        force_sync = clients_db[client_id].get('force_sync', False)
-        
         # Obtener configuración del cliente si se envía
         client_config_data = request.args.get('client_config')
         if client_config_data:
@@ -313,12 +310,6 @@ def get_client_status(client_id):
                 config_info = json.loads(urllib.parse.unquote(client_config_data))
                 # Guardar configuración del cliente en el servidor
                 clients_db[client_id]['config'] = config_info
-                # Marcar cliente como activo cuando envía su configuración
-                clients_db[client_id]['is_active'] = True
-                # Si había una solicitud de force_sync, limpiarla
-                if force_sync:
-                    clients_db[client_id].pop('force_sync', None)
-                    print(f"[Refresh] Configuración actualizada desde cliente {client_id}")
                 save_server_data()
             except Exception as e:
                 print(f"[Advertencia] Error al recibir configuración del cliente: {e}")
@@ -365,124 +356,53 @@ def get_client_status(client_id):
         if not client_data.get('session'):
             client_data['session'] = None
     
-        # Verificar si se solicitó forzar sincronización
-        force_sync = clients_db[client_id].get('force_sync', False)
+    # Comparar configuración del cliente con la del servidor
+    # Solo enviar server_config si hay diferencias
+    server_config = clients_db[client_id].get('config', {})
+    if server_config:
+        # Obtener configuración del cliente desde el query param
+        client_config_data = request.args.get('client_config')
+        client_config = {}
+        if client_config_data:
+            try:
+                import urllib.parse
+                client_config = json.loads(urllib.parse.unquote(client_config_data))
+            except:
+                pass
         
-        # Comparar configuración del cliente con la del servidor
-        # Solo enviar server_config si hay diferencias O si se solicitó force_sync
-        server_config = clients_db[client_id].get('config', {})
-        if server_config:
-            # Obtener configuración del cliente desde el query param
-            client_config_data = request.args.get('client_config')
-            client_config = {}
-            if client_config_data:
-                try:
-                    import urllib.parse
-                    client_config = json.loads(urllib.parse.unquote(client_config_data))
-                except:
-                    pass
+        # Comparar configuraciones - solo enviar si hay diferencias
+        config_changed = False
+        config_fields = ['sync_interval', 'local_check_interval', 'expired_sync_interval', 
+                        'lock_delay', 'warning_thresholds']
+        
+        for field in config_fields:
+            server_value = server_config.get(field)
+            client_value = client_config.get(field)
             
-            # Comparar configuraciones - solo enviar si hay diferencias
-            config_changed = False
-            config_fields = ['sync_interval', 'local_check_interval', 'expired_sync_interval', 
-                            'lock_delay', 'warning_thresholds']
-            
-            for field in config_fields:
-                server_value = server_config.get(field)
-                client_value = client_config.get(field)
-                
-                # Si el servidor tiene un valor y es diferente al del cliente, hay cambio
-                if server_value is not None:
-                    # Comparar listas de forma especial (warning_thresholds)
-                    if field == 'warning_thresholds':
-                        if isinstance(server_value, list) and isinstance(client_value, list):
-                            if sorted(server_value) != sorted(client_value):
-                                config_changed = True
-                                break
-                        elif client_value != server_value:
+            # Si el servidor tiene un valor y es diferente al del cliente, hay cambio
+            if server_value is not None:
+                # Comparar listas de forma especial (warning_thresholds)
+                if field == 'warning_thresholds':
+                    if isinstance(server_value, list) and isinstance(client_value, list):
+                        if sorted(server_value) != sorted(client_value):
                             config_changed = True
                             break
-                    else:
-                        if client_value != server_value:
-                            config_changed = True
-                            break
-            
-            # Solo enviar server_config si hay cambios O si se solicitó force_sync
-            # Cuando hay force_sync, siempre enviar para forzar al cliente a sincronizar su configuración
-            if config_changed or force_sync:
-                client_data['server_config'] = server_config
-                # Incluir flag force_sync en la respuesta para que el cliente sepa que debe sincronizar inmediatamente
-                if force_sync:
-                    client_data['force_sync'] = True
-                # Si había force_sync y el cliente envió su configuración, limpiar el flag
-                if force_sync and client_config_data:
-                    clients_db[client_id].pop('force_sync', None)
-                    save_server_data()
+                    elif client_value != server_value:
+                        config_changed = True
+                        break
+                else:
+                    if client_value != server_value:
+                        config_changed = True
+                        break
+        
+        # Solo enviar server_config si hay cambios
+        if config_changed:
+            client_data['server_config'] = server_config
     
     return jsonify({
         'success': True,
         'client': client_data
     }), 200
-
-@app.route('/api/client/<client_id>/refresh', methods=['POST'])
-def refresh_client(client_id):
-    """Fuerza la sincronización con el cliente para obtener su configuración y estado actual"""
-    if client_id not in clients_db:
-        return jsonify({
-            'success': False,
-            'message': 'Cliente no encontrado'
-        }), 404
-    
-    try:
-        # Marcar que necesitamos forzar sincronización
-        # Esto se usará cuando el cliente sincronice normalmente
-        clients_db[client_id]['force_sync'] = True
-        
-        # Si el cliente tiene configuración guardada, marcarlo como activo
-        client_config = clients_db[client_id].get('config', {})
-        if client_config:
-            clients_db[client_id]['is_active'] = True
-        
-        # Si el cliente tiene sesión activa, también marcarlo como activo
-        if client_id in client_sessions:
-            session = client_sessions[client_id]
-            time_disabled = session.get('time_disabled', False)
-            clients_db[client_id]['is_active'] = True
-            clients_db[client_id]['time_disabled'] = time_disabled
-        
-        save_server_data()
-        
-        # Obtener información actualizada del cliente
-        client_data = clients_db[client_id].copy()
-        
-        # Incluir información de sesión si existe
-        if client_id in client_sessions:
-            session = client_sessions[client_id]
-            time_disabled = session.get('time_disabled', False)
-            end_time = datetime.fromisoformat(session['end_time'])
-            remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
-            
-            if time_disabled:
-                remaining_seconds = max(remaining_seconds, 999999999)
-            
-            client_data['current_session'] = {
-                'time_limit': session['time_limit'],
-                'start_time': session['start_time'],
-                'end_time': session['end_time'],
-                'remaining_seconds': remaining_seconds,
-                'time_disabled': time_disabled
-            }
-        
-        return jsonify({
-            'success': True,
-            'message': 'Cliente refrescado. La configuración se actualizará cuando el cliente sincronice.',
-            'client': client_data
-        }), 200
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'Error al refrescar cliente: {str(e)}'
-        }), 500
 
 @app.route('/api/client/<client_id>/stop', methods=['POST'])
 def stop_client_session(client_id):
