@@ -411,6 +411,8 @@ def sync_with_server(client_id):
     Sincroniza con el servidor y actualiza el registro local.
     Se ejecuta periódicamente para mantener la información actualizada.
     """
+    global last_known_remaining  # Declarar al inicio de la función
+    
     try:
         response = requests.get(
             f"{SERVER_URL}/api/client/{client_id}/status",
@@ -487,7 +489,6 @@ def sync_with_server(client_id):
         
         # Detectar si es una nueva sesión o cambio drástico de tiempo
         # para resetear las alertas apropiadamente
-        global last_known_remaining
         if last_known_remaining is None or abs(last_known_remaining - remaining_from_server) > 120:
             # Nueva sesión o cambio drástico - resetear alertas
             reset_alerts_for_new_session(remaining_from_server)
@@ -566,6 +567,8 @@ def monitor_time(client_id):
     Monitorea el tiempo restante leyendo del registro local.
     Sincroniza con el servidor periódicamente pero funciona principalmente del registro.
     """
+    global alerts_shown  # Declarar al inicio de la función
+    
     print("=" * 50)
     print("Cliente CiberMonday iniciado")
     print("=" * 50)
@@ -641,7 +644,6 @@ def monitor_time(client_id):
                         if last_remaining is not None:
                             print("\rEsperando asignación de tiempo...", end='', flush=True)
                             # Si antes había sesión y ahora no, resetear alertas para próxima sesión
-                            global alerts_shown
                             alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
                         time.sleep(LOCAL_CHECK_INTERVAL)
                         continue
@@ -665,7 +667,6 @@ def monitor_time(client_id):
                     if last_remaining is not None:
                         print("\rEsperando asignación de tiempo...", end='', flush=True)
                         # Si antes había sesión y ahora no, resetear alertas
-                        global alerts_shown
                         alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
                     time.sleep(CHECK_INTERVAL)
                     continue
