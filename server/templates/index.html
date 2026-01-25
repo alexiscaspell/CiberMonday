@@ -348,15 +348,66 @@
         
         async function loadClients() {
             try {
-                const response = await fetch(`${API_URL}/clients`);
-                const data = await response.json();
+                // Primero, obtener lista de clientes
+                const clientsResponse = await fetch(`${API_URL}/clients`);
+                const clientsData = await clientsResponse.json();
                 
-                if (data.success) {
-                    displayClients(data.clients);
-                    document.getElementById('client-count').textContent = data.clients.length;
+                if (clientsData.success && clientsData.clients.length > 0) {
+                    // Solicitar refresh para cada cliente (para forzar sincronización y obtener configuración)
+                    const refreshPromises = clientsData.clients.map(async client => {
+                        try {
+                            const refreshResponse = await fetch(`${API_URL}/client/${client.id}/refresh`, { 
+                                method: 'POST' 
+                            });
+                            const refreshData = await refreshResponse.json();
+                            if (refreshData.success) {
+                                console.log(`Cliente ${client.id} refrescado`);
+                            }
+                            return refreshData;
+                        } catch (err) {
+                            console.warn(`No se pudo refrescar cliente ${client.id}:`, err);
+                            return null;
+                        }
+                    });
+                    
+                    // Esperar a que todas las solicitudes de refresh se completen
+                    await Promise.all(refreshPromises);
+                    
+                    // Pequeña pausa para que el servidor procese los refreshes
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    
+                    // Ahora cargar los clientes actualizados
+                    const response = await fetch(`${API_URL}/clients`);
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        displayClients(data.clients);
+                        document.getElementById('client-count').textContent = data.clients.length;
+                        
+                        // Actualizar inmediatamente los tiempos para mostrar cuenta regresiva
+                        updateClientTimes();
+                        
+                        showNotification('Clientes refrescados. La configuración se actualizará cuando cada cliente sincronice.', 'success');
+                    }
+                } else if (clientsData.success) {
+                    // No hay clientes, solo mostrar lista vacía
+                    displayClients([]);
+                    document.getElementById('client-count').textContent = '0';
                 }
             } catch (error) {
                 console.error('Error al cargar clientes:', error);
+                // Intentar cargar de todas formas
+                try {
+                    const response = await fetch(`${API_URL}/clients`);
+                    const data = await response.json();
+                    if (data.success) {
+                        displayClients(data.clients);
+                        document.getElementById('client-count').textContent = data.clients.length;
+                    }
+                } catch (e) {
+                    console.error('Error al cargar clientes:', e);
+                    showNotification('Error al refrescar clientes', 'error');
+                }
             }
         }
         
@@ -405,8 +456,21 @@
                                     Inicio: ${new Date(session.start_time).toLocaleTimeString()}
                                 </div>
                             `;
+                        } else if (client.is_active) {
+                            // Si el cliente está activo pero no tiene sesión, mostrar mensaje de espera
+                            if (!sessionInfo) {
+                                const timeControls = card.querySelector('.time-controls');
+                                sessionInfo = document.createElement('div');
+                                sessionInfo.className = 'session-info';
+                                timeControls.parentNode.insertBefore(sessionInfo, timeControls);
+                            }
+                            sessionInfo.innerHTML = `
+                                <div style="color: #666; font-style: italic;">
+                                    Esperando sincronización del cliente...
+                                </div>
+                            `;
                         } else {
-                            // Eliminar información de sesión si no hay sesión
+                            // Eliminar información de sesión si no hay sesión y el cliente no está activo
                             if (sessionInfo) {
                                 sessionInfo.remove();
                             }
@@ -473,6 +537,10 @@
                                 <div style="font-size: 12px; color: #666;">
                                     Inicio: ${new Date(session.start_time).toLocaleTimeString()}
                                 </div>
+                            </div>
+                        ` : client.is_active ? `
+                            <div class="session-info" style="color: #666; font-style: italic;">
+                                Esperando sincronización del cliente...
                             </div>
                         ` : ''}
                         
