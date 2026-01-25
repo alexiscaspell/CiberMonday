@@ -139,14 +139,15 @@ def show_config_window():
     alerts_frame.pack(fill=tk.X, pady=10)
     
     # Etiqueta para alertas
-    alerts_label = ttk.Label(alerts_frame, text="Umbrales de Alerta (segundos):")
+    alerts_label = ttk.Label(alerts_frame, text="Umbrales de Alerta (minutos):")
     alerts_label.pack(anchor=tk.W, pady=(0, 5))
     
     # Campo de entrada para alertas
     alerts_var = tk.StringVar()
-    # Cargar valor actual si existe
-    current_alerts = current_config.get('alert_thresholds', [600, 300, 120, 60]) if current_config else [600, 300, 120, 60]
-    alerts_var.set(', '.join(map(str, current_alerts)))
+    # Cargar valor actual si existe (convertir segundos a minutos)
+    current_alerts_seconds = current_config.get('alert_thresholds', [600, 300, 120, 60]) if current_config else [600, 300, 120, 60]
+    current_alerts_minutes = [s // 60 for s in current_alerts_seconds]
+    alerts_var.set(', '.join(map(str, current_alerts_minutes)))
     
     alerts_entry = ttk.Entry(alerts_frame, textvariable=alerts_var, width=30, font=("Arial", 10))
     alerts_entry.pack(side=tk.LEFT, pady=(0, 5))
@@ -154,7 +155,7 @@ def show_config_window():
     # Descripción de alertas
     alerts_desc = tk.Label(
         alerts_frame,
-        text="(ej: 600, 300, 120, 60 = alertas a 10, 5, 2, 1 min)",
+        text="(ej: 10, 5, 2, 1 = alertas a 10, 5, 2, 1 minutos)",
         font=("Arial", 8),
         fg="gray"
     )
@@ -190,20 +191,20 @@ def show_config_window():
             messagebox.showerror("Error", "El intervalo de sincronización debe ser un número válido")
             return
         
-        # Validar umbrales de alerta
+        # Validar umbrales de alerta (en minutos, convertir a segundos)
         try:
             alerts_str = alerts_var.get().strip()
-            alert_thresholds = [int(x.strip()) for x in alerts_str.split(',') if x.strip()]
-            if len(alert_thresholds) == 0:
-                messagebox.showerror("Error", "Debes especificar al menos un umbral de alerta")
+            alert_minutes = [float(x.strip()) for x in alerts_str.split(',') if x.strip()]
+            if len(alert_minutes) == 0:
+                messagebox.showerror("Error", "Debes especificar al menos un umbral de alerta en minutos")
                 return
-            if any(t <= 0 for t in alert_thresholds):
+            if any(t <= 0 for t in alert_minutes):
                 messagebox.showerror("Error", "Los umbrales de alerta deben ser números positivos")
                 return
-            # Ordenar de mayor a menor
-            alert_thresholds = sorted(alert_thresholds, reverse=True)
+            # Convertir minutos a segundos y ordenar de mayor a menor
+            alert_thresholds = sorted([int(m * 60) for m in alert_minutes], reverse=True)
         except ValueError:
-            messagebox.showerror("Error", "Los umbrales de alerta deben ser números separados por comas")
+            messagebox.showerror("Error", "Los umbrales de alerta deben ser números separados por comas (ej: 10, 5, 2, 1)")
             return
         
         # Guardar configuración
@@ -234,7 +235,7 @@ def show_config_window():
                     f.write(f'SERVER_URL = "{server_url}"\n')
                     f.write(f'CHECK_INTERVAL = 5\n')
                     f.write(f'SYNC_INTERVAL = {sync_interval}\n')
-                    f.write(f'ALERT_THRESHOLDS = {alert_thresholds}\n')
+                    f.write(f'ALERT_THRESHOLDS = {alert_thresholds}  # En segundos\n')
                 config_result = config
                 root.quit()
                 root.destroy()

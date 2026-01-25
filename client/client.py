@@ -374,7 +374,15 @@ def register_new_client(existing_client_id=None):
         client_name = socket.gethostname()
         
         # Preparar datos de registro
-        register_data = {'name': client_name}
+        # Verificar si hay un nombre personalizado guardado
+        custom_name = None
+        if REGISTRY_AVAILABLE:
+            config_data = get_config_from_registry()
+            if config_data:
+                custom_name = config_data.get('custom_name')
+        
+        # Usar nombre personalizado si existe, sino el nombre del equipo
+        register_data = {'name': custom_name if custom_name else client_name}
         
         # Si es re-registro, incluir el ID existente
         if existing_client_id:
@@ -392,12 +400,12 @@ def register_new_client(existing_client_id=None):
                     }
                     print(f"[Re-registro] Enviando sesión activa: {session_info['remaining_seconds']}s restantes")
             
-            # Incluir configuración actual del cliente
-            config_data = get_config_from_registry()
+            # Incluir configuración actual del cliente (incluyendo nombre personalizado)
             if config_data:
                 register_data['config'] = {
                     'sync_interval': config_data.get('sync_interval', 30),
-                    'alert_thresholds': config_data.get('alert_thresholds', [600, 300, 120, 60])
+                    'alert_thresholds': config_data.get('alert_thresholds', [600, 300, 120, 60]),
+                    'custom_name': custom_name
                 }
         
         response = requests.post(
@@ -468,6 +476,16 @@ def apply_server_config(server_config):
             new_thresholds = server_config['alert_thresholds']
             update_alert_thresholds(new_thresholds)
             current_config['alert_thresholds'] = new_thresholds
+        
+        if 'custom_name' in server_config:
+            new_name = server_config['custom_name']
+            old_name = current_config.get('custom_name')
+            if new_name != old_name:
+                if new_name:
+                    print(f"[Config] Nombre personalizado: {old_name or '(ninguno)'} -> {new_name}")
+                else:
+                    print(f"[Config] Nombre personalizado eliminado (se usará nombre del equipo)")
+                current_config['custom_name'] = new_name
         
         # Guardar configuración actualizada en el registro
         # Preservar server_url del registro local

@@ -233,6 +233,7 @@ def save_config_to_registry(config):
             - check_interval: Intervalo de verificación local
             - sync_interval: Intervalo de sincronización con el servidor
             - alert_thresholds: Lista de segundos para alertas [600, 300, 120, 60]
+            - custom_name: Nombre personalizado del cliente (None = usar nombre del equipo)
     
     Returns:
         bool: True si se guardó correctamente
@@ -247,7 +248,8 @@ def save_config_to_registry(config):
             'server_url': config.get('server_url', 'http://localhost:5000'),
             'check_interval': config.get('check_interval', 5),
             'sync_interval': config.get('sync_interval', 30),
-            'alert_thresholds': config.get('alert_thresholds', [600, 300, 120, 60])
+            'alert_thresholds': config.get('alert_thresholds', [600, 300, 120, 60]),
+            'custom_name': config.get('custom_name', None)
         }
         
         json_data = json.dumps(config_data)
@@ -282,6 +284,7 @@ def get_config_from_registry():
             config_data.setdefault('check_interval', 5)
             config_data.setdefault('sync_interval', 30)
             config_data.setdefault('alert_thresholds', [600, 300, 120, 60])
+            config_data.setdefault('custom_name', None)
             
             return config_data
         except FileNotFoundError:

@@ -376,6 +376,75 @@
             margin-left: 10px;
             color: #4CAF50;
         }
+        
+        /* Estilos para nombre editable */
+        .client-name-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .edit-name-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 2px 5px;
+            opacity: 0.5;
+            transition: opacity 0.2s;
+        }
+        
+        .edit-name-btn:hover {
+            opacity: 1;
+        }
+        
+        .client-name-input {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            border: 2px solid #667eea;
+            border-radius: 4px;
+            padding: 4px 8px;
+            width: 180px;
+            outline: none;
+        }
+        
+        .client-name-input:focus {
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+        }
+        
+        .name-edit-actions {
+            display: flex;
+            gap: 4px;
+            margin-left: 6px;
+        }
+        
+        .name-edit-btn {
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        
+        .name-save-btn {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        .name-save-btn:hover {
+            background: #45a049;
+        }
+        
+        .name-cancel-btn {
+            background: #f44336;
+            color: white;
+        }
+        
+        .name-cancel-btn:hover {
+            background: #d32f2f;
+        }
     </style>
 </head>
 <body>
@@ -599,7 +668,10 @@
                     <div class="client-card" id="card-${client.id}">
                         <div class="client-header">
                             <div>
-                                <div class="client-name">${client.name || 'Cliente Sin Nombre'}</div>
+                                <div class="client-name-container">
+                                    <span class="client-name" id="name-display-${client.id}">${client.name || 'Cliente Sin Nombre'}</span>
+                                    <button class="edit-name-btn" onclick="editClientName('${client.id}')" title="Editar nombre">✏️</button>
+                                </div>
                                 <div class="client-id">ID: ${client.id.substring(0, 8)}...</div>
                             </div>
                             <span class="status ${client.is_active ? 'active' : 'inactive'}">
@@ -657,12 +729,12 @@
                                 <div class="config-help">Cada cuánto el cliente sincroniza con el servidor (mín: 5s)</div>
                                 
                                 <div class="config-row" style="margin-top: 15px;">
-                                    <label class="config-label">Alertas (seg):</label>
+                                    <label class="config-label">Alertas (min):</label>
                                     <input type="text" class="config-input" id="config-alerts-${client.id}" 
-                                           value="${(client.config?.alert_thresholds || [600, 300, 120, 60]).join(', ')}"
-                                           placeholder="600, 300, 120, 60">
+                                           value="${(client.config?.alert_thresholds || [600, 300, 120, 60]).map(s => s / 60).join(', ')}"
+                                           placeholder="10, 5, 2, 1">
                                 </div>
-                                <div class="config-help">Segundos en que aparecen alertas (ej: 600=10min, 300=5min, 120=2min, 60=1min)</div>
+                                <div class="config-help">Minutos en que aparecen alertas (ej: 10, 5, 2, 1)</div>
                                 
                                 <div class="config-row" style="margin-top: 15px;">
                                     <button class="btn-config" onclick="saveConfig('${client.id}')">
@@ -697,11 +769,14 @@
             
             const syncInterval = parseInt(syncInput.value);
             
-            // Parsear umbrales de alerta
+            // Parsear umbrales de alerta (en minutos) y convertir a segundos
             const alertsStr = alertsInput.value;
-            const alertThresholds = alertsStr.split(',')
-                .map(s => parseInt(s.trim()))
+            const alertMinutes = alertsStr.split(',')
+                .map(s => parseFloat(s.trim()))
                 .filter(n => !isNaN(n) && n > 0);
+            
+            // Convertir minutos a segundos
+            const alertThresholds = alertMinutes.map(m => Math.round(m * 60));
             
             if (syncInterval < 5) {
                 alert('El intervalo de sincronización mínimo es 5 segundos');
@@ -709,7 +784,7 @@
             }
             
             if (alertThresholds.length === 0) {
-                alert('Debes especificar al menos un umbral de alerta');
+                alert('Debes especificar al menos un umbral de alerta en minutos');
                 return;
             }
             
@@ -731,9 +806,9 @@
                     statusEl.textContent = '✓ Guardado';
                     statusEl.style.color = '#4CAF50';
                     
-                    // Actualizar el input de alertas con los valores ordenados del servidor
+                    // Actualizar el input de alertas con los valores ordenados del servidor (convertir a minutos)
                     if (data.config?.alert_thresholds) {
-                        alertsInput.value = data.config.alert_thresholds.join(', ');
+                        alertsInput.value = data.config.alert_thresholds.map(s => s / 60).join(', ');
                     }
                     
                     setTimeout(() => {
@@ -749,6 +824,108 @@
                 statusEl.style.color = '#f44336';
                 alert('Error al guardar configuración: ' + error.message);
             }
+        }
+        
+        function editClientName(clientId) {
+            const nameDisplay = document.getElementById(`name-display-${clientId}`);
+            const currentName = nameDisplay.textContent;
+            const container = nameDisplay.parentElement;
+            
+            // Ocultar el nombre y el botón de editar
+            const editBtn = container.querySelector('.edit-name-btn');
+            nameDisplay.style.display = 'none';
+            editBtn.style.display = 'none';
+            
+            // Crear input
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'client-name-input';
+            input.value = currentName;
+            input.maxLength = 50;
+            input.id = `name-input-${clientId}`;
+            
+            // Crear contenedor de botones
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'name-edit-actions';
+            actionsDiv.id = `name-actions-${clientId}`;
+            
+            // Botón guardar
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'name-edit-btn name-save-btn';
+            saveBtn.innerHTML = '✓';
+            saveBtn.title = 'Guardar';
+            
+            // Botón cancelar
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'name-edit-btn name-cancel-btn';
+            cancelBtn.innerHTML = '✗';
+            cancelBtn.title = 'Cancelar';
+            
+            actionsDiv.appendChild(saveBtn);
+            actionsDiv.appendChild(cancelBtn);
+            
+            // Insertar input y botones
+            container.insertBefore(input, nameDisplay);
+            container.insertBefore(actionsDiv, nameDisplay);
+            input.focus();
+            input.select();
+            
+            // Manejar guardado
+            const saveName = async () => {
+                const newName = input.value.trim();
+                
+                if (newName && newName !== currentName) {
+                    try {
+                        const response = await fetch(`${API_URL}/client/${clientId}/config`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                custom_name: newName
+                            })
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (data.success) {
+                            nameDisplay.textContent = newName;
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    } catch (error) {
+                        alert('Error al guardar nombre: ' + error.message);
+                    }
+                }
+                
+                // Restaurar vista normal
+                cleanup();
+            };
+            
+            // Cancelar edición
+            const cancelEdit = () => {
+                cleanup();
+            };
+            
+            // Limpiar y restaurar vista
+            const cleanup = () => {
+                input.remove();
+                actionsDiv.remove();
+                nameDisplay.style.display = '';
+                editBtn.style.display = '';
+            };
+            
+            // Eventos
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    saveName();
+                } else if (e.key === 'Escape') {
+                    cancelEdit();
+                }
+            });
+            
+            saveBtn.addEventListener('click', saveName);
+            cancelBtn.addEventListener('click', cancelEdit);
         }
         
         async function setTime(clientId) {

@@ -19,6 +19,7 @@ client_configs = {}  # Configuración de cada cliente
 DEFAULT_CLIENT_CONFIG = {
     'sync_interval': 30,           # Segundos entre sincronizaciones
     'alert_thresholds': [600, 300, 120, 60],  # Alertas a los 10, 5, 2, 1 minutos
+    'custom_name': None,           # Nombre personalizado (None = usar nombre del equipo)
 }
 
 def generate_client_id():
@@ -62,8 +63,12 @@ def register_client():
         client_configs[client_id] = {
             'sync_interval': client_config.get('sync_interval', DEFAULT_CLIENT_CONFIG['sync_interval']),
             'alert_thresholds': client_config.get('alert_thresholds', DEFAULT_CLIENT_CONFIG['alert_thresholds']),
+            'custom_name': client_config.get('custom_name', None),
         }
-        print(f"[Registro] Cliente {client_id[:8]}... envió configuración: sync={client_configs[client_id]['sync_interval']}s, alertas={client_configs[client_id]['alert_thresholds']}")
+        # Si el cliente tiene un nombre personalizado, usarlo en lugar del nombre del equipo
+        if client_configs[client_id]['custom_name']:
+            clients_db[client_id]['name'] = client_configs[client_id]['custom_name']
+        print(f"[Registro] Cliente {client_id[:8]}... envió configuración: sync={client_configs[client_id]['sync_interval']}s, alertas={client_configs[client_id]['alert_thresholds']}, nombre={client_configs[client_id]['custom_name']}")
     elif client_id not in client_configs:
         # Nuevo cliente sin configuración - usar valores por defecto
         client_configs[client_id] = DEFAULT_CLIENT_CONFIG.copy()
@@ -256,6 +261,22 @@ def set_client_config(client_id):
                 'success': False,
                 'message': 'Los umbrales de alerta deben ser una lista de números positivos'
             }), 400
+    
+    if 'custom_name' in data:
+        custom_name = data['custom_name']
+        if custom_name:
+            custom_name = str(custom_name).strip()
+            if len(custom_name) > 50:
+                return jsonify({
+                    'success': False,
+                    'message': 'El nombre no puede tener más de 50 caracteres'
+                }), 400
+            current_config['custom_name'] = custom_name
+            # Actualizar también el nombre en clients_db para que se muestre en la UI
+            clients_db[client_id]['name'] = custom_name
+        else:
+            # Si se envía vacío o None, eliminar el nombre personalizado
+            current_config['custom_name'] = None
     
     client_configs[client_id] = current_config
     
