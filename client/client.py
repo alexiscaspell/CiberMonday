@@ -318,16 +318,18 @@ def sync_with_server(client_id):
         local_session_data = None
         if REGISTRY_AVAILABLE:
             local_session_data = get_session_from_registry()
-            # IMPORTANTE: Siempre enviar la sesión local al servidor si existe,
-            # incluso si parece expirada según el cálculo local.
-            # El servidor puede tener una hora diferente y debe decidir si aceptarla o no.
-            # Solo verificar que los datos sean válidos, no si está expirada
             if local_session_data:
+                # Verificar que la sesión local no haya expirado
                 end_time_str = local_session_data.get('end_time')
-                time_limit = local_session_data.get('time_limit_seconds', 0)
-                # Solo no enviar si falta información crítica
-                if not end_time_str or time_limit <= 0:
-                    local_session_data = None
+                if end_time_str:
+                    try:
+                        from datetime import datetime
+                        end_time = datetime.fromisoformat(end_time_str)
+                        remaining = int((end_time - datetime.now()).total_seconds())
+                        if remaining <= 0:
+                            local_session_data = None  # Sesión expirada, no enviar
+                    except:
+                        local_session_data = None
         
         # Construir URL con información de sesión local si existe
         url = f"{SERVER_URL}/api/client/{client_id}/status"
@@ -336,25 +338,11 @@ def sync_with_server(client_id):
         if local_session_data:
             # Enviar información de sesión local al servidor para que la recupere
             import urllib.parse
-            # Calcular remaining_seconds usando la hora local del cliente
-            end_time_str = local_session_data.get('end_time')
-            remaining_seconds_local = None
-            if end_time_str:
-                try:
-                    from datetime import datetime
-                    end_time = datetime.fromisoformat(end_time_str)
-                    remaining_seconds_local = int((end_time - datetime.now()).total_seconds())
-                    # Asegurar que no sea negativo (pero el servidor puede aceptar valores negativos pequeños)
-                    remaining_seconds_local = max(-3600, remaining_seconds_local)  # Permitir hasta 1 hora negativo
-                except:
-                    pass
-            
             session_json = json.dumps({
                 'time_limit_seconds': local_session_data.get('time_limit_seconds', 0),
                 'start_time': local_session_data.get('start_time', ''),
                 'end_time': local_session_data.get('end_time', ''),
-                'time_disabled': local_session_data.get('time_disabled', False),
-                'remaining_seconds': remaining_seconds_local  # Incluir remaining_seconds calculado por el cliente
+                'time_disabled': local_session_data.get('time_disabled', False)
             })
             params.append(f"session_data={urllib.parse.quote(session_json)}")
         

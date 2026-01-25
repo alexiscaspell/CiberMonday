@@ -271,7 +271,6 @@ def get_client_status(client_id):
     # PRIMERO: Verificar si el cliente está enviando su sesión local
     # Esto tiene prioridad sobre la sesión del servidor para asegurar que siempre tenemos la información más reciente
     client_session_data = request.args.get('session_data')
-    session_from_client = None
     if client_session_data:
         try:
             # El cliente puede enviar su información de sesión local como parámetro
@@ -284,74 +283,28 @@ def get_client_status(client_id):
             start_time_str = session_info.get('start_time')
             
             if time_limit > 0 and end_time_str:
-                # El cliente puede enviar remaining_seconds calculado con su hora local
-                # Si lo envía, usarlo directamente; si no, calcularlo usando la hora del servidor
-                remaining_seconds_from_client = session_info.get('remaining_seconds')
-                if remaining_seconds_from_client is not None:
-                    # El cliente envió su cálculo de remaining_seconds, usarlo directamente
-                    remaining_seconds = remaining_seconds_from_client
-                else:
-                    # Calcular usando la hora del servidor
-                    end_time = datetime.fromisoformat(end_time_str)
-                    remaining_seconds = int((end_time - datetime.now()).total_seconds())
+                end_time = datetime.fromisoformat(end_time_str)
+                remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
                 
-                # IMPORTANTE: Si el cliente está enviando su sesión local, siempre aceptarla
-                # incluso si el cálculo indica que está expirada (puede ser problema de sincronización de tiempo)
-                # Solo rechazar si el tiempo está claramente expirado (más de 1 hora en el pasado)
+                # Actualizar o crear la sesión en el servidor con la información del cliente
                 time_disabled = session_info.get('time_disabled', False)
+                client_sessions[client_id] = {
+                    'time_limit': time_limit,
+                    'start_time': start_time_str or datetime.now().isoformat(),
+                    'end_time': end_time_str,
+                    'time_disabled': time_disabled
+                }
+                # Actualizar flag en clients_db también
+                clients_db[client_id]['time_disabled'] = time_disabled
+                clients_db[client_id]['is_active'] = True
+                save_server_data()
                 
-                # Si el tiempo está deshabilitado o si remaining_seconds es razonable (no más de 1 hora negativo)
-                # aceptar la sesión del cliente
-                if time_disabled or remaining_seconds > -3600:
-                    # Actualizar o crear la sesión en el servidor con la información del cliente
-                    client_sessions[client_id] = {
-                        'time_limit': time_limit,
-                        'start_time': start_time_str or datetime.now().isoformat(),
-                        'end_time': end_time_str,
-                        'time_disabled': time_disabled
-                    }
-                    # Actualizar flag en clients_db también
-                    clients_db[client_id]['time_disabled'] = time_disabled
-                    clients_db[client_id]['is_active'] = True
-                    save_server_data()
-                    
-                    # Calcular remaining_seconds para la respuesta
-                    # Si el tiempo está deshabilitado, usar un valor muy grande
-                    if time_disabled:
-                        remaining_for_response = 999999999
-                        is_expired = False
-                    else:
-                        # Usar max(0, ...) para evitar valores negativos en la respuesta
-                        # pero el cliente recalculará usando su propia hora local
-                        remaining_for_response = max(0, remaining_seconds)
-                        is_expired = remaining_seconds <= 0
-                    
-                    # Guardar información de sesión para devolverla en la respuesta
-                    session_from_client = {
-                        'time_limit_seconds': time_limit,
-                        'start_time': start_time_str or datetime.now().isoformat(),
-                        'end_time': end_time_str,
-                        'remaining_seconds': remaining_for_response,
-                        'is_expired': is_expired,
-                        'time_disabled': time_disabled
-                    }
-                    
-                    if time_disabled:
-                        print(f"[Recuperación] Sesión actualizada desde cliente {client_id}: Tiempo deshabilitado")
-                    else:
-                        print(f"[Recuperación] Sesión actualizada desde cliente {client_id}: {remaining_seconds}s restantes (del cliente) -> {remaining_for_response}s para respuesta")
-                else:
-                    print(f"[Advertencia] Sesión del cliente {client_id} está muy expirada ({remaining_seconds}s), no se recuperará")
+                print(f"[Recuperación] Sesión actualizada desde cliente {client_id}: {remaining_seconds}s restantes")
         except Exception as e:
             print(f"[Advertencia] Error al recuperar sesión del cliente: {e}")
-            import traceback
-            traceback.print_exc()
     
-    # Si el cliente envió su sesión, usar esa información directamente
-    if session_from_client:
-        client_data['session'] = session_from_client
     # Verificar si hay sesión en el servidor (ahora actualizada con la del cliente si la envió)
-    elif client_id in client_sessions:
+    if client_id in client_sessions:
         session = client_sessions[client_id]
         time_disabled = session.get('time_disabled', False)
         end_time = datetime.fromisoformat(session['end_time'])
@@ -366,28 +319,12 @@ def get_client_status(client_id):
             is_expired = remaining_seconds == 0
         
         # Si la sesión expiró (y no es tiempo deshabilitado), limpiarla
-        # PERO solo si no fue enviada por el cliente en esta misma request
-        # (para evitar eliminar sesiones que el cliente acaba de enviar)
         if is_expired and not time_disabled:
-            # Si el cliente acaba de enviar esta sesión, no eliminarla todavía
-            # (puede ser un problema de sincronización de tiempo)
-            if not client_session_data:
-                del client_sessions[client_id]
-                clients_db[client_id]['is_active'] = False
-                clients_db[client_id].pop('time_disabled', None)  # Limpiar flag si existe
-                save_server_data()
-                client_data['session'] = None
-            else:
-                # El cliente envió esta sesión, mantenerla aunque parezca expirada
-                # pero marcar como expirada en la respuesta
-                client_data['session'] = {
-                    'time_limit_seconds': session['time_limit'],
-                    'start_time': session['start_time'],
-                    'end_time': session['end_time'],
-                    'remaining_seconds': remaining_seconds,
-                    'is_expired': True,  # Marcar como expirada pero mantener la sesión
-                    'time_disabled': False
-                }
+            del client_sessions[client_id]
+            clients_db[client_id]['is_active'] = False
+            clients_db[client_id].pop('time_disabled', None)  # Limpiar flag si existe
+            save_server_data()
+            client_data['session'] = None
         else:
             client_data['session'] = {
                 'time_limit_seconds': session['time_limit'],
@@ -426,57 +363,57 @@ def get_client_status(client_id):
             save_server_data()
         except Exception as e:
             print(f"[Advertencia] Error al recibir configuración del cliente: {e}")
-    
-    # Comparar configuración del cliente con la del servidor
-    # Solo enviar server_config si hay diferencias O si se solicitó force_sync
-    server_config = clients_db[client_id].get('config', {})
-    if server_config:
-        # Obtener configuración del cliente desde el query param
-        client_config_data_for_comparison = request.args.get('client_config')
-        client_config = {}
-        if client_config_data_for_comparison:
-            try:
-                import urllib.parse
-                client_config = json.loads(urllib.parse.unquote(client_config_data_for_comparison))
-            except:
-                pass
         
-        # Comparar configuraciones - solo enviar si hay diferencias
-        config_changed = False
-        config_fields = ['sync_interval', 'local_check_interval', 'expired_sync_interval', 
-                        'lock_delay', 'warning_thresholds']
-        
-        for field in config_fields:
-            server_value = server_config.get(field)
-            client_value = client_config.get(field)
+        # Comparar configuración del cliente con la del servidor
+        # Solo enviar server_config si hay diferencias O si se solicitó force_sync
+        server_config = clients_db[client_id].get('config', {})
+        if server_config:
+            # Obtener configuración del cliente desde el query param
+            client_config_data = request.args.get('client_config')
+            client_config = {}
+            if client_config_data:
+                try:
+                    import urllib.parse
+                    client_config = json.loads(urllib.parse.unquote(client_config_data))
+                except:
+                    pass
             
-            # Si el servidor tiene un valor y es diferente al del cliente, hay cambio
-            if server_value is not None:
-                # Comparar listas de forma especial (warning_thresholds)
-                if field == 'warning_thresholds':
-                    if isinstance(server_value, list) and isinstance(client_value, list):
-                        if sorted(server_value) != sorted(client_value):
+            # Comparar configuraciones - solo enviar si hay diferencias
+            config_changed = False
+            config_fields = ['sync_interval', 'local_check_interval', 'expired_sync_interval', 
+                            'lock_delay', 'warning_thresholds']
+            
+            for field in config_fields:
+                server_value = server_config.get(field)
+                client_value = client_config.get(field)
+                
+                # Si el servidor tiene un valor y es diferente al del cliente, hay cambio
+                if server_value is not None:
+                    # Comparar listas de forma especial (warning_thresholds)
+                    if field == 'warning_thresholds':
+                        if isinstance(server_value, list) and isinstance(client_value, list):
+                            if sorted(server_value) != sorted(client_value):
+                                config_changed = True
+                                break
+                        elif client_value != server_value:
                             config_changed = True
                             break
-                    elif client_value != server_value:
-                        config_changed = True
-                        break
-                else:
-                    if client_value != server_value:
-                        config_changed = True
-                        break
-        
-        # Solo enviar server_config si hay cambios O si se solicitó force_sync
-        # Cuando hay force_sync, siempre enviar para forzar al cliente a sincronizar su configuración
-        if config_changed or force_sync:
-            client_data['server_config'] = server_config
-            # Incluir flag force_sync en la respuesta para que el cliente sepa que debe sincronizar inmediatamente
-            if force_sync:
-                client_data['force_sync'] = True
-            # Si había force_sync y el cliente envió su configuración, limpiar el flag
-            if force_sync and client_config_data:
-                clients_db[client_id].pop('force_sync', None)
-                save_server_data()
+                    else:
+                        if client_value != server_value:
+                            config_changed = True
+                            break
+            
+            # Solo enviar server_config si hay cambios O si se solicitó force_sync
+            # Cuando hay force_sync, siempre enviar para forzar al cliente a sincronizar su configuración
+            if config_changed or force_sync:
+                client_data['server_config'] = server_config
+                # Incluir flag force_sync en la respuesta para que el cliente sepa que debe sincronizar inmediatamente
+                if force_sync:
+                    client_data['force_sync'] = True
+                # Si había force_sync y el cliente envió su configuración, limpiar el flag
+                if force_sync and client_config_data:
+                    clients_db[client_id].pop('force_sync', None)
+                    save_server_data()
     
     return jsonify({
         'success': True,
