@@ -13,7 +13,13 @@ data class Client(
     val id: String,
     val name: String,
     val isActive: Boolean,
-    val currentSession: SessionInfo?
+    val currentSession: SessionInfo?,
+    val config: ClientConfig?
+)
+
+data class ClientConfig(
+    val syncInterval: Int,
+    val alertThresholds: List<Int>
 )
 
 data class SessionInfo(
@@ -26,7 +32,9 @@ data class SessionInfo(
 class ClientAdapter(
     private val onSetTime: (clientId: String, time: Int, unit: String) -> Unit,
     private val onStopSession: (clientId: String) -> Unit,
-    private val onDeleteClient: (clientId: String) -> Unit
+    private val onDeleteClient: (clientId: String) -> Unit,
+    private val onEditName: (clientId: String, newName: String) -> Unit,
+    private val onSaveConfig: (clientId: String, syncInterval: Int, alertThresholds: List<Int>) -> Unit
 ) : RecyclerView.Adapter<ClientAdapter.ClientViewHolder>() {
 
     private var clients: List<Client> = emptyList()
@@ -62,6 +70,14 @@ class ClientAdapter(
         private val btnSetTime: Button = itemView.findViewById(R.id.btnSetTime)
         private val btnStop: Button = itemView.findViewById(R.id.btnStop)
         private val btnDelete: Button = itemView.findViewById(R.id.btnDelete)
+        private val btnEditName: ImageButton = itemView.findViewById(R.id.btnEditName)
+        private val configSection: View = itemView.findViewById(R.id.configSection)
+        private val btnToggleConfig: Button = itemView.findViewById(R.id.btnToggleConfig)
+        private val configPanel: View = itemView.findViewById(R.id.configPanel)
+        private val etSyncInterval: EditText = itemView.findViewById(R.id.etSyncInterval)
+        private val etAlertThresholds: EditText = itemView.findViewById(R.id.etAlertThresholds)
+        private val btnSaveConfig: Button = itemView.findViewById(R.id.btnSaveConfig)
+        private val tvConfigStatus: TextView = itemView.findViewById(R.id.tvConfigStatus)
 
         init {
             val adapter = ArrayAdapter(itemView.context, android.R.layout.simple_spinner_item, timeUnits)
@@ -130,6 +146,93 @@ class ClientAdapter(
             btnDelete.setOnClickListener {
                 onDeleteClient(client.id)
             }
+
+            // Botón editar nombre
+            btnEditName.setOnClickListener {
+                showEditNameDialog(client.id, client.name)
+            }
+
+            // Configuración
+            configSection.visibility = View.VISIBLE
+            var configExpanded = false
+            
+            btnToggleConfig.setOnClickListener {
+                configExpanded = !configExpanded
+                configPanel.visibility = if (configExpanded) View.VISIBLE else View.GONE
+                btnToggleConfig.text = if (configExpanded) "⚙️ Ocultar configuración" else "⚙️ Mostrar configuración"
+            }
+
+            // Cargar valores de configuración del cliente
+            val config = client.config
+            if (config != null) {
+                etSyncInterval.setText(config.syncInterval.toString())
+                // Convertir segundos a minutos para mostrar
+                val alertMinutes = config.alertThresholds.map { it / 60 }
+                etAlertThresholds.setText(alertMinutes.joinToString(", "))
+            } else {
+                // Valores por defecto
+                etSyncInterval.setText("30")
+                etAlertThresholds.setText("10, 5, 2, 1")
+            }
+
+            btnSaveConfig.setOnClickListener {
+                val syncInterval = etSyncInterval.text.toString().toIntOrNull() ?: 30
+                val alertsText = etAlertThresholds.text.toString()
+                
+                // Parsear alertas (en minutos) y convertir a segundos
+                val alertMinutes = alertsText.split(",")
+                    .map { it.trim().toIntOrNull() }
+                    .filterNotNull()
+                    .filter { it > 0 }
+                
+                if (syncInterval < 5) {
+                    tvConfigStatus.text = "Error: mínimo 5 segundos"
+                    tvConfigStatus.setTextColor(0xFFF44336.toInt())
+                    tvConfigStatus.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+                
+                if (alertMinutes.isEmpty()) {
+                    tvConfigStatus.text = "Error: al menos una alerta"
+                    tvConfigStatus.setTextColor(0xFFF44336.toInt())
+                    tvConfigStatus.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+                
+                // Convertir minutos a segundos
+                val alertThresholds = alertMinutes.map { it * 60 }
+                
+                onSaveConfig(client.id, syncInterval, alertThresholds)
+                
+                tvConfigStatus.text = "✓ Guardado"
+                tvConfigStatus.setTextColor(0xFF4CAF50.toInt())
+                tvConfigStatus.visibility = View.VISIBLE
+                
+                // Ocultar después de 3 segundos
+                itemView.postDelayed({
+                    tvConfigStatus.visibility = View.GONE
+                }, 3000)
+            }
+        }
+
+        private fun showEditNameDialog(clientId: String, currentName: String) {
+            val context = itemView.context
+            val input = EditText(context)
+            input.setText(currentName)
+            input.maxLines = 1
+            input.filters = arrayOf(android.text.InputFilter.LengthFilter(50))
+            
+            android.app.AlertDialog.Builder(context)
+                .setTitle("Editar nombre")
+                .setView(input)
+                .setPositiveButton("Guardar") { _, _ ->
+                    val newName = input.text.toString().trim()
+                    if (newName.isNotEmpty() && newName != currentName) {
+                        onEditName(clientId, newName)
+                    }
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
         }
 
         private fun formatTime(seconds: Int): String {
@@ -165,11 +268,25 @@ class ClientAdapter(
                         )
                     } else null
 
+                    // Parsear configuración
+                    val config = if (obj.has("config") && !obj.isNull("config")) {
+                        val configObj = obj.getJSONObject("config")
+                        val syncInterval = configObj.optInt("sync_interval", 30)
+                        val alertThresholdsArray = configObj.optJSONArray("alert_thresholds")
+                        val alertThresholds = if (alertThresholdsArray != null) {
+                            (0 until alertThresholdsArray.length()).map { alertThresholdsArray.getInt(it) }
+                        } else {
+                            listOf(600, 300, 120, 60) // Valores por defecto
+                        }
+                        ClientConfig(syncInterval, alertThresholds)
+                    } else null
+
                     clients.add(Client(
                         id = obj.getString("id"),
                         name = obj.optString("name", "Sin nombre"),
                         isActive = obj.optBoolean("is_active", false),
-                        currentSession = session
+                        currentSession = session,
+                        config = config
                     ))
                 }
             } catch (e: Exception) {

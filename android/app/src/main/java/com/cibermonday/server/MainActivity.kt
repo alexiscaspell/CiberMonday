@@ -160,7 +160,9 @@ class MainActivity : AppCompatActivity() {
         clientAdapter = ClientAdapter(
             onSetTime = { clientId, time, unit -> setClientTime(clientId, time, unit) },
             onStopSession = { clientId -> stopClientSession(clientId) },
-            onDeleteClient = { clientId -> confirmDeleteClient(clientId) }
+            onDeleteClient = { clientId -> confirmDeleteClient(clientId) },
+            onEditName = { clientId, newName -> editClientName(clientId, newName) },
+            onSaveConfig = { clientId, syncInterval, alertThresholds -> saveClientConfig(clientId, syncInterval, alertThresholds) }
         )
 
         recyclerClients.apply {
@@ -323,5 +325,70 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         handler.removeCallbacks(refreshRunnable)
+    }
+
+    private fun editClientName(clientId: String, newName: String) {
+        Thread {
+            try {
+                val py = Python.getInstance()
+                val module = py.getModule("cibermonday_android")
+                val resultJson = module.callAttr("set_client_name", clientId, newName).toString()
+                
+                val result = JSONObject(resultJson)
+                val success = result.optBoolean("success", false)
+                val message = result.optString("message", "")
+                
+                runOnUiThread {
+                    if (success) {
+                        Toast.makeText(this, "Nombre actualizado", Toast.LENGTH_SHORT).show()
+                        loadClients()
+                    } else {
+                        Toast.makeText(this, "Error: $message", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "Error al actualizar nombre", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun saveClientConfig(clientId: String, syncInterval: Int, alertThresholds: List<Int>) {
+        Thread {
+            try {
+                val py = Python.getInstance()
+                val module = py.getModule("cibermonday_android")
+                
+                // Convertir la lista de Kotlin a una lista de Python
+                // Chaquopy puede manejar listas directamente, pero mejor convertir a array
+                val alertArray = alertThresholds.toTypedArray()
+                
+                // Llamar a la función wrapper set_client_config
+                val resultJson = module.callAttr("set_client_config", 
+                    clientId, 
+                    syncInterval, 
+                    alertArray
+                ).toString()
+                
+                val result = JSONObject(resultJson)
+                val success = result.optBoolean("success", false)
+                val message = result.optString("message", "")
+                
+                runOnUiThread {
+                    if (success) {
+                        Toast.makeText(this, "Configuración guardada", Toast.LENGTH_SHORT).show()
+                        loadClients()
+                    } else {
+                        Toast.makeText(this, "Error: $message", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                runOnUiThread {
+                    Toast.makeText(this, "Error al guardar configuración: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
 }

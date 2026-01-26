@@ -278,6 +278,23 @@ def set_client_name(client_id, new_name):
     result = get_manager().set_client_config(client_id, custom_name=new_name)
     return json.dumps(result)
 
+def set_client_config(client_id, sync_interval=None, alert_thresholds=None):
+    """Actualiza la configuración de un cliente."""
+    # Convertir alert_thresholds si viene como lista de Python
+    if alert_thresholds is not None:
+        if isinstance(alert_thresholds, (list, tuple)):
+            alert_thresholds = list(alert_thresholds)
+        else:
+            # Si viene como string o otro tipo, intentar convertir
+            alert_thresholds = None
+    
+    result = get_manager().set_client_config(
+        client_id, 
+        sync_interval=sync_interval, 
+        alert_thresholds=alert_thresholds
+    )
+    return json.dumps(result)
+
 def get_local_ip():
     """Obtiene la IP local."""
     return ClientManager.get_local_ip()
