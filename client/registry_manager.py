@@ -282,8 +282,18 @@ def get_config_from_registry():
             
             # Asegurar que todos los campos existen con valores por defecto
             config_data.setdefault('server_url', 'http://localhost:5000')
-        
-        return config_data
+            config_data.setdefault('check_interval', 5)
+            config_data.setdefault('sync_interval', 30)
+            config_data.setdefault('alert_thresholds', [600, 300, 120, 60])
+            config_data.setdefault('custom_name', None)
+            
+            return config_data
+        except FileNotFoundError:
+            winreg.CloseKey(key)
+            return None
+    except Exception as e:
+        print(f"Error al leer configuración del registro: {e}")
+        return None
 
 def save_servers_to_registry(servers_list):
     """Guarda la lista de servidores conocidos en el registro."""
@@ -316,15 +326,3 @@ def get_servers_from_registry():
     except Exception as e:
         print(f"Error al leer servidores del registro: {e}")
         return []
-            config_data.setdefault('check_interval', 5)
-            config_data.setdefault('sync_interval', 30)
-            config_data.setdefault('alert_thresholds', [600, 300, 120, 60])
-            config_data.setdefault('custom_name', None)
-            
-            return config_data
-        except FileNotFoundError:
-            winreg.CloseKey(key)
-            return None
-    except Exception as e:
-        print(f"Error al leer configuración del registro: {e}")
-        return None

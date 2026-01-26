@@ -32,13 +32,28 @@ try:
         save_client_id_to_registry,
         get_client_id_from_registry,
         save_config_to_registry,
-        get_config_from_registry,
-        save_servers_to_registry,
-        get_servers_from_registry
+        get_config_from_registry
     )
     REGISTRY_AVAILABLE = True
+    # Importar funciones nuevas de servidores (opcional, no crítico)
+    try:
+        from registry_manager import (
+            save_servers_to_registry,
+            get_servers_from_registry
+        )
+    except ImportError:
+        # Si no están disponibles, definir funciones dummy
+        def save_servers_to_registry(servers_list):
+            return False
+        def get_servers_from_registry():
+            return []
 except ImportError:
     REGISTRY_AVAILABLE = False
+    # Funciones dummy si no hay registro disponible
+    def save_servers_to_registry(servers_list):
+        return False
+    def get_servers_from_registry():
+        return []
 
 # Manejar rutas cuando se ejecuta como .exe (PyInstaller)
 def get_base_path():
