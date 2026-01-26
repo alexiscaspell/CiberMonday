@@ -1,0 +1,107 @@
+name: Release Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag para la release (ej: v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: '¿Es una versión pre-release?'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Necesario para crear releases
+      pull-requests: read  # Solo lectura para PRs
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Grant execute permission for scripts
+        run: |
+          chmod +x build_android.sh
+
+      - name: Build APK using Docker
+        run: ./build_android.sh
+
+      - name: Verify APK exists
+        run: |
+          if [ ! -f "dist/CiberMondayServer.apk" ]; then
+            echo "Error: APK no encontrado en dist/CiberMondayServer.apk"
+            exit 1
+          fi
+          ls -lh dist/CiberMondayServer.apk
+
+      - name: Create APK filename
+        run: echo "APK_FILENAME=CiberMondayServer-${{ github.event.inputs.tag }}.apk" >> $GITHUB_ENV
+
+      - name: Rename APK
+        run: |
+          cp dist/CiberMondayServer.apk ${{ env.APK_FILENAME }}
+          ls -lh ${{ env.APK_FILENAME }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: CiberMonday Server Android v${{ github.event.inputs.tag }}
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease }}
+          files: |
+            ${{ env.APK_FILENAME }}
+          body: |
+            # CiberMonday Server Android v${{ github.event.inputs.tag }}
+            
+            APK del servidor CiberMonday para Android.
+            
+            ## 📱 Instalación
+            
+            1. Descarga el archivo `${{ env.APK_FILENAME }}`
+            2. Transfiere el APK a tu dispositivo Android
+            3. Habilita "Instalar desde fuentes desconocidas" en la configuración de seguridad
+            4. Abre el archivo APK e instálalo
+            
+            ## 🚀 Características
+            
+            - Servidor HTTP integrado para gestionar clientes
+            - Interfaz nativa de Android
+            - Gestión de sesiones de tiempo
+            - Configuración de clientes (intervalo de sincronización, alertas)
+            - Edición de nombres de clientes
+            - Accesible desde otros dispositivos en la misma red WiFi
+            
+            ## 📋 Requisitos
+            
+            - Android 7.0 (API 24) o superior
+            - Conexión WiFi para acceso desde otros dispositivos
+            - Permisos de red habilitados
+            
+            ## 🔧 Uso
+            
+            1. Abre la aplicación
+            2. El servidor se iniciará automáticamente en el puerto 5000
+            3. La IP del servidor se mostrará en la pantalla principal
+            4. Los clientes pueden conectarse usando `http://[IP_DEL_TELEFONO]:5000`
+            
+            ## 📝 Notas
+            
+            - El servidor escucha en la IP WiFi del dispositivo
+            - Asegúrate de estar en la misma red WiFi que los clientes
+            - El servidor permanece activo en segundo plano mientras la app está abierta
+            
+            ---
+            
+            **Compilado el:** ${{ github.event.head_commit.timestamp || github.run_started_at }}  
+            **Commit:** ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
