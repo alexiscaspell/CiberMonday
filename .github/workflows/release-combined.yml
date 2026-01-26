@@ -137,15 +137,35 @@ jobs:
           if not exist CiberMondayService.exe exit /b 1
           if not exist CiberMondayWatchdog.exe exit /b 1
       
+      - name: Crear directorio temporal para release
+        shell: cmd
+        run: |
+          mkdir release-windows
+      
+      - name: Copiar archivos a directorio plano
+        shell: cmd
+        run: |
+          copy client\dist\CiberMondayClient.exe release-windows\
+          copy client\dist\CiberMondayService.exe release-windows\
+          copy client\dist\CiberMondayWatchdog.exe release-windows\
+          copy client\install_exe_service.bat release-windows\
+          dir release-windows\
+      
+      - name: Verificar archivos copiados
+        shell: cmd
+        run: |
+          if not exist release-windows\CiberMondayClient.exe exit /b 1
+          if not exist release-windows\CiberMondayService.exe exit /b 1
+          if not exist release-windows\CiberMondayWatchdog.exe exit /b 1
+          if not exist release-windows\install_exe_service.bat exit /b 1
+          echo "Todos los archivos verificados correctamente"
+      
       - name: Upload Windows executables artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: |
-            client/dist/CiberMondayClient.exe
-            client/dist/CiberMondayService.exe
-            client/dist/CiberMondayWatchdog.exe
-            client/install_exe_service.bat
+          path: release-windows/*
+          if-no-files-found: error
           retention-days: 7
 
   create-release:
