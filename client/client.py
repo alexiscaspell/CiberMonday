@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 import ctypes
 from ctypes import wintypes
 import threading
+import socket
+import json
 
 # Importar protecciones
 try:
@@ -849,6 +851,87 @@ def sync_with_server(client_id):
         traceback.print_exc()
         return False
 
+def start_server_discovery_listener():
+    """
+    Inicia un servidor UDP que escucha broadcasts de nuevos servidores.
+    Cuando recibe un broadcast, registra el servidor automáticamente.
+    """
+    def listener_thread():
+        # Puerto para recibir broadcasts de servidores
+        DISCOVERY_PORT = 5001
+        
+        try:
+            # Crear socket UDP para escuchar broadcasts
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.bind(('', DISCOVERY_PORT))
+            sock.settimeout(1.0)  # Timeout para poder verificar si el thread debe continuar
+            
+            print(f"[Discovery] Escuchando broadcasts de servidores en puerto {DISCOVERY_PORT}...")
+            
+            while True:
+                try:
+                    data, addr = sock.recvfrom(1024)
+                    server_info = json.loads(data.decode('utf-8'))
+                    
+                    server_url = server_info.get('url')
+                    server_ip = server_info.get('ip', addr[0])
+                    server_port = server_info.get('port', 5000)
+                    
+                    if server_url:
+                        print(f"[Discovery] Nuevo servidor detectado: {server_url} desde {addr[0]}")
+                        
+                        # Registrar el servidor en nuestra lista
+                        if REGISTRY_AVAILABLE:
+                            known_servers = get_servers_from_registry()
+                            
+                            # Verificar si ya existe
+                            if not any(s.get('url') == server_url for s in known_servers):
+                                known_servers.append({
+                                    'url': server_url,
+                                    'ip': server_ip,
+                                    'port': server_port,
+                                    'last_seen': datetime.now().isoformat()
+                                })
+                                save_servers_to_registry(known_servers)
+                                print(f"[Discovery] Servidor {server_url} registrado exitosamente")
+                            else:
+                                print(f"[Discovery] Servidor {server_url} ya conocido")
+                        
+                        # También registrar directamente en el servidor usando el endpoint
+                        try:
+                            response = requests.post(
+                                f"{server_url}/api/register-server",
+                                json={
+                                    'url': server_url,
+                                    'ip': server_ip,
+                                    'port': server_port
+                                },
+                                timeout=2
+                            )
+                            if response.status_code == 201:
+                                print(f"[Discovery] Servidor {server_url} confirmado")
+                        except:
+                            pass  # No crítico si falla
+                            
+                except socket.timeout:
+                    # Timeout normal, continuar escuchando
+                    continue
+                except Exception as e:
+                    # Error al procesar, continuar escuchando
+                    continue
+                    
+        except Exception as e:
+            print(f"[Discovery] Error en listener: {e}")
+            # Reintentar después de un delay
+            time.sleep(5)
+            start_server_discovery_listener()
+    
+    # Iniciar thread en background
+    thread = threading.Thread(target=listener_thread, daemon=True)
+    thread.start()
+
 def monitor_time(client_id):
     """
     Monitorea el tiempo restante leyendo del registro local.
@@ -867,6 +950,9 @@ def monitor_time(client_id):
         print("Modo: Consulta directa al servidor")
     print("Esperando asignación de tiempo...")
     print("=" * 50)
+    
+    # Iniciar listener de descubrimiento de servidores
+    start_server_discovery_listener()
     
     last_remaining = None
     last_sync_time = 0

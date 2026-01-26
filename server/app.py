@@ -6,6 +6,7 @@ import threading
 import time
 import os
 import socket
+import json
 
 app = Flask(__name__, template_folder='templates')
 CORS(app)
@@ -14,6 +15,7 @@ CORS(app)
 clients_db = {}
 client_sessions = {}
 client_configs = {}  # Configuración de cada cliente
+servers_db = {}  # Diccionario de servidores conocidos: {server_id: {url, ip, port, last_seen, ...}}
 
 # Configuración por defecto para clientes
 DEFAULT_CLIENT_CONFIG = {
@@ -92,6 +94,17 @@ def register_client():
             
             print(f"[Re-registro] Cliente {client_id[:8]}... restauró sesión con {remaining_seconds}s restantes")
     
+    # Si el cliente envía lista de servidores conocidos, sincronizarlos
+    known_servers = data.get('known_servers', [])
+    if known_servers:
+        sync_servers(known_servers)
+    
+    # Auto-registrar este servidor en su propia lista
+    local_ip = get_local_ip()
+    if local_ip and local_ip != "127.0.0.1":
+        local_server_url = f"http://{local_ip}:5000"
+        register_server(local_server_url, local_ip, 5000)
+    
     message = 'Cliente re-registrado exitosamente' if is_reregister else 'Cliente registrado exitosamente'
     
     return jsonify({
@@ -99,12 +112,12 @@ def register_client():
         'client_id': client_id,
         'message': message,
         'session_restored': session_data is not None and client_id in client_sessions,
-        'config': client_configs.get(client_id, DEFAULT_CLIENT_CONFIG)
+        'config': client_configs.get(client_id, DEFAULT_CLIENT_CONFIG),
+        'known_servers': get_servers()
     }), 201
 
-@app.route('/api/clients', methods=['GET'])
-def get_clients():
-    """Obtiene la lista de todos los clientes registrados"""
+def _get_clients_list():
+    """Función auxiliar que retorna la lista de clientes como lista de diccionarios."""
     clients_list = []
     for client_id, client_data in clients_db.items():
         client_info = client_data.copy()
@@ -125,6 +138,12 @@ def get_clients():
         client_info['config'] = client_configs.get(client_id, DEFAULT_CLIENT_CONFIG.copy())
         clients_list.append(client_info)
     
+    return clients_list
+
+@app.route('/api/clients', methods=['GET'])
+def get_clients():
+    """Obtiene la lista de todos los clientes registrados"""
+    clients_list = _get_clients_list()
     return jsonify({
         'success': True,
         'clients': clients_list
@@ -413,10 +432,213 @@ def server_info():
         'url': f"http://{local_ip}:{port}"
     }), 200
 
+@app.route('/api/register-server', methods=['POST'])
+def register_server_endpoint():
+    """Registra un nuevo servidor (llamado por clientes u otros servidores)"""
+    data = request.json
+    server_url = data.get('url')
+    
+    if not server_url:
+        return jsonify({'success': False, 'message': 'URL del servidor requerida'}), 400
+    
+    result = register_server(
+        server_url,
+        data.get('ip'),
+        data.get('port')
+    )
+    result['known_servers'] = get_servers()
+    return jsonify(result), 201
+
+@app.route('/api/servers', methods=['GET'])
+def get_servers_endpoint():
+    """Obtiene la lista de servidores conocidos"""
+    return jsonify({
+        'success': True,
+        'servers': get_servers()
+    }), 200
+
+@app.route('/api/sync-servers', methods=['POST'])
+def sync_servers_endpoint():
+    """Sincroniza servidores y clientes entre servidores (anycast/discovery)"""
+    data = request.json
+    servers_list = data.get('servers', [])
+    clients_list = data.get('clients', [])
+    
+    # Sincronizar servidores
+    known_servers = sync_servers(servers_list)
+    
+    # Sincronizar clientes (registrar clientes de otros servidores si no existen localmente)
+    if clients_list:
+        for client_data in clients_list:
+            client_id = client_data.get('id')
+            if client_id and client_id not in clients_db:
+                # Registrar cliente de otro servidor (sin sesión activa)
+                clients_db[client_id] = {
+                    'id': client_id,
+                    'name': client_data.get('name', 'Cliente Remoto'),
+                    'registered_at': datetime.now().isoformat(),
+                    'total_time_used': 0,
+                    'is_active': False
+                }
+                if client_id not in client_configs:
+                    client_configs[client_id] = DEFAULT_CLIENT_CONFIG.copy()
+    
+    # Obtener respuesta de get_clients() para retornar
+    response_data = get_clients()
+    clients_list = response_data.get_json()['clients'] if hasattr(response_data, 'get_json') else []
+    
+    return jsonify({
+        'success': True,
+        'known_servers': known_servers,
+        'known_clients': _get_clients_list()
+    }), 200
+
+def register_server(server_url, server_ip=None, server_port=None):
+    """Registra o actualiza un servidor conocido."""
+    import hashlib
+    server_id = hashlib.md5(server_url.encode()).hexdigest()[:16]
+    
+    # Parsear URL si no se proporcionan IP y puerto
+    if not server_ip or not server_port:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(server_url)
+            server_ip = server_ip or parsed.hostname or "unknown"
+            server_port = server_port or parsed.port or 5000
+        except:
+            server_ip = server_ip or "unknown"
+            server_port = server_port or 5000
+    
+    servers_db[server_id] = {
+        'id': server_id,
+        'url': server_url,
+        'ip': server_ip,
+        'port': server_port,
+        'last_seen': datetime.now().isoformat(),
+        'is_active': True
+    }
+    
+    return {'success': True, 'server_id': server_id}
+
+def get_servers():
+    """Obtiene la lista de servidores conocidos."""
+    servers_list = []
+    for server_id, server_data in servers_db.items():
+        servers_list.append(server_data.copy())
+    return servers_list
+
+def sync_servers(servers_list):
+    """Sincroniza la lista de servidores con otros servidores."""
+    # Agregar/actualizar servidores recibidos
+    for server_data in servers_list:
+        server_url = server_data.get('url')
+        if server_url:
+            register_server(
+                server_url,
+                server_data.get('ip'),
+                server_data.get('port')
+            )
+    
+    # Intentar sincronizar con otros servidores (anycast/discovery)
+    _sync_with_other_servers()
+    
+    # Retornar lista combinada (local + recibidos)
+    return get_servers()
+
+def _sync_with_other_servers():
+    """Sincroniza información con otros servidores conocidos."""
+    import urllib.request
+    import urllib.error
+    import json
+    
+    local_ip = get_local_ip()
+    if local_ip == "127.0.0.1" or not local_ip:
+        return
+    
+    local_server_url = f"http://{local_ip}:5000"
+    
+    # Preparar datos para enviar
+    sync_data = {
+        'servers': get_servers(),
+        'clients': _get_clients_list()
+    }
+    
+    # Intentar sincronizar con cada servidor conocido (excepto nosotros mismos)
+    for server_id, server_data in list(servers_db.items()):
+        server_url = server_data.get('url')
+        if not server_url or server_url == local_server_url:
+            continue
+        
+        try:
+            req = urllib.request.Request(
+                f"{server_url}/api/sync-servers",
+                data=json.dumps(sync_data).encode('utf-8'),
+                headers={'Content-Type': 'application/json'}
+            )
+            
+            with urllib.request.urlopen(req, timeout=3) as response:
+                if response.status == 200:
+                    response_data = json.loads(response.read().decode('utf-8'))
+                    # Actualizar con servidores recibidos del otro servidor
+                    if response_data.get('known_servers'):
+                        for other_server in response_data['known_servers']:
+                            if other_server.get('url') != local_server_url:
+                                register_server(
+                                    other_server.get('url'),
+                                    other_server.get('ip'),
+                                    other_server.get('port')
+                                )
+        except:
+            # Servidor no disponible, continuar con el siguiente
+            pass
+
 @app.route('/', methods=['GET'])
 def index():
     """Interfaz web del panel de control"""
     return render_template('index.html')
+
+def broadcast_server_presence():
+    """
+    Hace broadcast UDP para anunciar la presencia de este servidor a los clientes.
+    Los clientes escuchan en el puerto 5001 y registran automáticamente nuevos servidores.
+    """
+    def broadcast_thread():
+        DISCOVERY_PORT = 5001
+        BROADCAST_INTERVAL = 30  # Broadcast cada 30 segundos
+        
+        try:
+            local_ip = get_local_ip()
+            if local_ip == "127.0.0.1" or not local_ip:
+                return
+            
+            server_url = f"http://{local_ip}:5000"
+            server_info = {
+                'url': server_url,
+                'ip': local_ip,
+                'port': 5000
+            }
+            
+            # Crear socket UDP para broadcast
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            
+            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:5000")
+            
+            while True:
+                try:
+                    # Enviar broadcast a la red local
+                    message = json.dumps(server_info).encode('utf-8')
+                    sock.sendto(message, ('255.255.255.255', DISCOVERY_PORT))
+                    time.sleep(BROADCAST_INTERVAL)
+                except Exception as e:
+                    print(f"[Broadcast] Error al enviar broadcast: {e}")
+                    time.sleep(BROADCAST_INTERVAL)
+        except Exception as e:
+            print(f"[Broadcast] Error en thread de broadcast: {e}")
+    
+    # Iniciar thread de broadcast en background
+    thread = threading.Thread(target=broadcast_thread, daemon=True)
+    thread.start()
 
 if __name__ == '__main__':
     # Obtener configuración desde variables de entorno
@@ -436,4 +658,8 @@ if __name__ == '__main__':
     print("  POST   /api/client/<id>/stop - Detener sesión")
     print("  DELETE /api/client/<id> - Eliminar cliente")
     print("=" * 50)
+    
+    # Iniciar broadcast de presencia del servidor
+    broadcast_server_presence()
+    
     app.run(host=host, port=port, debug=debug)

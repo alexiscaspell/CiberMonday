@@ -10,6 +10,7 @@ import json
 import socket
 import threading
 import re
+import time
 
 
 class ClientManager:
@@ -42,7 +43,10 @@ class ClientManager:
         return str(uuid.uuid4())
     
     def register_client(self, name='Cliente Sin Nombre', client_id=None, 
-                        session_data=None, config=None):
+                        session_data=None, config=None, known_servers=None):
+        """
+        Registra un cliente. Si se proporciona known_servers, sincroniza esos servidores.
+        """
         is_reregister = client_id is not None
         if not is_reregister:
             client_id = self._generate_client_id()
@@ -83,6 +87,10 @@ class ClientManager:
                 self.clients_db[client_id]['is_active'] = True
                 session_restored = True
         
+        # Si el cliente envía lista de servidores conocidos, sincronizarlos
+        if known_servers:
+            self.sync_servers(known_servers)
+        
         # Auto-registrar este servidor en su propia lista si no está registrado
         local_ip = self.get_local_ip()
         if local_ip and local_ip != "No conectado":
@@ -94,7 +102,8 @@ class ClientManager:
             'client_id': client_id,
             'message': 'Cliente re-registrado' if is_reregister else 'Cliente registrado',
             'session_restored': session_restored,
-            'config': self.client_configs.get(client_id, self.DEFAULT_CONFIG)
+            'config': self.client_configs.get(client_id, self.DEFAULT_CONFIG),
+            'known_servers': self.get_servers()
         }
     
     def get_clients(self):
@@ -595,18 +604,14 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         data = self._read_body()
         
         if path == '/api/register':
-            # Registrar cliente
+            # Registrar cliente (incluye sincronización de servidores si se proporcionan)
             result = self.manager.register_client(
                 name=data.get('name', 'Cliente Sin Nombre'),
                 client_id=data.get('client_id'),
                 session_data=data.get('session'),
-                config=data.get('config')
+                config=data.get('config'),
+                known_servers=data.get('known_servers', [])
             )
-            
-            # Si el cliente envía lista de servidores conocidos, sincronizarlos
-            known_servers = data.get('known_servers', [])
-            if known_servers:
-                self.manager.sync_servers(known_servers)
             
             # Incluir lista de servidores conocidos en la respuesta
             result['known_servers'] = self.manager.get_servers()
@@ -727,6 +732,49 @@ _server = None
 _server_running = False
 _server_error = None
 
+def broadcast_server_presence():
+    """
+    Hace broadcast UDP para anunciar la presencia de este servidor a los clientes.
+    Los clientes escuchan en el puerto 5001 y registran automáticamente nuevos servidores.
+    """
+    def broadcast_thread():
+        DISCOVERY_PORT = 5001
+        BROADCAST_INTERVAL = 30  # Broadcast cada 30 segundos
+        
+        try:
+            local_ip = ClientManager.get_local_ip()
+            if local_ip == "No conectado" or local_ip == "127.0.0.1":
+                return
+            
+            server_url = f"http://{local_ip}:5000"
+            server_info = {
+                'url': server_url,
+                'ip': local_ip,
+                'port': 5000
+            }
+            
+            # Crear socket UDP para broadcast
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            
+            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:5000")
+            
+            while _server_running:
+                try:
+                    # Enviar broadcast a la red local
+                    message = json.dumps(server_info).encode('utf-8')
+                    sock.sendto(message, ('255.255.255.255', DISCOVERY_PORT))
+                    time.sleep(BROADCAST_INTERVAL)
+                except Exception as e:
+                    print(f"[Broadcast] Error al enviar broadcast: {e}")
+                    time.sleep(BROADCAST_INTERVAL)
+        except Exception as e:
+            print(f"[Broadcast] Error en thread de broadcast: {e}")
+    
+    # Iniciar thread de broadcast en background
+    thread = threading.Thread(target=broadcast_thread, daemon=True)
+    thread.start()
+
 def start_server(host='0.0.0.0', port=5000, data_dir=None):
     """Inicia el servidor HTTP."""
     global _server, _server_running, _server_error
@@ -743,6 +791,9 @@ def start_server(host='0.0.0.0', port=5000, data_dir=None):
         _server = ThreadedHTTPServer((host, port), CiberMondayHandler)
         
         print(f"[CiberMonday] Servidor escuchando en {host}:{port}")
+        
+        # Iniciar broadcast de presencia del servidor
+        broadcast_server_presence()
         
         # Ejecutar el servidor
         _server.serve_forever()
