@@ -35,6 +35,7 @@ class ClientManager:
                     cls._instance.clients_db = {}
                     cls._instance.client_sessions = {}
                     cls._instance.client_configs = {}
+                    cls._instance.servers_db = {}  # Servidores conocidos
         return cls._instance
     
     def _generate_client_id(self):
@@ -81,6 +82,12 @@ class ClientManager:
                 }
                 self.clients_db[client_id]['is_active'] = True
                 session_restored = True
+        
+        # Auto-registrar este servidor en su propia lista si no está registrado
+        local_ip = self.get_local_ip()
+        if local_ip and local_ip != "No conectado":
+            local_server_url = f"http://{local_ip}:5000"
+            self.register_server(local_server_url, local_ip, 5000)
         
         return {
             'success': True,
@@ -238,6 +245,107 @@ class ClientManager:
         self.clients_db[client_id]['is_active'] = True
         
         return {'success': True, 'message': f'Sesión reportada'}
+    
+    def register_server(self, server_url, server_ip=None, server_port=None):
+        """Registra o actualiza un servidor conocido."""
+        # Generar ID único basado en URL
+        import hashlib
+        server_id = hashlib.md5(server_url.encode()).hexdigest()[:16]
+        
+        # Parsear URL si no se proporcionan IP y puerto
+        if not server_ip or not server_port:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(server_url)
+                server_ip = server_ip or parsed.hostname or "unknown"
+                server_port = server_port or parsed.port or 5000
+            except:
+                server_ip = server_ip or "unknown"
+                server_port = server_port or 5000
+        
+        self.servers_db[server_id] = {
+            'id': server_id,
+            'url': server_url,
+            'ip': server_ip,
+            'port': server_port,
+            'last_seen': datetime.now().isoformat(),
+            'is_active': True
+        }
+        
+        return {'success': True, 'server_id': server_id}
+    
+    def get_servers(self):
+        """Obtiene la lista de servidores conocidos."""
+        servers_list = []
+        for server_id, server_data in self.servers_db.items():
+            servers_list.append(server_data.copy())
+        return servers_list
+    
+    def sync_servers(self, servers_list):
+        """Sincroniza la lista de servidores con otros servidores."""
+        # Agregar/actualizar servidores recibidos
+        for server_data in servers_list:
+            server_url = server_data.get('url')
+            if server_url:
+                self.register_server(
+                    server_url,
+                    server_data.get('ip'),
+                    server_data.get('port')
+                )
+        
+        # Intentar sincronizar con otros servidores (anycast/discovery)
+        # Enviar nuestra lista de clientes y servidores a otros servidores conocidos
+        self._sync_with_other_servers()
+        
+        # Retornar lista combinada (local + recibidos)
+        return self.get_servers()
+    
+    def _sync_with_other_servers(self):
+        """Sincroniza información con otros servidores conocidos."""
+        import urllib.request
+        import urllib.error
+        
+        local_ip = self.get_local_ip()
+        if local_ip == "No conectado":
+            return
+        
+        local_server_url = f"http://{local_ip}:5000"
+        
+        # Preparar datos para enviar
+        sync_data = {
+            'servers': self.get_servers(),
+            'clients': self.get_clients()
+        }
+        
+        # Intentar sincronizar con cada servidor conocido (excepto nosotros mismos)
+        for server_id, server_data in list(self.servers_db.items()):
+            server_url = server_data.get('url')
+            if not server_url or server_url == local_server_url:
+                continue
+            
+            try:
+                import json
+                req = urllib.request.Request(
+                    f"{server_url}/api/sync-servers",
+                    data=json.dumps(sync_data).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'}
+                )
+                
+                with urllib.request.urlopen(req, timeout=3) as response:
+                    if response.status == 200:
+                        response_data = json.loads(response.read().decode('utf-8'))
+                        # Actualizar con servidores recibidos del otro servidor
+                        if response_data.get('known_servers'):
+                            for other_server in response_data['known_servers']:
+                                if other_server.get('url') != local_server_url:
+                                    self.register_server(
+                                        other_server.get('url'),
+                                        other_server.get('ip'),
+                                        other_server.get('port')
+                                    )
+            except:
+                # Servidor no disponible, continuar con el siguiente
+                pass
     
     @staticmethod
     def get_local_ip():
@@ -455,6 +563,13 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 'url': f"http://{ip}:5000"
             })
         
+        elif path == '/api/servers':
+            # Obtener lista de servidores conocidos
+            self._send_json({
+                'success': True,
+                'servers': self.manager.get_servers()
+            })
+        
         elif path.startswith('/api/client/') and path.endswith('/status'):
             client_id = path.split('/')[3]
             client = self.manager.get_client_status(client_id)
@@ -480,12 +595,21 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         data = self._read_body()
         
         if path == '/api/register':
+            # Registrar cliente
             result = self.manager.register_client(
                 name=data.get('name', 'Cliente Sin Nombre'),
                 client_id=data.get('client_id'),
                 session_data=data.get('session'),
                 config=data.get('config')
             )
+            
+            # Si el cliente envía lista de servidores conocidos, sincronizarlos
+            known_servers = data.get('known_servers', [])
+            if known_servers:
+                self.manager.sync_servers(known_servers)
+            
+            # Incluir lista de servidores conocidos en la respuesta
+            result['known_servers'] = self.manager.get_servers()
             self._send_json(result, 201)
         
         elif path.startswith('/api/client/') and path.endswith('/set-time'):
@@ -520,6 +644,47 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
             client_id = path.split('/')[3]
             result = self.manager.stop_client_session(client_id)
             self._send_json(result)
+        
+        elif path == '/api/register-server':
+            # Registrar un nuevo servidor (llamado por clientes u otros servidores)
+            server_url = data.get('url')
+            if not server_url:
+                self._send_json({'success': False, 'message': 'URL del servidor requerida'}, 400)
+            else:
+                result = self.manager.register_server(
+                    server_url,
+                    data.get('ip'),
+                    data.get('port')
+                )
+                # Retornar lista completa de servidores conocidos
+                result['known_servers'] = self.manager.get_servers()
+                self._send_json(result, 201)
+        
+        elif path == '/api/sync-servers':
+            # Sincronizar servidores entre servidores (anycast/discovery)
+            servers_list = data.get('servers', [])
+            clients_list = data.get('clients', [])
+            
+            # Sincronizar servidores
+            known_servers = self.manager.sync_servers(servers_list)
+            
+            # Sincronizar clientes (registrar clientes de otros servidores si no existen localmente)
+            # Esto permite que los clientes sean visibles desde cualquier servidor
+            if clients_list:
+                for client_data in clients_list:
+                    client_id = client_data.get('id')
+                    if client_id and client_id not in self.manager.clients_db:
+                        # Registrar cliente de otro servidor (sin sesión activa)
+                        self.manager.register_client(
+                            name=client_data.get('name', 'Cliente Remoto'),
+                            client_id=client_id
+                        )
+            
+            self._send_json({
+                'success': True,
+                'known_servers': known_servers,
+                'known_clients': self.manager.get_clients()
+            }, 200)
         
         else:
             self._send_json({'error': 'Not found'}, 404)

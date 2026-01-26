@@ -32,7 +32,9 @@ try:
         save_client_id_to_registry,
         get_client_id_from_registry,
         save_config_to_registry,
-        get_config_from_registry
+        get_config_from_registry,
+        save_servers_to_registry,
+        get_servers_from_registry
     )
     REGISTRY_AVAILABLE = True
 except ImportError:
@@ -363,6 +365,59 @@ def get_client_id():
     # Si no existe, registrar nuevo cliente
     return register_new_client()
 
+def get_available_servers():
+    """
+    Obtiene la lista de servidores disponibles.
+    Retorna lista con el servidor principal primero, seguido de servidores conocidos.
+    """
+    servers = []
+    
+    # Agregar servidor principal
+    if SERVER_URL:
+        servers.append({
+            'url': SERVER_URL,
+            'priority': 0  # Mayor prioridad
+        })
+    
+    # Agregar servidores conocidos del registro
+    if REGISTRY_AVAILABLE:
+        known_servers = get_servers_from_registry()
+        for server in known_servers:
+            server_url = server.get('url')
+            if server_url and server_url != SERVER_URL:
+                servers.append({
+                    'url': server_url,
+                    'priority': 1  # Menor prioridad
+                })
+    
+    return servers
+
+def find_available_server(servers_list=None):
+    """
+    Intenta encontrar un servidor disponible de la lista.
+    Retorna la URL del servidor disponible o None.
+    """
+    if servers_list is None:
+        servers_list = get_available_servers()
+    
+    # Ordenar por prioridad
+    servers_list.sort(key=lambda x: x.get('priority', 1))
+    
+    for server in servers_list:
+        server_url = server.get('url')
+        if not server_url:
+            continue
+        
+        try:
+            # Intentar conectar al servidor
+            response = requests.get(f"{server_url}/api/health", timeout=3)
+            if response.status_code == 200:
+                return server_url
+        except:
+            continue
+    
+    return None
+
 def register_new_client(existing_client_id=None):
     """
     Registra un nuevo cliente en el servidor o re-registra uno existente.
@@ -408,8 +463,21 @@ def register_new_client(existing_client_id=None):
                     'custom_name': custom_name
                 }
         
+        # Incluir lista de servidores conocidos
+        if REGISTRY_AVAILABLE:
+            known_servers = get_servers_from_registry()
+            register_data['known_servers'] = known_servers
+        
+        # Intentar con múltiples servidores
+        servers_list = get_available_servers()
+        available_server = find_available_server(servers_list)
+        
+        if not available_server:
+            print("Error: No hay servidores disponibles")
+            return None
+        
         response = requests.post(
-            f"{SERVER_URL}/api/register",
+            f"{available_server}/api/register",
             json=register_data,
             timeout=10
         )
@@ -419,6 +487,12 @@ def register_new_client(existing_client_id=None):
             client_id = data['client_id']
             session_restored = data.get('session_restored', False)
             server_config = data.get('config')
+            known_servers = data.get('known_servers', [])
+            
+            # Guardar lista de servidores conocidos
+            if REGISTRY_AVAILABLE and known_servers:
+                save_servers_to_registry(known_servers)
+                print(f"[Servidores] Actualizada lista de {len(known_servers)} servidores conocidos")
             
             # Guardar el ID del cliente
             client_id_file_path = os.path.join(BASE_PATH, os.path.basename(CLIENT_ID_FILE))
@@ -495,7 +569,7 @@ def apply_server_config(server_config):
     except Exception as e:
         print(f"[Config] Error al aplicar configuración del servidor: {e}")
 
-def report_session_to_server(client_id):
+def report_session_to_server(client_id, server_url=None):
     """
     Reporta la sesión activa del cliente al servidor.
     Útil cuando el servidor perdió la información pero el cliente la tiene.
@@ -511,9 +585,17 @@ def report_session_to_server(client_id):
     if not session_data:
         return False
     
+    # Usar servidor proporcionado o encontrar uno disponible
+    if not server_url:
+        servers_list = get_available_servers()
+        available_server = find_available_server(servers_list)
+        if not available_server:
+            return False
+        server_url = available_server
+    
     try:
         response = requests.post(
-            f"{SERVER_URL}/api/client/{client_id}/report-session",
+            f"{server_url}/api/client/{client_id}/report-session",
             json={
                 'remaining_seconds': session_info['remaining_seconds'],
                 'time_limit_seconds': session_data.get('time_limit_seconds', session_info['remaining_seconds'])
@@ -570,19 +652,28 @@ def sync_with_server(client_id):
     """
     Sincroniza con el servidor y actualiza el registro local.
     Se ejecuta periódicamente para mantener la información actualizada.
+    Intenta con múltiples servidores si uno falla.
     """
     global last_known_remaining  # Declarar al inicio de la función
     
+    # Obtener lista de servidores disponibles
+    servers_list = get_available_servers()
+    available_server = find_available_server(servers_list)
+    
+    if not available_server:
+        print("[Sincronización] No hay servidores disponibles")
+        return False
+    
     try:
         response = requests.get(
-            f"{SERVER_URL}/api/client/{client_id}/status",
+            f"{available_server}/api/client/{client_id}/status",
             timeout=10
         )
         
         if response.status_code == 404:
             # Cliente no encontrado - intentar re-registrarse CON EL MISMO ID
             # Esto permite que el servidor recupere la sesión del cliente
-            print(f"\n[Re-registro] Cliente no encontrado en el servidor. Intentando re-registrarse con ID existente...")
+            print(f"\n[Re-registro] Cliente no encontrado en {available_server}. Intentando re-registrarse con ID existente...")
             new_client_id = register_new_client(existing_client_id=client_id)
             if new_client_id:
                 print(f"[Re-registro] Cliente re-registrado exitosamente. ID: {new_client_id}")
@@ -593,7 +684,12 @@ def sync_with_server(client_id):
                 return False
         
         if response.status_code != 200:
-            print(f"Error al obtener estado: {response.status_code}")
+            print(f"Error al obtener estado desde {available_server}: {response.status_code}")
+            # Intentar con otro servidor si hay más disponibles
+            other_servers = [s for s in servers_list if s.get('url') != available_server]
+            if other_servers:
+                print(f"[Reintento] Intentando con otro servidor...")
+                return sync_with_server(client_id)  # Recursión con otro servidor
             return False
         
         data = response.json()
@@ -613,9 +709,9 @@ def sync_with_server(client_id):
                 local_session = get_session_info()
                 if local_session and not local_session['is_expired'] and local_session['remaining_seconds'] > 0:
                     # El cliente tiene una sesión válida - reportarla al servidor
-                    print(f"\n[Sincronización] Servidor sin sesión, pero cliente tiene {local_session['remaining_seconds']}s restantes")
+                    print(f"\n[Sincronización] Servidor {available_server} sin sesión, pero cliente tiene {local_session['remaining_seconds']}s restantes")
                     print(f"[Sincronización] Reportando sesión al servidor...")
-                    if report_session_to_server(client_id):
+                    if report_session_to_server(client_id, server_url=available_server):
                         # Sesión reportada exitosamente, no borrar registro local
                         return True
                     else:

@@ -14,6 +14,7 @@ REGISTRY_KEY_PATH = r"SOFTWARE\CiberMonday"
 REGISTRY_VALUE_SESSION = "SessionData"
 REGISTRY_VALUE_CLIENT_ID = "ClientID"
 REGISTRY_VALUE_CONFIG = "Config"
+REGISTRY_VALUE_SERVERS = "KnownServers"
 
 def get_registry_key(create=False):
     """Obtiene o crea la clave del registro"""
@@ -281,6 +282,40 @@ def get_config_from_registry():
             
             # Asegurar que todos los campos existen con valores por defecto
             config_data.setdefault('server_url', 'http://localhost:5000')
+        
+        return config_data
+
+def save_servers_to_registry(servers_list):
+    """Guarda la lista de servidores conocidos en el registro."""
+    try:
+        key = get_registry_key(create=True)
+        if key is None:
+            return False
+        
+        servers_json = json.dumps(servers_list)
+        winreg.SetValueEx(key, REGISTRY_VALUE_SERVERS, 0, winreg.REG_SZ, servers_json)
+        winreg.CloseKey(key)
+        return True
+    except Exception as e:
+        print(f"Error al guardar servidores en registro: {e}")
+        return False
+
+def get_servers_from_registry():
+    """Obtiene la lista de servidores conocidos del registro."""
+    try:
+        key = get_registry_key(create=False)
+        if key is None:
+            return []
+        
+        servers_json, _ = winreg.QueryValueEx(key, REGISTRY_VALUE_SERVERS)
+        winreg.CloseKey(key)
+        servers_list = json.loads(servers_json)
+        return servers_list if isinstance(servers_list, list) else []
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        print(f"Error al leer servidores del registro: {e}")
+        return []
             config_data.setdefault('check_interval', 5)
             config_data.setdefault('sync_interval', 30)
             config_data.setdefault('alert_thresholds', [600, 300, 120, 60])
