@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CiberMonday - Panel de Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        
+        .status.active {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        .status.inactive {
+            background: #f44336;
+            color: white;
+        }
+        
+        .clients-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        
+        .client-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+        
+        .client-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .client-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .client-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .client-id {
+            font-size: 12px;
+            color: #666;
+            font-family: monospace;
+        }
+        
+        .time-controls {
+            margin: 15px 0;
+        }
+        
+        .time-input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        input[type="number"] {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        
+        select {
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            background: white;
+        }
+        
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+        
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #d32f2f;
+        }
+        
+        .btn-success {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #45a049;
+        }
+        
+        .btn-secondary {
+            background: #757575;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: #616161;
+        }
+        
+        .session-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+        }
+        
+        .time-remaining {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+            margin: 10px 0;
+        }
+        
+        .time-remaining.expired {
+            color: #f44336;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .actions button {
+            flex: 1;
+        }
+        
+        .refresh-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: #667eea;
+            color: white;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            transition: transform 0.2s;
+        }
+        
+        .refresh-btn:hover {
+            transform: scale(1.1);
+        }
+        
+        .no-clients {
+            text-align: center;
+            padding: 40px;
+            background: white;
+            border-radius: 10px;
+            color: #666;
+        }
+        
+        .server-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 15px;
+            padding: 12px 15px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #e4e8eb 100%);
+            border-radius: 8px;
+            border: 1px solid #ddd;
+        }
+        
+        .server-info-label {
+            font-size: 14px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        .server-ip {
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+            background: white;
+            padding: 8px 12px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            user-select: all;
+        }
+        
+        .copy-btn {
+            padding: 8px 15px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .copy-btn:hover {
+            background: #5568d3;
+            transform: scale(1.02);
+        }
+        
+        .copy-btn.copied {
+            background: #4CAF50;
+        }
+        
+        .copy-tooltip {
+            font-size: 12px;
+            color: #4CAF50;
+            margin-left: 10px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .copy-tooltip.show {
+            opacity: 1;
+        }
+        
+        /* Estilos para configuración de cliente */
+        .config-section {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+        
+        .config-toggle {
+            background: none;
+            border: none;
+            color: #667eea;
+            cursor: pointer;
+            font-size: 13px;
+            padding: 5px 0;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .config-toggle:hover {
+            text-decoration: underline;
+        }
+        
+        .config-panel {
+            display: none;
+            margin-top: 10px;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+        }
+        
+        .config-panel.open {
+            display: block;
+        }
+        
+        .config-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            gap: 10px;
+        }
+        
+        .config-row:last-child {
+            margin-bottom: 0;
+        }
+        
+        .config-label {
+            flex: 0 0 140px;
+            font-size: 13px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        .config-input {
+            flex: 1;
+            padding: 8px 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .config-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .config-help {
+            font-size: 11px;
+            color: #888;
+            margin-top: 3px;
+        }
+        
+        .btn-config {
+            padding: 8px 16px;
+            font-size: 13px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .btn-config:hover {
+            background: #5568d3;
+        }
+        
+        .config-status {
+            font-size: 12px;
+            margin-left: 10px;
+            color: #4CAF50;
+        }
+        
+        /* Estilos para nombre editable */
+        .client-name-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .edit-name-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 2px 5px;
+            opacity: 0.5;
+            transition: opacity 0.2s;
+        }
+        
+        .edit-name-btn:hover {
+            opacity: 1;
+        }
+        
+        .client-name-input {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            border: 2px solid #667eea;
+            border-radius: 4px;
+            padding: 4px 8px;
+            width: 180px;
+            outline: none;
+        }
+        
+        .client-name-input:focus {
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+        }
+        
+        .name-edit-actions {
+            display: flex;
+            gap: 4px;
+            margin-left: 6px;
+        }
+        
+        .name-edit-btn {
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        
+        .name-save-btn {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        .name-save-btn:hover {
+            background: #45a049;
+        }
+        
+        .name-cancel-btn {
+            background: #f44336;
+            color: white;
+        }
+        
+        .name-cancel-btn:hover {
+            background: #d32f2f;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🖥️ CiberMonday - Panel de Control</h1>
+            <div>
+                <span class="status active" id="server-status">Servidor Activo</span>
+                <span style="margin-left: 10px; color: #666;">
+                    Clientes: <strong id="client-count">0</strong>
+                </span>
+            </div>
+            <div class="server-info">
+                <span class="server-info-label">📡 IP del Servidor:</span>
+                <span class="server-ip" id="server-url">Cargando...</span>
+                <button class="copy-btn" onclick="copyServerUrl()" id="copy-btn">
+                    📋 Copiar
+                </button>
+                <span class="copy-tooltip" id="copy-tooltip">¡Copiado!</span>
+            </div>
+        </header>
+        
+        <div class="clients-grid" id="clients-container">
+            <div class="no-clients">
+                <p>Cargando clientes...</p>
+            </div>
+        </div>
+    </div>
+    
+    <button class="refresh-btn" onclick="loadClients()" title="Actualizar">🔄</button>
+    
+    <script>
+        // Usar la URL actual del navegador como base para la API
+        const API_URL = `${window.location.protocol}//${window.location.host}/api`;
+        let serverUrl = '';
+        let currentClients = {};  // Cache de clientes para detectar cambios estructurales
+        
+        async function loadServerInfo() {
+            try {
+                const response = await fetch(`${API_URL}/server-info`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    serverUrl = data.url;
+                    document.getElementById('server-url').textContent = data.url;
+                }
+            } catch (error) {
+                console.error('Error al cargar info del servidor:', error);
+                document.getElementById('server-url').textContent = 'No disponible';
+            }
+        }
+        
+        function copyServerUrl() {
+            if (!serverUrl) return;
+            
+            navigator.clipboard.writeText(serverUrl).then(() => {
+                const btn = document.getElementById('copy-btn');
+                const tooltip = document.getElementById('copy-tooltip');
+                
+                btn.classList.add('copied');
+                btn.innerHTML = '✓ Copiado';
+                tooltip.classList.add('show');
+                
+                setTimeout(() => {
+                    btn.classList.remove('copied');
+                    btn.innerHTML = '📋 Copiar';
+                    tooltip.classList.remove('show');
+                }, 2000);
+            }).catch(err => {
+                console.error('Error al copiar:', err);
+                // Fallback para navegadores antiguos
+                const textArea = document.createElement('textarea');
+                textArea.value = serverUrl;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                alert('URL copiada: ' + serverUrl);
+            });
+        }
+        
+        function formatTime(seconds) {
+            if (seconds <= 0) return 'EXPIRADO';
+            
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            
+            if (hours > 0) {
+                return `${hours}h ${minutes}m ${secs}s`;
+            } else if (minutes > 0) {
+                return `${minutes}m ${secs}s`;
+            } else {
+                return `${secs}s`;
+            }
+        }
+        
+        async function loadClients() {
+            try {
+                const response = await fetch(`${API_URL}/clients`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    updateClients(data.clients);
+                    document.getElementById('client-count').textContent = data.clients.length;
+                }
+            } catch (error) {
+                console.error('Error al cargar clientes:', error);
+            }
+        }
+        
+        // Verifica si hubo cambios estructurales (clientes agregados/eliminados o cambio de sesión activa/inactiva)
+        function hasStructuralChanges(clients) {
+            const newIds = new Set(clients.map(c => c.id));
+            const oldIds = new Set(Object.keys(currentClients));
+            
+            // Verificar si hay nuevos clientes o clientes eliminados
+            if (newIds.size !== oldIds.size) return true;
+            for (const id of newIds) {
+                if (!oldIds.has(id)) return true;
+            }
+            
+            // Verificar si algún cliente cambió de tener/no tener sesión
+            for (const client of clients) {
+                const oldClient = currentClients[client.id];
+                if (!oldClient) return true;
+                
+                const hadSession = oldClient.current_session !== null && oldClient.current_session !== undefined;
+                const hasSession = client.current_session !== null && client.current_session !== undefined;
+                
+                if (hadSession !== hasSession) return true;
+            }
+            
+            return false;
+        }
+        
+        // Actualiza solo los datos dinámicos sin reconstruir todo el DOM
+        function updateDynamicData(clients) {
+            for (const client of clients) {
+                // Actualizar estado activo/inactivo
+                const statusEl = document.querySelector(`#card-${client.id} .status`);
+                if (statusEl) {
+                    statusEl.className = `status ${client.is_active ? 'active' : 'inactive'}`;
+                    statusEl.textContent = client.is_active ? 'ACTIVO' : 'INACTIVO';
+                }
+                
+                // Actualizar tiempo restante si tiene sesión
+                if (client.current_session) {
+                    const session = client.current_session;
+                    const isExpired = session.remaining_seconds <= 0;
+                    
+                    const timeRemainingEl = document.querySelector(`#card-${client.id} .time-remaining`);
+                    if (timeRemainingEl) {
+                        timeRemainingEl.className = `time-remaining ${isExpired ? 'expired' : ''}`;
+                        timeRemainingEl.textContent = formatTime(session.remaining_seconds);
+                    }
+                    
+                    const timeLimitEl = document.querySelector(`#card-${client.id} .time-limit`);
+                    if (timeLimitEl) {
+                        timeLimitEl.textContent = `Tiempo asignado: ${formatTime(session.time_limit)}`;
+                    }
+                }
+                
+                // Actualizar cache
+                currentClients[client.id] = client;
+            }
+        }
+        
+        // Función principal que decide si reconstruir o solo actualizar
+        function updateClients(clients) {
+            const container = document.getElementById('clients-container');
+            
+            if (clients.length === 0) {
+                container.innerHTML = '<div class="no-clients"><p>No hay clientes registrados</p></div>';
+                currentClients = {};
+                return;
+            }
+            
+            // Si hay cambios estructurales, reconstruir todo el DOM
+            if (hasStructuralChanges(clients)) {
+                displayClients(clients);
+            } else {
+                // Solo actualizar datos dinámicos (tiempo restante, estado)
+                updateDynamicData(clients);
+            }
+        }
+        
+        function displayClients(clients) {
+            const container = document.getElementById('clients-container');
+            
+            // Guardar valores actuales de los inputs antes de reconstruir
+            const savedInputs = {};
+            for (const id of Object.keys(currentClients)) {
+                const timeInput = document.getElementById(`time-${id}`);
+                const unitSelect = document.getElementById(`unit-${id}`);
+                if (timeInput && unitSelect) {
+                    savedInputs[id] = {
+                        time: timeInput.value,
+                        unit: unitSelect.value
+                    };
+                }
+            }
+            
+            // Actualizar cache
+            currentClients = {};
+            for (const client of clients) {
+                currentClients[client.id] = client;
+            }
+            
+            container.innerHTML = clients.map(client => {
+                const session = client.current_session || null;
+                const hasSession = session !== null;
+                const isExpired = hasSession && session.remaining_seconds <= 0;
+                
+                // Usar valores guardados si existen
+                const savedInput = savedInputs[client.id];
+                const timeValue = savedInput ? savedInput.time : '60';
+                const unitValue = savedInput ? savedInput.unit : 'minutes';
+                
+                return `
+                    <div class="client-card" id="card-${client.id}">
+                        <div class="client-header">
+                            <div>
+                                <div class="client-name-container">
+                                    <span class="client-name" id="name-display-${client.id}">${client.name || 'Cliente Sin Nombre'}</span>
+                                    <button class="edit-name-btn" onclick="editClientName('${client.id}')" title="Editar nombre">✏️</button>
+                                </div>
+                                <div class="client-id">ID: ${client.id.substring(0, 8)}...</div>
+                            </div>
+                            <span class="status ${client.is_active ? 'active' : 'inactive'}">
+                                ${client.is_active ? 'ACTIVO' : 'INACTIVO'}
+                            </span>
+                        </div>
+                        
+                        ${hasSession ? `
+                            <div class="session-info">
+                                <div class="time-limit">Tiempo asignado: ${formatTime(session.time_limit)}</div>
+                                <div class="time-remaining ${isExpired ? 'expired' : ''}">
+                                    ${formatTime(session.remaining_seconds)}
+                                </div>
+                                <div style="font-size: 12px; color: #666;">
+                                    Inicio: ${new Date(session.start_time).toLocaleTimeString()}
+                                </div>
+                            </div>
+                        ` : ''}
+                        
+                        <div class="time-controls">
+                            <div class="time-input-group">
+                                <input type="number" id="time-${client.id}" placeholder="Tiempo" min="1" value="${timeValue}">
+                                <select id="unit-${client.id}">
+                                    <option value="minutes" ${unitValue === 'minutes' ? 'selected' : ''}>Minutos</option>
+                                    <option value="hours" ${unitValue === 'hours' ? 'selected' : ''}>Horas</option>
+                                </select>
+                            </div>
+                            <button class="btn-primary" onclick="setTime('${client.id}')">
+                                Establecer Tiempo
+                            </button>
+                        </div>
+                        
+                        <div class="actions">
+                            ${hasSession ? `
+                                <button class="btn-secondary" onclick="stopSession('${client.id}')">
+                                    Detener
+                                </button>
+                            ` : ''}
+                            <button class="btn-danger" onclick="deleteClient('${client.id}')">
+                                Eliminar
+                            </button>
+                        </div>
+                        
+                        <div class="config-section">
+                            <button class="config-toggle" onclick="toggleConfig('${client.id}')">
+                                ⚙️ <span id="config-toggle-text-${client.id}">Mostrar configuración</span>
+                            </button>
+                            <div class="config-panel" id="config-panel-${client.id}">
+                                <div class="config-row">
+                                    <label class="config-label">Sincronización:</label>
+                                    <input type="number" class="config-input" id="config-sync-${client.id}" 
+                                           value="${client.config?.sync_interval || 30}" min="5" max="300">
+                                    <span style="font-size: 12px; color: #666;">seg</span>
+                                </div>
+                                <div class="config-help">Cada cuánto el cliente sincroniza con el servidor (mín: 5s)</div>
+                                
+                                <div class="config-row" style="margin-top: 15px;">
+                                    <label class="config-label">Alertas (min):</label>
+                                    <input type="text" class="config-input" id="config-alerts-${client.id}" 
+                                           value="${(client.config?.alert_thresholds || [600, 300, 120, 60]).map(s => s / 60).join(', ')}"
+                                           placeholder="10, 5, 2, 1">
+                                </div>
+                                <div class="config-help">Minutos en que aparecen alertas (ej: 10, 5, 2, 1)</div>
+                                
+                                <div class="config-row" style="margin-top: 15px;">
+                                    <button class="btn-config" onclick="saveConfig('${client.id}')">
+                                        💾 Guardar configuración
+                                    </button>
+                                    <span class="config-status" id="config-status-${client.id}"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function toggleConfig(clientId) {
+            const panel = document.getElementById(`config-panel-${clientId}`);
+            const toggleText = document.getElementById(`config-toggle-text-${clientId}`);
+            
+            if (panel.classList.contains('open')) {
+                panel.classList.remove('open');
+                toggleText.textContent = 'Mostrar configuración';
+            } else {
+                panel.classList.add('open');
+                toggleText.textContent = 'Ocultar configuración';
+            }
+        }
+        
+        async function saveConfig(clientId) {
+            const syncInput = document.getElementById(`config-sync-${clientId}`);
+            const alertsInput = document.getElementById(`config-alerts-${clientId}`);
+            const statusEl = document.getElementById(`config-status-${clientId}`);
+            
+            const syncInterval = parseInt(syncInput.value);
+            
+            // Parsear umbrales de alerta (en minutos) y convertir a segundos
+            const alertsStr = alertsInput.value;
+            const alertMinutes = alertsStr.split(',')
+                .map(s => parseFloat(s.trim()))
+                .filter(n => !isNaN(n) && n > 0);
+            
+            // Convertir minutos a segundos
+            const alertThresholds = alertMinutes.map(m => Math.round(m * 60));
+            
+            if (syncInterval < 5) {
+                alert('El intervalo de sincronización mínimo es 5 segundos');
+                return;
+            }
+            
+            if (alertThresholds.length === 0) {
+                alert('Debes especificar al menos un umbral de alerta en minutos');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/client/${clientId}/config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        sync_interval: syncInterval,
+                        alert_thresholds: alertThresholds
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusEl.textContent = '✓ Guardado';
+                    statusEl.style.color = '#4CAF50';
+                    
+                    // Actualizar el input de alertas con los valores ordenados del servidor (convertir a minutos)
+                    if (data.config?.alert_thresholds) {
+                        alertsInput.value = data.config.alert_thresholds.map(s => s / 60).join(', ');
+                    }
+                    
+                    setTimeout(() => {
+                        statusEl.textContent = '';
+                    }, 3000);
+                } else {
+                    statusEl.textContent = '✗ Error';
+                    statusEl.style.color = '#f44336';
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                statusEl.textContent = '✗ Error';
+                statusEl.style.color = '#f44336';
+                alert('Error al guardar configuración: ' + error.message);
+            }
+        }
+        
+        function editClientName(clientId) {
+            const nameDisplay = document.getElementById(`name-display-${clientId}`);
+            const currentName = nameDisplay.textContent;
+            const container = nameDisplay.parentElement;
+            
+            // Ocultar el nombre y el botón de editar
+            const editBtn = container.querySelector('.edit-name-btn');
+            nameDisplay.style.display = 'none';
+            editBtn.style.display = 'none';
+            
+            // Crear input
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'client-name-input';
+            input.value = currentName;
+            input.maxLength = 50;
+            input.id = `name-input-${clientId}`;
+            
+            // Crear contenedor de botones
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'name-edit-actions';
+            actionsDiv.id = `name-actions-${clientId}`;
+            
+            // Botón guardar
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'name-edit-btn name-save-btn';
+            saveBtn.innerHTML = '✓';
+            saveBtn.title = 'Guardar';
+            
+            // Botón cancelar
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'name-edit-btn name-cancel-btn';
+            cancelBtn.innerHTML = '✗';
+            cancelBtn.title = 'Cancelar';
+            
+            actionsDiv.appendChild(saveBtn);
+            actionsDiv.appendChild(cancelBtn);
+            
+            // Insertar input y botones
+            container.insertBefore(input, nameDisplay);
+            container.insertBefore(actionsDiv, nameDisplay);
+            input.focus();
+            input.select();
+            
+            // Manejar guardado
+            const saveName = async () => {
+                const newName = input.value.trim();
+                
+                if (newName && newName !== currentName) {
+                    try {
+                        const response = await fetch(`${API_URL}/client/${clientId}/config`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                custom_name: newName
+                            })
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (data.success) {
+                            nameDisplay.textContent = newName;
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    } catch (error) {
+                        alert('Error al guardar nombre: ' + error.message);
+                    }
+                }
+                
+                // Restaurar vista normal
+                cleanup();
+            };
+            
+            // Cancelar edición
+            const cancelEdit = () => {
+                cleanup();
+            };
+            
+            // Limpiar y restaurar vista
+            const cleanup = () => {
+                input.remove();
+                actionsDiv.remove();
+                nameDisplay.style.display = '';
+                editBtn.style.display = '';
+            };
+            
+            // Eventos
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    saveName();
+                } else if (e.key === 'Escape') {
+                    cancelEdit();
+                }
+            });
+            
+            saveBtn.addEventListener('click', saveName);
+            cancelBtn.addEventListener('click', cancelEdit);
+        }
+        
+        async function setTime(clientId) {
+            const timeInput = document.getElementById(`time-${clientId}`);
+            const unitSelect = document.getElementById(`unit-${clientId}`);
+            
+            const time = parseInt(timeInput.value);
+            const unit = unitSelect.value;
+            
+            if (!time || time <= 0) {
+                alert('Por favor ingresa un tiempo válido');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/client/${clientId}/set-time`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ time, unit })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`Tiempo establecido: ${time} ${unit === 'hours' ? 'hora(s)' : 'minuto(s)'}`);
+                    loadClients();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error al establecer tiempo: ' + error.message);
+            }
+        }
+        
+        async function stopSession(clientId) {
+            if (!confirm('¿Detener la sesión de este cliente?')) return;
+            
+            try {
+                const response = await fetch(`${API_URL}/client/${clientId}/stop`, {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    loadClients();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error al detener sesión: ' + error.message);
+            }
+        }
+        
+        async function deleteClient(clientId) {
+            if (!confirm('¿Eliminar este cliente permanentemente?')) return;
+            
+            try {
+                const response = await fetch(`${API_URL}/client/${clientId}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    loadClients();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error al eliminar cliente: ' + error.message);
+            }
+        }
+        
+        // Cargar información del servidor al iniciar
+        loadServerInfo();
+        
+        // Cargar clientes al iniciar
+        loadClients();
+        
+        // Actualizar cada 5 segundos
+        setInterval(loadClients, 5000);
+    </script>
+</body>
+</html>
