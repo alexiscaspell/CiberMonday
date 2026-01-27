@@ -732,6 +732,21 @@ _server = None
 _server_running = False
 _server_error = None
 
+def get_broadcast_address(ip_address):
+    """
+    Calcula la dirección de broadcast basándose en la IP.
+    Para IPs como 192.168.68.101, asume máscara /24 (255.255.255.0)
+    y retorna 192.168.68.255
+    """
+    try:
+        parts = ip_address.split('.')
+        if len(parts) == 4:
+            # Asumir máscara /24 (255.255.255.0)
+            return f"{parts[0]}.{parts[1]}.{parts[2]}.255"
+    except:
+        pass
+    return "255.255.255.255"  # Fallback
+
 def broadcast_server_presence():
     """
     Hace broadcast UDP para anunciar la presencia de este servidor a los clientes.
@@ -744,6 +759,7 @@ def broadcast_server_presence():
         try:
             local_ip = ClientManager.get_local_ip()
             if local_ip == "No conectado" or local_ip == "127.0.0.1":
+                print(f"[Broadcast] IP no válida para broadcast: {local_ip}")
                 return
             
             server_url = f"http://{local_ip}:5000"
@@ -753,23 +769,43 @@ def broadcast_server_presence():
                 'port': 5000
             }
             
+            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:5000")
+            
+            # Calcular dirección de broadcast
+            broadcast_addr = get_broadcast_address(local_ip)
+            print(f"[Broadcast] Dirección de broadcast calculada: {broadcast_addr}:{DISCOVERY_PORT}")
+            
             # Crear socket UDP para broadcast
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            print(f"[Broadcast] Socket UDP creado")
             
-            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:5000")
+            # En Android, es mejor no hacer bind a una IP específica para broadcasts
+            try:
+                sock.bind(('', 0))  # Bind a todas las interfaces, puerto 0 = sistema elige
+                print(f"[Broadcast] Socket vinculado correctamente")
+            except Exception as bind_error:
+                print(f"[Broadcast] Advertencia al hacer bind: {bind_error}")
+                # Continuar de todas formas, algunos sistemas permiten enviar sin bind
+            
+            print(f"[Broadcast] Enviando broadcasts UDP cada {BROADCAST_INTERVAL} segundos")
             
             while _server_running:
                 try:
-                    # Enviar broadcast a la red local
+                    # Enviar broadcast a la dirección de broadcast específica de la red
                     message = json.dumps(server_info).encode('utf-8')
-                    sock.sendto(message, ('255.255.255.255', DISCOVERY_PORT))
+                    sock.sendto(message, (broadcast_addr, DISCOVERY_PORT))
+                    print(f"[Broadcast] Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
                     time.sleep(BROADCAST_INTERVAL)
                 except Exception as e:
                     print(f"[Broadcast] Error al enviar broadcast: {e}")
+                    import traceback
+                    traceback.print_exc()
                     time.sleep(BROADCAST_INTERVAL)
         except Exception as e:
             print(f"[Broadcast] Error en thread de broadcast: {e}")
+            import traceback
+            traceback.print_exc()
     
     # Iniciar thread de broadcast en background
     thread = threading.Thread(target=broadcast_thread, daemon=True)

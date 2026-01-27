@@ -6,10 +6,12 @@ services:
     container_name: cibermonday-server
     ports:
       - "${PORT:-5000}:5000"
+      - "5001:5001/udp"  # Puerto para broadcasts UDP
     environment:
       - FLASK_ENV=production
       - PORT=5000
       - HOST=0.0.0.0
+      - HOST_IP=192.168.68.101  # IP del host para broadcasts
     volumes:
       # Opcional: montar logs si los agregas en el futuro
       - ./logs:/app/logs

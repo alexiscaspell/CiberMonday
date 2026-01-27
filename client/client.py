@@ -632,9 +632,17 @@ def report_session_to_server(client_id, server_url=None):
 
 def check_server_status(client_id):
     """Verifica el estado del cliente en el servidor"""
+    # Buscar un servidor disponible
+    servers_list = get_available_servers()
+    available_server = find_available_server(servers_list)
+    if not available_server:
+        print(f"[Status] No hay servidores disponibles")
+        return None
+    
+    server_url = available_server
     try:
         response = requests.get(
-            f"{SERVER_URL}/api/client/{client_id}/status",
+            f"{server_url}/api/client/{client_id}/status",
             timeout=10
         )
         
@@ -869,6 +877,7 @@ def start_server_discovery_listener():
             sock.settimeout(1.0)  # Timeout para poder verificar si el thread debe continuar
             
             print(f"[Discovery] Escuchando broadcasts de servidores en puerto {DISCOVERY_PORT}...")
+            print(f"[Discovery] El listener está activo y escuchando...")
             
             while True:
                 try:
@@ -918,8 +927,13 @@ def start_server_discovery_listener():
                 except socket.timeout:
                     # Timeout normal, continuar escuchando
                     continue
+                except json.JSONDecodeError as e:
+                    # Error al decodificar JSON, continuar escuchando
+                    print(f"[Discovery] Error al decodificar JSON del broadcast: {e}")
+                    continue
                 except Exception as e:
                     # Error al procesar, continuar escuchando
+                    print(f"[Discovery] Error al procesar broadcast: {e}")
                     continue
                     
         except Exception as e:
