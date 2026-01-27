@@ -385,29 +385,44 @@ def get_client_id():
 def get_available_servers():
     """
     Obtiene la lista de servidores disponibles.
-    Retorna lista con el servidor principal primero, seguido de servidores conocidos.
+    Retorna lista con todos los servidores (principal + descubiertos) con igual prioridad.
+    Los servidores descubiertos recientemente tienen prioridad ligeramente mayor.
     """
     servers = []
+    seen_urls = set()
     
-    # Agregar servidor principal
-    if SERVER_URL:
-        servers.append({
-            'url': SERVER_URL,
-            'priority': 0  # Mayor prioridad
-        })
-    
-    # Agregar servidores conocidos del registro
+    # Primero agregar servidores descubiertos (más recientes primero)
     if REGISTRY_AVAILABLE:
         known_servers = get_servers_from_registry()
         print(f"[Servidores] Servidores conocidos en registro: {len(known_servers)}")
-        for server in known_servers:
+        
+        # Ordenar por last_seen (más recientes primero)
+        known_servers_sorted = sorted(
+            known_servers,
+            key=lambda s: s.get('last_seen', ''),
+            reverse=True
+        )
+        
+        for server in known_servers_sorted:
             server_url = server.get('url')
-            if server_url and server_url != SERVER_URL:
+            if server_url:
                 servers.append({
                     'url': server_url,
-                    'priority': 1  # Menor prioridad
+                    'priority': 0,  # Misma prioridad que el principal
+                    'last_seen': server.get('last_seen', ''),
+                    'source': 'discovered'
                 })
-                print(f"[Servidores] Agregado servidor conocido: {server_url}")
+                seen_urls.add(server_url)
+                print(f"[Servidores] Agregado servidor descubierto: {server_url} (visto: {server.get('last_seen', 'N/A')})")
+    
+    # Luego agregar servidor principal si no está ya en la lista
+    if SERVER_URL and SERVER_URL not in seen_urls:
+        servers.append({
+            'url': SERVER_URL,
+            'priority': 0,  # Misma prioridad que los descubiertos
+            'source': 'configured'
+        })
+        print(f"[Servidores] Agregado servidor principal: {SERVER_URL}")
     
     print(f"[Servidores] Total de servidores disponibles para probar: {len(servers)}")
     return servers
@@ -420,8 +435,8 @@ def find_available_server(servers_list=None):
     if servers_list is None:
         servers_list = get_available_servers()
     
-    # Ordenar por prioridad
-    servers_list.sort(key=lambda x: x.get('priority', 1))
+    # Ordenar por prioridad (todos tienen 0 ahora, pero mantenemos el orden por last_seen)
+    servers_list.sort(key=lambda x: (x.get('priority', 1), x.get('last_seen', ''), ''), reverse=True)
     
     print(f"[Servidores] Buscando servidor disponible de {len(servers_list)} servidores conocidos...")
     for idx, server in enumerate(servers_list, 1):
@@ -429,12 +444,14 @@ def find_available_server(servers_list=None):
         if not server_url:
             continue
         
-        print(f"[Servidores] [{idx}/{len(servers_list)}] Probando servidor: {server_url}")
+        source = server.get('source', 'unknown')
+        last_seen = server.get('last_seen', 'N/A')
+        print(f"[Servidores] [{idx}/{len(servers_list)}] Probando servidor: {server_url} (origen: {source}, visto: {last_seen})")
         try:
             # Intentar conectar al servidor
             response = requests.get(f"{server_url}/api/health", timeout=3)
             if response.status_code == 200:
-                print(f"[Servidores] ✅ Servidor disponible encontrado: {server_url}")
+                print(f"[Servidores] ✅ Servidor disponible encontrado: {server_url} (origen: {source})")
                 return server_url
             else:
                 print(f"[Servidores] ⚠️  Servidor {server_url} respondió con código {response.status_code}")
