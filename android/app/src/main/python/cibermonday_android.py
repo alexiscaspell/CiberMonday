@@ -789,10 +789,22 @@ def broadcast_server_presence():
                 # Continuar de todas formas, algunos sistemas permiten enviar sin bind
             
             print(f"[Broadcast] Enviando broadcasts UDP cada {BROADCAST_INTERVAL} segundos")
+            print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
             
             while _server_running:
                 try:
-                    # Enviar broadcast a la dirección de broadcast específica de la red
+                    # Verificar si hay clientes conectados
+                    manager = get_manager()
+                    num_clients = len(manager.clients_db)
+                    if num_clients > 0:
+                        # Hay clientes conectados, no enviar broadcast pero seguir verificando
+                        if num_clients == 1:
+                            # Solo loguear una vez cuando se detecta el primer cliente
+                            print(f"[Broadcast] Hay {num_clients} cliente conectado. Broadcasts pausados.")
+                        time.sleep(BROADCAST_INTERVAL)
+                        continue
+                    
+                    # No hay clientes, enviar broadcast
                     message = json.dumps(server_info).encode('utf-8')
                     sock.sendto(message, (broadcast_addr, DISCOVERY_PORT))
                     print(f"[Broadcast] Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")

@@ -399,6 +399,7 @@ def get_available_servers():
     # Agregar servidores conocidos del registro
     if REGISTRY_AVAILABLE:
         known_servers = get_servers_from_registry()
+        print(f"[Servidores] Servidores conocidos en registro: {len(known_servers)}")
         for server in known_servers:
             server_url = server.get('url')
             if server_url and server_url != SERVER_URL:
@@ -406,7 +407,9 @@ def get_available_servers():
                     'url': server_url,
                     'priority': 1  # Menor prioridad
                 })
+                print(f"[Servidores] Agregado servidor conocido: {server_url}")
     
+    print(f"[Servidores] Total de servidores disponibles para probar: {len(servers)}")
     return servers
 
 def find_available_server(servers_list=None):
@@ -420,19 +423,26 @@ def find_available_server(servers_list=None):
     # Ordenar por prioridad
     servers_list.sort(key=lambda x: x.get('priority', 1))
     
-    for server in servers_list:
+    print(f"[Servidores] Buscando servidor disponible de {len(servers_list)} servidores conocidos...")
+    for idx, server in enumerate(servers_list, 1):
         server_url = server.get('url')
         if not server_url:
             continue
         
+        print(f"[Servidores] [{idx}/{len(servers_list)}] Probando servidor: {server_url}")
         try:
             # Intentar conectar al servidor
             response = requests.get(f"{server_url}/api/health", timeout=3)
             if response.status_code == 200:
+                print(f"[Servidores] ✅ Servidor disponible encontrado: {server_url}")
                 return server_url
-        except:
+            else:
+                print(f"[Servidores] ⚠️  Servidor {server_url} respondió con código {response.status_code}")
+        except Exception as e:
+            print(f"[Servidores] ❌ Servidor {server_url} no disponible: {e}")
             continue
     
+    print(f"[Servidores] ❌ No se encontró ningún servidor disponible")
     return None
 
 def register_new_client(existing_client_id=None):
@@ -882,7 +892,14 @@ def start_server_discovery_listener():
             while True:
                 try:
                     data, addr = sock.recvfrom(1024)
-                    server_info = json.loads(data.decode('utf-8'))
+                    print(f"[Discovery] Datos recibidos desde {addr[0]}:{addr[1]} ({len(data)} bytes)")
+                    
+                    try:
+                        server_info = json.loads(data.decode('utf-8'))
+                    except json.JSONDecodeError as e:
+                        print(f"[Discovery] Error al decodificar JSON del broadcast desde {addr[0]}: {e}")
+                        print(f"[Discovery] Datos recibidos (primeros 100 bytes): {data[:100]}")
+                        continue
                     
                     server_url = server_info.get('url')
                     server_ip = server_info.get('ip', addr[0])
@@ -894,6 +911,7 @@ def start_server_discovery_listener():
                         # Registrar el servidor en nuestra lista
                         if REGISTRY_AVAILABLE:
                             known_servers = get_servers_from_registry()
+                            print(f"[Discovery] Servidores conocidos actualmente: {len(known_servers)}")
                             
                             # Verificar si ya existe
                             if not any(s.get('url') == server_url for s in known_servers):
@@ -904,9 +922,11 @@ def start_server_discovery_listener():
                                     'last_seen': datetime.now().isoformat()
                                 })
                                 save_servers_to_registry(known_servers)
-                                print(f"[Discovery] Servidor {server_url} registrado exitosamente")
+                                print(f"[Discovery] ✅ Servidor {server_url} registrado exitosamente")
                             else:
-                                print(f"[Discovery] Servidor {server_url} ya conocido")
+                                print(f"[Discovery] ⚠️  Servidor {server_url} ya conocido (no se registra nuevamente)")
+                        else:
+                            print(f"[Discovery] ⚠️  Registry no disponible, no se puede guardar el servidor")
                         
                         # También registrar directamente en el servidor usando el endpoint
                         try:
@@ -920,20 +940,20 @@ def start_server_discovery_listener():
                                 timeout=2
                             )
                             if response.status_code == 201:
-                                print(f"[Discovery] Servidor {server_url} confirmado")
-                        except:
-                            pass  # No crítico si falla
+                                print(f"[Discovery] ✅ Servidor {server_url} confirmado en el servidor")
+                            else:
+                                print(f"[Discovery] ⚠️  Respuesta del servidor {server_url}: {response.status_code}")
+                        except Exception as e:
+                            print(f"[Discovery] ⚠️  Error al confirmar servidor {server_url}: {e}")
                             
                 except socket.timeout:
                     # Timeout normal, continuar escuchando
                     continue
-                except json.JSONDecodeError as e:
-                    # Error al decodificar JSON, continuar escuchando
-                    print(f"[Discovery] Error al decodificar JSON del broadcast: {e}")
-                    continue
                 except Exception as e:
                     # Error al procesar, continuar escuchando
-                    print(f"[Discovery] Error al procesar broadcast: {e}")
+                    print(f"[Discovery] ❌ Error al procesar broadcast: {e}")
+                    import traceback
+                    traceback.print_exc()
                     continue
                     
         except Exception as e:
@@ -945,6 +965,7 @@ def start_server_discovery_listener():
     # Iniciar thread en background
     thread = threading.Thread(target=listener_thread, daemon=True)
     thread.start()
+    print(f"[Discovery] Thread de descubrimiento iniciado (daemon={thread.daemon})")
 
 def monitor_time(client_id):
     """
