@@ -35,6 +35,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var clientAdapter: ClientAdapter
     private lateinit var serversSection: View
     private lateinit var serversList: LinearLayout
+    private lateinit var broadcastConfigSection: View
+    private lateinit var tvBroadcastInterval: TextView
     
     private var serverIp: String = ""
 
@@ -45,6 +47,7 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             loadClients()
             loadServers()
+            loadServerConfig()
             handler.postDelayed(this, refreshInterval)
         }
     }
@@ -65,8 +68,13 @@ class MainActivity : AppCompatActivity() {
         startFlaskServer()
         
         loadServerIp()
+        loadServerConfig()
         loadServers()
         loadClients()
+        
+        broadcastConfigSection.setOnClickListener {
+            showBroadcastConfigDialog()
+        }
     }
     
     private fun startFlaskServer() {
@@ -138,6 +146,10 @@ class MainActivity : AppCompatActivity() {
         btnOpenBrowser = findViewById(R.id.btnOpenBrowser)
         serversSection = findViewById(R.id.serversSection)
         serversList = findViewById(R.id.serversList)
+        broadcastConfigSection = findViewById(R.id.broadcastConfigSection)
+        tvBroadcastInterval = findViewById(R.id.tvBroadcastInterval)
+        broadcastConfigSection = findViewById(R.id.broadcastConfigSection)
+        tvBroadcastInterval = findViewById(R.id.tvBroadcastInterval)
 
         fabRefresh.setOnClickListener {
             loadClients()
@@ -266,6 +278,82 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             isoDate
         }
+    }
+    
+    private fun loadServerConfig() {
+        Thread {
+            try {
+                val py = Python.getInstance()
+                val module = py.getModule("cibermonday_android")
+                val response = module.callAttr("get_server_config_json").toString()
+                
+                val configObj = org.json.JSONObject(response)
+                val success = configObj.optBoolean("success", false)
+                
+                if (success) {
+                    val config = configObj.getJSONObject("config")
+                    val interval = config.optInt("broadcast_interval", 1)
+                    
+                    runOnUiThread {
+                        tvBroadcastInterval.text = "$interval segundo(s)"
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }.start()
+    }
+    
+    private fun showBroadcastConfigDialog() {
+        val currentInterval = tvBroadcastInterval.text.toString().replace(" segundo(s)", "").toIntOrNull() ?: 1
+        
+        val input = android.widget.EditText(this)
+        input.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        input.setText(currentInterval.toString())
+        input.selectAll()
+        
+        AlertDialog.Builder(this)
+            .setTitle("Configurar Intervalo de Broadcast")
+            .setMessage("Ingresa el intervalo de broadcast en segundos (1-300):")
+            .setView(input)
+            .setPositiveButton("Guardar") { _, _ ->
+                val newInterval = input.text.toString().toIntOrNull()
+                if (newInterval != null && newInterval >= 1 && newInterval <= 300) {
+                    updateBroadcastInterval(newInterval)
+                } else {
+                    Toast.makeText(this, "Por favor ingresa un valor válido entre 1 y 300", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+    
+    private fun updateBroadcastInterval(interval: Int) {
+        Thread {
+            try {
+                val py = Python.getInstance()
+                val module = py.getModule("cibermonday_android")
+                val resultJson = module.callAttr("set_server_config", interval).toString()
+                
+                val result = org.json.JSONObject(resultJson)
+                val success = result.optBoolean("success", false)
+                
+                runOnUiThread {
+                    if (success) {
+                        tvBroadcastInterval.text = "$interval segundo(s)"
+                        Toast.makeText(this, "Intervalo de broadcast actualizado a $interval segundo(s)", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val message = result.optString("message", "Error al actualizar")
+                        Toast.makeText(this, "Error: $message", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                runOnUiThread {
+                    Toast.makeText(this, "Error al actualizar configuración", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
 
     private fun loadClients() {

@@ -17,6 +17,11 @@ client_sessions = {}
 client_configs = {}  # Configuración de cada cliente
 servers_db = {}  # Diccionario de servidores conocidos: {server_id: {url, ip, port, last_seen, ...}}
 
+# Configuración del servidor
+server_config = {
+    'broadcast_interval': 1  # Intervalo de broadcast en segundos (por defecto 1 segundo)
+}
+
 # Configuración por defecto para clientes
 DEFAULT_CLIENT_CONFIG = {
     'sync_interval': 30,           # Segundos entre sincronizaciones
@@ -429,7 +434,38 @@ def server_info():
         'success': True,
         'ip': local_ip,
         'port': port,
-        'url': f"http://{local_ip}:{port}"
+        'url': f"http://{local_ip}:{port}",
+        'broadcast_interval': server_config['broadcast_interval']
+    }), 200
+
+@app.route('/api/server-config', methods=['GET'])
+def get_server_config():
+    """Obtiene la configuración del servidor"""
+    return jsonify({
+        'success': True,
+        'config': server_config.copy()
+    }), 200
+
+@app.route('/api/server-config', methods=['POST'])
+def set_server_config():
+    """Actualiza la configuración del servidor"""
+    global server_config
+    data = request.json
+    
+    if 'broadcast_interval' in data:
+        broadcast_interval = int(data['broadcast_interval'])
+        if broadcast_interval < 1:
+            return jsonify({
+                'success': False,
+                'message': 'El intervalo de broadcast debe ser al menos 1 segundo'
+            }), 400
+        server_config['broadcast_interval'] = broadcast_interval
+        print(f"[Config] Intervalo de broadcast actualizado a {broadcast_interval} segundos")
+    
+    return jsonify({
+        'success': True,
+        'config': server_config.copy(),
+        'message': 'Configuración actualizada correctamente'
     }), 200
 
 @app.route('/api/register-server', methods=['POST'])
@@ -619,7 +655,7 @@ def broadcast_server_presence():
     """
     def broadcast_thread():
         DISCOVERY_PORT = 5001
-        BROADCAST_INTERVAL = 30  # Broadcast cada 30 segundos
+        global server_config
         
         try:
             # Obtener IP del host desde variable de entorno si está disponible (útil en Docker)
@@ -657,7 +693,7 @@ def broadcast_server_presence():
             
             print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:5000")
             print(f"[Broadcast] Dirección de broadcast: {broadcast_addr}:{DISCOVERY_PORT}")
-            print(f"[Broadcast] Enviando broadcasts UDP cada {BROADCAST_INTERVAL} segundos")
+            print(f"[Broadcast] Enviando broadcasts UDP cada {server_config['broadcast_interval']} segundos")
             print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
             
             last_client_count = 0
@@ -678,7 +714,7 @@ def broadcast_server_presence():
                             # El número de clientes cambió, actualizar log
                             print(f"[Broadcast] ⏸️  {num_clients} cliente(s) conectado(s). Broadcasts siguen pausados.")
                         last_client_count = num_clients
-                        time.sleep(BROADCAST_INTERVAL)
+                        time.sleep(server_config['broadcast_interval'])
                         continue
                     else:
                         # No hay clientes
@@ -692,7 +728,7 @@ def broadcast_server_presence():
                     message = json.dumps(server_info).encode('utf-8')
                     sock.sendto(message, (broadcast_addr, DISCOVERY_PORT))
                     print(f"[Broadcast] 📡 Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
-                    time.sleep(BROADCAST_INTERVAL)
+                    time.sleep(server_config['broadcast_interval'])
                 except Exception as e:
                     print(f"[Broadcast] Error al enviar broadcast: {e}")
                     import traceback

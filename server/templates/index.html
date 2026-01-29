@@ -465,6 +465,17 @@
                 </button>
                 <span class="copy-tooltip" id="copy-tooltip">¡Copiado!</span>
             </div>
+            <div class="server-config" style="margin-top: 12px; padding: 12px; background: #f5f5f5; border-radius: 5px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span style="font-weight: bold; color: #333;">⏱️ Intervalo de Broadcast:</span>
+                        <span id="broadcast-interval-display" style="margin-left: 8px; color: #666;">Cargando...</span>
+                    </div>
+                    <button onclick="showBroadcastConfig()" style="background: #667eea; color: white; border: none; padding: 6px 12px; border-radius: 3px; cursor: pointer; font-size: 12px;">
+                        Configurar
+                    </button>
+                </div>
+            </div>
         </header>
         
         <div class="servers-section" id="servers-section" style="display: none; margin-bottom: 20px;">
@@ -497,11 +508,65 @@
                 if (data.success) {
                     serverUrl = data.url;
                     document.getElementById('server-url').textContent = data.url;
+                    if (data.broadcast_interval !== undefined) {
+                        document.getElementById('broadcast-interval-display').textContent = `${data.broadcast_interval} segundo(s)`;
+                    }
                 }
             } catch (error) {
                 console.error('Error al cargar info del servidor:', error);
                 document.getElementById('server-url').textContent = 'No disponible';
             }
+        }
+        
+        async function loadServerConfig() {
+            try {
+                const response = await fetch(`${API_URL}/server-config`);
+                const data = await response.json();
+                
+                if (data.success && data.config) {
+                    const interval = data.config.broadcast_interval || 1;
+                    document.getElementById('broadcast-interval-display').textContent = `${interval} segundo(s)`;
+                }
+            } catch (error) {
+                console.error('Error al cargar configuración del servidor:', error);
+            }
+        }
+        
+        function showBroadcastConfig() {
+            const currentInterval = parseInt(document.getElementById('broadcast-interval-display').textContent) || 1;
+            const newInterval = prompt(`Configurar intervalo de broadcast (segundos):\n\nValor actual: ${currentInterval} segundo(s)\n\nIngresa un valor entre 1 y 300 segundos:`, currentInterval);
+            
+            if (newInterval === null) return; // Usuario canceló
+            
+            const interval = parseInt(newInterval);
+            if (isNaN(interval) || interval < 1 || interval > 300) {
+                alert('Por favor ingresa un valor válido entre 1 y 300 segundos');
+                return;
+            }
+            
+            // Actualizar configuración
+            fetch(`${API_URL}/server-config`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    broadcast_interval: interval
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('broadcast-interval-display').textContent = `${interval} segundo(s)`;
+                    alert(`Intervalo de broadcast actualizado a ${interval} segundo(s)`);
+                } else {
+                    alert('Error: ' + (data.message || 'No se pudo actualizar la configuración'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error al actualizar la configuración');
+            });
         }
         
         async function loadServers() {
@@ -1053,6 +1118,7 @@
         
         // Cargar información del servidor al iniciar
         loadServerInfo();
+        loadServerConfig();
         
         // Cargar servidores conocidos al iniciar
         loadServers();
@@ -1064,6 +1130,7 @@
         setInterval(() => {
             loadClients();
             loadServers();
+            loadServerConfig();
         }, 5000);
     </script>
 </body>

@@ -217,6 +217,48 @@ def show_config_window():
         
         if REGISTRY_AVAILABLE:
             if save_config_to_registry(config):
+                # Agregar el servidor a la lista de servidores conocidos
+                try:
+                    from registry_manager import get_servers_from_registry, save_servers_to_registry
+                    from datetime import datetime
+                    import re
+                    
+                    # Extraer IP y puerto de la URL
+                    url_match = re.match(r'http://([^:]+):?(\d+)?', server_url)
+                    server_ip = url_match.group(1) if url_match else None
+                    server_port = int(url_match.group(2)) if url_match and url_match.group(2) else 5000
+                    
+                    # Obtener lista actual de servidores conocidos
+                    known_servers = get_servers_from_registry()
+                    
+                    # Verificar si el servidor ya existe
+                    server_exists = any(s.get('url') == server_url for s in known_servers)
+                    
+                    if not server_exists:
+                        # Agregar nuevo servidor a la lista
+                        known_servers.append({
+                            'url': server_url,
+                            'ip': server_ip,
+                            'port': server_port,
+                            'last_seen': datetime.now().isoformat()
+                        })
+                        save_servers_to_registry(known_servers)
+                        print(f"[Config] Servidor {server_url} agregado a la lista de servidores conocidos")
+                    else:
+                        # Actualizar last_seen del servidor existente
+                        for server in known_servers:
+                            if server.get('url') == server_url:
+                                server['last_seen'] = datetime.now().isoformat()
+                                if server_ip:
+                                    server['ip'] = server_ip
+                                if server_port:
+                                    server['port'] = server_port
+                                break
+                        save_servers_to_registry(known_servers)
+                        print(f"[Config] Servidor {server_url} actualizado en la lista de servidores conocidos")
+                except Exception as e:
+                    print(f"[Config] Advertencia: No se pudo actualizar lista de servidores: {e}")
+                
                 nonlocal config_result
                 config_result = config
                 root.quit()

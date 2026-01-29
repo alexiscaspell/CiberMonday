@@ -123,6 +123,46 @@
 
             </LinearLayout>
 
+            <!-- Configuración de Broadcast -->
+            <LinearLayout
+                android:id="@+id/broadcastConfigSection"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="12dp"
+                android:background="#F5F5F5"
+                android:padding="12dp"
+                android:clickable="true"
+                android:focusable="true">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="⏱️ Intervalo de Broadcast:"
+                    android:textColor="#333333"
+                    android:textStyle="bold"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/tvBroadcastInterval"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="1 segundo(s)"
+                    android:textColor="#666666"
+                    android:textSize="14sp"
+                    android:layout_marginEnd="8dp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="⚙️"
+                    android:textSize="18sp"
+                    android:textColor="#667eea" />
+
+            </LinearLayout>
+
         </LinearLayout>
 
         <!-- Otros Servidores Conocidos -->

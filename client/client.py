@@ -131,6 +131,36 @@ try:
                 SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
                 CHECK_INTERVAL = config_data.get('check_interval', 5)
                 SYNC_INTERVAL_CONFIG = config_data.get('sync_interval', 30)
+                
+                # Asegurar que el servidor configurado esté en la lista de servidores conocidos
+                if REGISTRY_AVAILABLE:
+                    try:
+                        from registry_manager import get_servers_from_registry, save_servers_to_registry
+                        from datetime import datetime
+                        import re
+                        
+                        known_servers = get_servers_from_registry()
+                        
+                        # Verificar si el servidor principal ya está en la lista
+                        server_exists = any(s.get('url') == SERVER_URL for s in known_servers)
+                        
+                        if not server_exists:
+                            # Extraer IP y puerto de la URL
+                            url_match = re.match(r'http://([^:]+):?(\d+)?', SERVER_URL)
+                            server_ip = url_match.group(1) if url_match else None
+                            server_port = int(url_match.group(2)) if url_match and url_match.group(2) else 5000
+                            
+                            # Agregar servidor principal a la lista
+                            known_servers.append({
+                                'url': SERVER_URL,
+                                'ip': server_ip,
+                                'port': server_port,
+                                'last_seen': datetime.now().isoformat()
+                            })
+                            save_servers_to_registry(known_servers)
+                            print(f"[Inicio] Servidor principal {SERVER_URL} agregado a la lista de servidores conocidos")
+                    except Exception as e:
+                        print(f"[Inicio] Advertencia: No se pudo actualizar lista de servidores: {e}")
             except Exception as e:
                 import traceback
                 print(f"Error al mostrar GUI de configuración: {e}")
@@ -154,6 +184,36 @@ try:
                     SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
                     CHECK_INTERVAL = config_data.get('check_interval', 5)
                     SYNC_INTERVAL_CONFIG = config_data.get('sync_interval', 30)
+                    
+                    # Asegurar que el servidor configurado esté en la lista de servidores conocidos
+                    if REGISTRY_AVAILABLE:
+                        try:
+                            from registry_manager import get_servers_from_registry, save_servers_to_registry
+                            from datetime import datetime
+                            import re
+                            
+                            known_servers = get_servers_from_registry()
+                            
+                            # Verificar si el servidor principal ya está en la lista
+                            server_exists = any(s.get('url') == SERVER_URL for s in known_servers)
+                            
+                            if not server_exists:
+                                # Extraer IP y puerto de la URL
+                                url_match = re.match(r'http://([^:]+):?(\d+)?', SERVER_URL)
+                                server_ip = url_match.group(1) if url_match else None
+                                server_port = int(url_match.group(2)) if url_match and url_match.group(2) else 5000
+                                
+                                # Agregar servidor principal a la lista
+                                known_servers.append({
+                                    'url': SERVER_URL,
+                                    'ip': server_ip,
+                                    'port': server_port,
+                                    'last_seen': datetime.now().isoformat()
+                                })
+                                save_servers_to_registry(known_servers)
+                                print(f"[Inicio] Servidor principal {SERVER_URL} agregado a la lista de servidores conocidos")
+                        except Exception as e:
+                            print(f"[Inicio] Advertencia: No se pudo actualizar lista de servidores: {e}")
                 else:
                     # Usuario canceló pero hay configuración previa, usar esa
                     SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
@@ -170,6 +230,36 @@ try:
             SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
             CHECK_INTERVAL = config_data.get('check_interval', 5)
             SYNC_INTERVAL_CONFIG = config_data.get('sync_interval', 30)
+            
+            # Asegurar que el servidor configurado esté en la lista de servidores conocidos
+            if REGISTRY_AVAILABLE:
+                try:
+                    from registry_manager import get_servers_from_registry, save_servers_to_registry
+                    from datetime import datetime
+                    import re
+                    
+                    known_servers = get_servers_from_registry()
+                    
+                    # Verificar si el servidor principal ya está en la lista
+                    server_exists = any(s.get('url') == SERVER_URL for s in known_servers)
+                    
+                    if not server_exists:
+                        # Extraer IP y puerto de la URL
+                        url_match = re.match(r'http://([^:]+):?(\d+)?', SERVER_URL)
+                        server_ip = url_match.group(1) if url_match else None
+                        server_port = int(url_match.group(2)) if url_match and url_match.group(2) else 5000
+                        
+                        # Agregar servidor principal a la lista
+                        known_servers.append({
+                            'url': SERVER_URL,
+                            'ip': server_ip,
+                            'port': server_port,
+                            'last_seen': datetime.now().isoformat()
+                        })
+                        save_servers_to_registry(known_servers)
+                        print(f"[Inicio] Servidor principal {SERVER_URL} agregado a la lista de servidores conocidos")
+                except Exception as e:
+                    print(f"[Inicio] Advertencia: No se pudo actualizar lista de servidores: {e}")
     
     CLIENT_ID_FILE = os.path.join(BASE_PATH, "client_id.txt")
     

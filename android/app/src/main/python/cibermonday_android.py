@@ -428,6 +428,29 @@ def get_client_count():
     """Obtiene el número de clientes."""
     return len(get_manager().clients_db)
 
+def get_server_config_json():
+    """Obtiene la configuración del servidor como JSON string."""
+    return json.dumps({
+        'success': True,
+        'config': _server_config.copy()
+    })
+
+def set_server_config(broadcast_interval):
+    """Actualiza la configuración del servidor."""
+    global _server_config
+    if broadcast_interval < 1:
+        return json.dumps({
+            'success': False,
+            'message': 'El intervalo de broadcast debe ser al menos 1 segundo'
+        })
+    _server_config['broadcast_interval'] = broadcast_interval
+    print(f"[Config] Intervalo de broadcast actualizado a {broadcast_interval} segundos")
+    return json.dumps({
+        'success': True,
+        'config': _server_config.copy(),
+        'message': 'Configuración actualizada correctamente'
+    })
+
 
 # ============== SERVIDOR HTTP NATIVO (para clientes remotos) ==============
 
@@ -587,6 +610,24 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 'servers': self.manager.get_servers()
             })
         
+        elif path == '/api/server-info':
+            # Obtener información del servidor
+            local_ip = ClientManager.get_local_ip()
+            self._send_json({
+                'success': True,
+                'ip': local_ip,
+                'port': 5000,
+                'url': f"http://{local_ip}:5000",
+                'broadcast_interval': _server_config['broadcast_interval']
+            })
+        
+        elif path == '/api/server-config':
+            # Obtener configuración del servidor
+            self._send_json({
+                'success': True,
+                'config': _server_config.copy()
+            })
+        
         elif path.startswith('/api/client/') and path.endswith('/status'):
             client_id = path.split('/')[3]
             client = self.manager.get_client_status(client_id)
@@ -699,6 +740,28 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 'known_clients': self.manager.get_clients()
             }, 200)
         
+        elif path == '/api/server-config':
+            # Actualizar configuración del servidor
+            global _server_config
+            broadcast_interval = data.get('broadcast_interval')
+            
+            if broadcast_interval is not None:
+                broadcast_interval = int(broadcast_interval)
+                if broadcast_interval < 1:
+                    self._send_json({
+                        'success': False,
+                        'message': 'El intervalo de broadcast debe ser al menos 1 segundo'
+                    }, 400)
+                    return
+                _server_config['broadcast_interval'] = broadcast_interval
+                print(f"[Config] Intervalo de broadcast actualizado a {broadcast_interval} segundos")
+            
+            self._send_json({
+                'success': True,
+                'config': _server_config.copy(),
+                'message': 'Configuración actualizada correctamente'
+            }, 200)
+        
         else:
             self._send_json({'error': 'Not found'}, 404)
     
@@ -740,6 +803,11 @@ _server = None
 _server_running = False
 _server_error = None
 
+# Configuración del servidor
+_server_config = {
+    'broadcast_interval': 1  # Intervalo de broadcast en segundos (por defecto 1 segundo)
+}
+
 def get_broadcast_address(ip_address):
     """
     Calcula la dirección de broadcast basándose en la IP.
@@ -762,7 +830,7 @@ def broadcast_server_presence():
     """
     def broadcast_thread():
         DISCOVERY_PORT = 5001
-        BROADCAST_INTERVAL = 30  # Broadcast cada 30 segundos
+        global _server_config
         
         try:
             local_ip = ClientManager.get_local_ip()
@@ -796,7 +864,7 @@ def broadcast_server_presence():
                 print(f"[Broadcast] Advertencia al hacer bind: {bind_error}")
                 # Continuar de todas formas, algunos sistemas permiten enviar sin bind
             
-            print(f"[Broadcast] Enviando broadcasts UDP cada {BROADCAST_INTERVAL} segundos")
+            print(f"[Broadcast] Enviando broadcasts UDP cada {_server_config['broadcast_interval']} segundos")
             print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
             
             last_client_count = 0
@@ -818,7 +886,7 @@ def broadcast_server_presence():
                             # El número de clientes cambió, actualizar log
                             print(f"[Broadcast] ⏸️  {num_clients} cliente(s) conectado(s). Broadcasts siguen pausados.")
                         last_client_count = num_clients
-                        time.sleep(BROADCAST_INTERVAL)
+                        time.sleep(_server_config['broadcast_interval'])
                         continue
                     else:
                         # No hay clientes
@@ -832,7 +900,7 @@ def broadcast_server_presence():
                     message = json.dumps(server_info).encode('utf-8')
                     sock.sendto(message, (broadcast_addr, DISCOVERY_PORT))
                     print(f"[Broadcast] 📡 Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
-                    time.sleep(BROADCAST_INTERVAL)
+                    time.sleep(_server_config['broadcast_interval'])
                 except Exception as e:
                     print(f"[Broadcast] Error al enviar broadcast: {e}")
                     import traceback
