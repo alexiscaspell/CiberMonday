@@ -660,22 +660,38 @@ def broadcast_server_presence():
             print(f"[Broadcast] Enviando broadcasts UDP cada {BROADCAST_INTERVAL} segundos")
             print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
             
+            last_client_count = 0
+            broadcasts_paused = False
+            
             while True:
                 try:
                     # Verificar si hay clientes conectados
                     num_clients = len(clients_db)
+                    
                     if num_clients > 0:
                         # Hay clientes conectados, no enviar broadcast pero seguir verificando
-                        if num_clients == 1:
-                            # Solo loguear una vez cuando se detecta el primer cliente
-                            print(f"[Broadcast] Hay {num_clients} cliente conectado. Broadcasts pausados.")
+                        if not broadcasts_paused:
+                            # Primera vez que detectamos clientes - pausar broadcasts
+                            print(f"[Broadcast] ⏸️  Hay {num_clients} cliente(s) conectado(s). Broadcasts pausados.")
+                            broadcasts_paused = True
+                        elif num_clients != last_client_count:
+                            # El número de clientes cambió, actualizar log
+                            print(f"[Broadcast] ⏸️  {num_clients} cliente(s) conectado(s). Broadcasts siguen pausados.")
+                        last_client_count = num_clients
                         time.sleep(BROADCAST_INTERVAL)
                         continue
+                    else:
+                        # No hay clientes
+                        if broadcasts_paused:
+                            # Se desconectaron todos los clientes - reanudar broadcasts
+                            print(f"[Broadcast] ▶️  No hay clientes conectados. Reanudando broadcasts UDP.")
+                            broadcasts_paused = False
+                        last_client_count = 0
                     
                     # No hay clientes, enviar broadcast
                     message = json.dumps(server_info).encode('utf-8')
                     sock.sendto(message, (broadcast_addr, DISCOVERY_PORT))
-                    print(f"[Broadcast] Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
+                    print(f"[Broadcast] 📡 Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
                     time.sleep(BROADCAST_INTERVAL)
                 except Exception as e:
                     print(f"[Broadcast] Error al enviar broadcast: {e}")

@@ -467,6 +467,13 @@
             </div>
         </header>
         
+        <div class="servers-section" id="servers-section" style="display: none; margin-bottom: 20px;">
+            <h2 style="margin-bottom: 10px; color: #333;">🌐 Otros Servidores Conocidos</h2>
+            <div class="servers-list" id="servers-list">
+                <p>Cargando servidores...</p>
+            </div>
+        </div>
+        
         <div class="clients-grid" id="clients-container">
             <div class="no-clients">
                 <p>Cargando clientes...</p>
@@ -494,6 +501,48 @@
             } catch (error) {
                 console.error('Error al cargar info del servidor:', error);
                 document.getElementById('server-url').textContent = 'No disponible';
+            }
+        }
+        
+        async function loadServers() {
+            try {
+                const response = await fetch(`${API_URL}/servers`);
+                const data = await response.json();
+                
+                if (data.success && data.servers) {
+                    const serversList = data.servers;
+                    const serversContainer = document.getElementById('servers-list');
+                    const serversSection = document.getElementById('servers-section');
+                    
+                    // Filtrar el servidor actual
+                    const currentServerUrl = serverUrl || '';
+                    const otherServers = serversList.filter(s => s.url !== currentServerUrl);
+                    
+                    if (otherServers.length > 0) {
+                        serversSection.style.display = 'block';
+                        serversContainer.innerHTML = otherServers.map(server => {
+                            const lastSeen = server.last_seen ? new Date(server.last_seen).toLocaleString() : 'N/A';
+                            return `
+                                <div style="background: #f5f5f5; padding: 10px; margin-bottom: 8px; border-radius: 5px; border-left: 3px solid #4CAF50;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <div>
+                                            <strong style="color: #333;">${server.url}</strong>
+                                            ${server.ip ? `<div style="font-size: 0.9em; color: #666;">IP: ${server.ip}:${server.port || 5000}</div>` : ''}
+                                            <div style="font-size: 0.85em; color: #999;">Visto: ${lastSeen}</div>
+                                        </div>
+                                        <button onclick="window.open('${server.url}', '_blank')" style="background: #4CAF50; color: white; border: none; padding: 5px 15px; border-radius: 3px; cursor: pointer;">
+                                            Abrir
+                                        </button>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    } else {
+                        serversSection.style.display = 'none';
+                    }
+                }
+            } catch (error) {
+                console.error('Error al cargar servidores:', error);
             }
         }
         
@@ -1005,11 +1054,17 @@
         // Cargar información del servidor al iniciar
         loadServerInfo();
         
+        // Cargar servidores conocidos al iniciar
+        loadServers();
+        
         // Cargar clientes al iniciar
         loadClients();
         
         // Actualizar cada 5 segundos
-        setInterval(loadClients, 5000);
+        setInterval(() => {
+            loadClients();
+            loadServers();
+        }, 5000);
     </script>
 </body>
 </html>

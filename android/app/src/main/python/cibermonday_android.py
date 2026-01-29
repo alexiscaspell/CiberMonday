@@ -395,6 +395,14 @@ def set_client_name(client_id, new_name):
     result = get_manager().set_client_config(client_id, custom_name=new_name)
     return json.dumps(result)
 
+def get_servers_json():
+    """Obtiene los servidores conocidos como JSON string."""
+    manager = get_manager()
+    servers_list = []
+    for server_id, server_data in manager.servers_db.items():
+        servers_list.append(server_data.copy())
+    return json.dumps(servers_list)
+
 def set_client_config(client_id, sync_interval=None, alert_thresholds=None):
     """Actualiza la configuración de un cliente."""
     # Convertir alert_thresholds si viene como lista de Python
@@ -791,23 +799,39 @@ def broadcast_server_presence():
             print(f"[Broadcast] Enviando broadcasts UDP cada {BROADCAST_INTERVAL} segundos")
             print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
             
+            last_client_count = 0
+            broadcasts_paused = False
+            
             while _server_running:
                 try:
                     # Verificar si hay clientes conectados
                     manager = get_manager()
                     num_clients = len(manager.clients_db)
+                    
                     if num_clients > 0:
                         # Hay clientes conectados, no enviar broadcast pero seguir verificando
-                        if num_clients == 1:
-                            # Solo loguear una vez cuando se detecta el primer cliente
-                            print(f"[Broadcast] Hay {num_clients} cliente conectado. Broadcasts pausados.")
+                        if not broadcasts_paused:
+                            # Primera vez que detectamos clientes - pausar broadcasts
+                            print(f"[Broadcast] ⏸️  Hay {num_clients} cliente(s) conectado(s). Broadcasts pausados.")
+                            broadcasts_paused = True
+                        elif num_clients != last_client_count:
+                            # El número de clientes cambió, actualizar log
+                            print(f"[Broadcast] ⏸️  {num_clients} cliente(s) conectado(s). Broadcasts siguen pausados.")
+                        last_client_count = num_clients
                         time.sleep(BROADCAST_INTERVAL)
                         continue
+                    else:
+                        # No hay clientes
+                        if broadcasts_paused:
+                            # Se desconectaron todos los clientes - reanudar broadcasts
+                            print(f"[Broadcast] ▶️  No hay clientes conectados. Reanudando broadcasts UDP.")
+                            broadcasts_paused = False
+                        last_client_count = 0
                     
                     # No hay clientes, enviar broadcast
                     message = json.dumps(server_info).encode('utf-8')
                     sock.sendto(message, (broadcast_addr, DISCOVERY_PORT))
-                    print(f"[Broadcast] Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
+                    print(f"[Broadcast] 📡 Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
                     time.sleep(BROADCAST_INTERVAL)
                 except Exception as e:
                     print(f"[Broadcast] Error al enviar broadcast: {e}")

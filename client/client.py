@@ -700,21 +700,148 @@ def format_time(seconds):
     else:
         return f"{secs}s"
 
-def sync_with_server(client_id):
+def sync_with_all_servers(client_id):
     """
-    Sincroniza con el servidor y actualiza el registro local.
-    Se ejecuta periódicamente para mantener la información actualizada.
-    Intenta con múltiples servidores si uno falla.
+    Sincroniza con TODOS los servidores conocidos.
+    Esto permite que todos los servidores conozcan a todos los clientes y servidores.
     """
     global last_known_remaining  # Declarar al inicio de la función
     
     # Obtener lista de servidores disponibles
     servers_list = get_available_servers()
-    available_server = find_available_server(servers_list)
     
-    if not available_server:
+    if not servers_list:
         print("[Sincronización] No hay servidores disponibles")
         return False
+    
+    print(f"[Sincronización] Sincronizando con {len(servers_list)} servidor(es) conocido(s)...")
+    
+    # Obtener lista de servidores conocidos para enviar a cada servidor
+    known_servers = []
+    if REGISTRY_AVAILABLE:
+        known_servers = get_servers_from_registry()
+    
+    success_count = 0
+    failed_servers = []
+    
+    # Sincronizar con cada servidor disponible
+    for server_info in servers_list:
+        server_url = server_info.get('url')
+        if not server_url:
+            continue
+        
+        print(f"[Sincronización] Sincronizando con servidor: {server_url}")
+        
+        try:
+            # Verificar si el servidor está disponible
+            health_response = requests.get(f"{server_url}/api/health", timeout=3)
+            if health_response.status_code != 200:
+                print(f"[Sincronización] ⚠️  Servidor {server_url} no disponible (código {health_response.status_code})")
+                failed_servers.append(server_url)
+                continue
+            
+            # Obtener estado del cliente desde este servidor
+            response = requests.get(
+                f"{server_url}/api/client/{client_id}/status",
+                timeout=10
+            )
+            
+            if response.status_code == 404:
+                # Cliente no encontrado - intentar re-registrarse CON EL MISMO ID
+                print(f"[Sincronización] Cliente no encontrado en {server_url}. Re-registrando...")
+                new_client_id = register_new_client(existing_client_id=client_id)
+                if new_client_id:
+                    client_id = new_client_id
+                    print(f"[Sincronización] ✅ Re-registrado en {server_url}")
+                    success_count += 1
+                else:
+                    print(f"[Sincronización] ❌ Error al re-registrar en {server_url}")
+                    failed_servers.append(server_url)
+                continue
+            
+            if response.status_code != 200:
+                print(f"[Sincronización] ⚠️  Error al obtener estado desde {server_url}: {response.status_code}")
+                failed_servers.append(server_url)
+                continue
+            
+            # Procesar respuesta exitosa
+            data = response.json()
+            client_data = data.get('client', {})
+            
+            # Aplicar configuración del servidor si está disponible
+            server_config = client_data.get('config')
+            if server_config and REGISTRY_AVAILABLE:
+                apply_server_config(server_config)
+            
+            session = client_data.get('session')
+            
+            if session:
+                # Actualizar registro local con datos del servidor (solo del primer servidor exitoso)
+                if success_count == 0:
+                    time_limit = session.get('time_limit_seconds', 0)
+                    start_time = session.get('start_time')
+                    end_time = session.get('end_time')
+                    remaining_from_server = session.get('remaining_seconds', 0)
+                    
+                    if all([time_limit, start_time, end_time]):
+                        from datetime import datetime, timedelta
+                        now_local = datetime.now()
+                        end_time_local = now_local + timedelta(seconds=remaining_from_server)
+                        elapsed_seconds = time_limit - remaining_from_server
+                        start_time_local = now_local - timedelta(seconds=elapsed_seconds)
+                        
+                        if REGISTRY_AVAILABLE:
+                            save_session_to_registry(
+                                time_limit_seconds=time_limit,
+                                start_time=start_time_local.isoformat(),
+                                end_time=end_time_local.isoformat()
+                            )
+                            last_known_remaining = remaining_from_server
+                            print(f"[Sincronización] ✅ Sesión actualizada desde {server_url}: {remaining_from_server}s restantes")
+            
+            # Enviar lista de servidores conocidos a este servidor para sincronización
+            if known_servers:
+                try:
+                    sync_response = requests.post(
+                        f"{server_url}/api/sync-servers",
+                        json={
+                            'servers': known_servers,
+                            'clients': []  # El servidor ya tiene la lista de clientes
+                        },
+                        timeout=5
+                    )
+                    if sync_response.status_code == 200:
+                        sync_data = sync_response.json()
+                        # Actualizar lista de servidores conocidos con la respuesta del servidor
+                        updated_servers = sync_data.get('known_servers', [])
+                        if updated_servers and REGISTRY_AVAILABLE:
+                            save_servers_to_registry(updated_servers)
+                            print(f"[Sincronización] ✅ Servidores sincronizados con {server_url}")
+                except Exception as e:
+                    print(f"[Sincronización] ⚠️  Error al sincronizar servidores con {server_url}: {e}")
+            
+            success_count += 1
+            print(f"[Sincronización] ✅ Sincronización exitosa con {server_url}")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"[Sincronización] ❌ Error de conexión con {server_url}: {e}")
+            failed_servers.append(server_url)
+        except Exception as e:
+            print(f"[Sincronización] ❌ Error inesperado con {server_url}: {e}")
+            failed_servers.append(server_url)
+    
+    print(f"[Sincronización] Completada: {success_count} exitosa(s), {len(failed_servers)} fallida(s)")
+    if failed_servers:
+        print(f"[Sincronización] Servidores con errores: {', '.join(failed_servers)}")
+    
+    return client_id if success_count > 0 else False
+
+def sync_with_server(client_id):
+    """
+    Sincroniza con TODOS los servidores conocidos.
+    Mantiene compatibilidad con código existente.
+    """
+    return sync_with_all_servers(client_id)
     
     try:
         response = requests.get(

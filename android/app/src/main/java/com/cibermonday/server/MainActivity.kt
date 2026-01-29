@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -32,6 +33,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCopyUrl: TextView
     private lateinit var btnOpenBrowser: TextView
     private lateinit var clientAdapter: ClientAdapter
+    private lateinit var serversSection: View
+    private lateinit var serversList: LinearLayout
     
     private var serverIp: String = ""
 
@@ -41,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private val refreshRunnable = object : Runnable {
         override fun run() {
             loadClients()
+            loadServers()
             handler.postDelayed(this, refreshInterval)
         }
     }
@@ -61,6 +65,7 @@ class MainActivity : AppCompatActivity() {
         startFlaskServer()
         
         loadServerIp()
+        loadServers()
         loadClients()
     }
     
@@ -131,6 +136,8 @@ class MainActivity : AppCompatActivity() {
         fabRefresh = findViewById(R.id.fabRefresh)
         btnCopyUrl = findViewById(R.id.btnCopyUrl)
         btnOpenBrowser = findViewById(R.id.btnOpenBrowser)
+        serversSection = findViewById(R.id.serversSection)
+        serversList = findViewById(R.id.serversList)
 
         fabRefresh.setOnClickListener {
             loadClients()
@@ -188,6 +195,77 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    private fun loadServers() {
+        Thread {
+            try {
+                val py = Python.getInstance()
+                val module = py.getModule("cibermonday_android")
+                val serversJson = module.callAttr("get_servers_json").toString()
+                
+                val serversArray = org.json.JSONArray(serversJson)
+                val currentServerUrl = "http://$serverIp:5000"
+                
+                runOnUiThread {
+                    serversList.removeAllViews()
+                    
+                    var hasOtherServers = false
+                    for (i in 0 until serversArray.length()) {
+                        val serverObj = serversArray.getJSONObject(i)
+                        val serverUrl = serverObj.optString("url", "")
+                        
+                        // Filtrar el servidor actual
+                        if (serverUrl != currentServerUrl && serverUrl.isNotEmpty()) {
+                            hasOtherServers = true
+                            
+                            val serverView = layoutInflater.inflate(android.R.layout.simple_list_item_2, serversList, false)
+                            val text1 = serverView.findViewById<TextView>(android.R.id.text1)
+                            val text2 = serverView.findViewById<TextView>(android.R.id.text2)
+                            
+                            text1.text = serverUrl
+                            val ip = serverObj.optString("ip", "")
+                            val port = serverObj.optInt("port", 5000)
+                            val lastSeen = serverObj.optString("last_seen", "")
+                            
+                            val details = buildString {
+                                if (ip.isNotEmpty()) append("IP: $ip:$port")
+                                if (lastSeen.isNotEmpty()) {
+                                    if (isNotEmpty()) append(" • ")
+                                    append("Visto: ${formatDate(lastSeen)}")
+                                }
+                            }
+                            text2.text = details
+                            
+                            serverView.setOnClickListener {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(serverUrl))
+                                startActivity(intent)
+                            }
+                            
+                            serversList.addView(serverView)
+                        }
+                    }
+                    
+                    serversSection.visibility = if (hasOtherServers) View.VISIBLE else View.GONE
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                runOnUiThread {
+                    serversSection.visibility = View.GONE
+                }
+            }
+        }.start()
+    }
+    
+    private fun formatDate(isoDate: String): String {
+        return try {
+            val inputFormat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+            val outputFormat = java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault())
+            val date = inputFormat.parse(isoDate.split(".")[0])
+            outputFormat.format(date!!)
+        } catch (e: Exception) {
+            isoDate
+        }
     }
 
     private fun loadClients() {
