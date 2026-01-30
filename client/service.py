@@ -111,6 +111,31 @@ def main():
         servicemanager.StartServiceCtrlDispatcher()
     else:
         # Manejar comandos: install, remove, start, stop, restart
+        command = sys.argv[1].lower() if len(sys.argv) > 1 else ''
+        
+        # Si se está instalando, agregar regla del firewall
+        if command == 'install':
+            try:
+                from firewall_manager import add_firewall_rule
+                print("\n[Instalación] Configurando firewall...")
+                add_firewall_rule()
+            except ImportError:
+                print("\n[Instalación] ⚠️  No se pudo importar firewall_manager. La regla del firewall no se agregará automáticamente.")
+            except Exception as e:
+                print(f"\n[Instalación] ⚠️  Error al configurar firewall: {e}")
+        
+        # Si se está desinstalando, opcionalmente eliminar regla del firewall
+        # (comentado por defecto para no eliminar la regla si el usuario quiere mantenerla)
+        # elif command == 'remove':
+        #     try:
+        #         from firewall_manager import remove_firewall_rule
+        #         print("\n[Desinstalación] Eliminando regla del firewall...")
+        #         remove_firewall_rule()
+        #     except ImportError:
+        #         pass
+        #     except Exception as e:
+        #         print(f"\n[Desinstalación] ⚠️  Error al eliminar regla del firewall: {e}")
+        
         win32serviceutil.HandleCommandLine(CiberMondayService)
 
 if __name__ == '__main__':

@@ -21,6 +21,10 @@ echo Desinstalando servicio...
 python service.py remove
 
 echo.
+echo NOTA: La regla del firewall no se eliminará automáticamente.
+echo Si deseas eliminarla, ejecuta: python firewall_manager.py remove
+
+echo.
 echo ========================================
 echo Servicio desinstalado exitosamente!
 echo ========================================

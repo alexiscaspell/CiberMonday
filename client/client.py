@@ -1632,6 +1632,24 @@ def monitor_time(client_id):
     print("Esperando asignación de tiempo...")
     print("=" * 50)
     
+    # Verificar regla del firewall al iniciar
+    try:
+        from firewall_manager import check_firewall_rule
+        if not check_firewall_rule():
+            print("\n[Firewall] ⚠️  ADVERTENCIA: La regla del firewall no está configurada")
+            print("[Firewall] El cliente puede no recibir broadcasts UDP de servidores")
+            print("[Firewall] Para agregar la regla, ejecuta como administrador:")
+            print("[Firewall]   python firewall_manager.py add")
+            print("[Firewall] O desde PowerShell como administrador:")
+            print("[Firewall]   netsh advfirewall firewall add rule name=\"CiberMonday Client UDP Discovery\" dir=in action=allow protocol=UDP localport=5001 enable=yes\n")
+        else:
+            print("[Firewall] ✅ Regla del firewall configurada correctamente\n")
+    except ImportError:
+        # firewall_manager no disponible, continuar sin verificar
+        pass
+    except Exception as e:
+        print(f"[Firewall] ⚠️  No se pudo verificar regla del firewall: {e}\n")
+    
     # Iniciar listener de descubrimiento de servidores
     start_server_discovery_listener()
     

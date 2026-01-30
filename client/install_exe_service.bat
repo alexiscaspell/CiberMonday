@@ -21,6 +21,17 @@ if not exist "CiberMondayService.exe" (
     exit /b 1
 )
 
+echo Configurando firewall de Windows...
+REM Intentar agregar regla del firewall usando Python si está disponible
+python firewall_manager.py add 2>nul
+if %errorLevel% neq 0 (
+    echo ADVERTENCIA: No se pudo agregar la regla del firewall automáticamente.
+    echo Puedes agregarla manualmente ejecutando: python firewall_manager.py add
+    echo O desde PowerShell como administrador:
+    echo netsh advfirewall firewall add rule name="CiberMonday Client UDP Discovery" dir=in action=allow protocol=UDP localport=5001 enable=yes
+    echo.
+)
+
 echo Instalando servicio de Windows...
 CiberMondayService.exe install
 

@@ -26,6 +26,15 @@ echo Instalando dependencias...
 pip install pywin32
 
 echo.
+echo Configurando firewall de Windows...
+python firewall_manager.py add
+if %errorLevel% neq 0 (
+    echo ADVERTENCIA: No se pudo agregar la regla del firewall automáticamente.
+    echo Puedes agregarla manualmente ejecutando: python firewall_manager.py add
+    echo.
+)
+
+echo.
 echo Instalando servicio de Windows...
 python service.py install
 
