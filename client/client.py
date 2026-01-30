@@ -552,6 +552,18 @@ def register_new_client(existing_client_id=None):
         if existing_client_id:
             register_data['client_id'] = existing_client_id
         
+        # Obtener IP local y puerto de diagnóstico para notificaciones push
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            client_ip = s.getsockname()[0]
+            s.close()
+            register_data['client_ip'] = client_ip
+            register_data['diagnostic_port'] = 5002  # Puerto del servidor de diagnóstico
+        except:
+            # Si no se puede obtener IP, continuar sin ella
+            pass
+        
         # Incluir sesión activa si existe en el registro local
         if REGISTRY_AVAILABLE:
             session_info = get_session_info()
@@ -1340,6 +1352,85 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({'error': 'Not found'}, 404)
     
+    def do_POST(self):
+        """Handle POST requests"""
+        path = self.path.split('?')[0]
+        
+        if path == '/api/add-server':
+            self._handle_add_server()
+        else:
+            self._send_json({'error': 'Not found'}, 404)
+    
+    def _handle_add_server(self):
+        """Maneja la notificación de un nuevo servidor desde el servidor principal"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self._send_json({'success': False, 'message': 'No data provided'}, 400)
+                return
+            
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            server_url = data.get('url')
+            server_ip = data.get('ip')
+            server_port = data.get('port', 5000)
+            
+            if not server_url:
+                self._send_json({'success': False, 'message': 'Server URL required'}, 400)
+                return
+            
+            # Agregar servidor a la lista de servidores conocidos
+            if REGISTRY_AVAILABLE:
+                try:
+                    from registry_manager import get_servers_from_registry, save_servers_to_registry
+                    from datetime import datetime
+                    
+                    known_servers = get_servers_from_registry()
+                    current_urls = {s.get('url') for s in known_servers}
+                    
+                    if server_url not in current_urls:
+                        # Agregar nuevo servidor
+                        known_servers.append({
+                            'url': server_url,
+                            'ip': server_ip,
+                            'port': server_port,
+                            'last_seen': datetime.now().isoformat(),
+                            'timeout_count': 0
+                        })
+                        save_servers_to_registry(known_servers)
+                        print(f"[Notificación] ✅ Nuevo servidor agregado desde notificación: {server_url}")
+                        self._send_json({'success': True, 'message': f'Servidor {server_url} agregado exitosamente'})
+                    else:
+                        # Actualizar servidor existente
+                        for s in known_servers:
+                            if s.get('url') == server_url:
+                                s['last_seen'] = datetime.now().isoformat()
+                                s['timeout_count'] = 0
+                                if server_ip:
+                                    s['ip'] = server_ip
+                                if server_port:
+                                    s['port'] = server_port
+                                break
+                        save_servers_to_registry(known_servers)
+                        print(f"[Notificación] ✅ Servidor actualizado desde notificación: {server_url}")
+                        self._send_json({'success': True, 'message': f'Servidor {server_url} actualizado'})
+                except Exception as e:
+                    print(f"[Notificación] ❌ Error al agregar servidor: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self._send_json({'success': False, 'message': str(e)}, 500)
+            else:
+                self._send_json({'success': False, 'message': 'Registry not available'}, 500)
+                
+        except json.JSONDecodeError:
+            self._send_json({'success': False, 'message': 'Invalid JSON'}, 400)
+        except Exception as e:
+            print(f"[Notificación] ❌ Error al procesar notificación: {e}")
+            import traceback
+            traceback.print_exc()
+            self._send_json({'success': False, 'message': str(e)}, 500)
+    
     def _send_json(self, data, status=200):
         """Envía respuesta JSON"""
         self.send_response(status)
@@ -1580,15 +1671,28 @@ def start_diagnostic_server(port=5002):
     
     def server_thread():
         try:
-            server = HTTPServer(('127.0.0.1', port), DiagnosticHandler)
+            # Escuchar en todas las interfaces (0.0.0.0) para permitir conexiones desde la red
+            server = HTTPServer(('0.0.0.0', port), DiagnosticHandler)
             _diagnostic_server = server
-            print(f"[Diagnóstico] Servidor de diagnóstico iniciado en http://127.0.0.1:{port}")
-            print(f"[Diagnóstico] Dashboard disponible en http://127.0.0.1:{port}/")
+            
+            # Obtener IP local para mostrar en logs
+            try:
+                import socket
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+                s.close()
+            except:
+                local_ip = "0.0.0.0"
+            
+            print(f"[Diagnóstico] Servidor de diagnóstico iniciado en http://{local_ip}:{port}")
+            print(f"[Diagnóstico] Dashboard disponible en http://{local_ip}:{port}/")
             print(f"[Diagnóstico] Endpoints disponibles:")
             print(f"[Diagnóstico]   GET /api/diagnostic - Información completa")
             print(f"[Diagnóstico]   GET /api/status - Estado del cliente")
             print(f"[Diagnóstico]   GET /api/discovery - Estado del descubrimiento")
             print(f"[Diagnóstico]   GET /api/servers - Servidores conocidos")
+            print(f"[Diagnóstico]   POST /api/add-server - Agregar servidor (notificación)")
             server.serve_forever()
         except OSError as e:
             if e.errno == 10048 or "Address already in use" in str(e):
@@ -1632,23 +1736,42 @@ def monitor_time(client_id):
     print("Esperando asignación de tiempo...")
     print("=" * 50)
     
-    # Verificar regla del firewall al iniciar
+    # Verificar y agregar regla del firewall al iniciar si no existe
     try:
-        from firewall_manager import check_firewall_rule
+        from firewall_manager import check_firewall_rule, add_firewall_rule, is_admin
+        
+        print("\n[Firewall] Verificando configuración del firewall...")
+        
         if not check_firewall_rule():
-            print("\n[Firewall] ⚠️  ADVERTENCIA: La regla del firewall no está configurada")
-            print("[Firewall] El cliente puede no recibir broadcasts UDP de servidores")
-            print("[Firewall] Para agregar la regla, ejecuta como administrador:")
-            print("[Firewall]   python firewall_manager.py add")
-            print("[Firewall] O desde PowerShell como administrador:")
-            print("[Firewall]   netsh advfirewall firewall add rule name=\"CiberMonday Client UDP Discovery\" dir=in action=allow protocol=UDP localport=5001 enable=yes\n")
+            print("[Firewall] ⚠️  La regla del firewall no está configurada")
+            
+            # Intentar agregar automáticamente si tenemos privilegios de administrador
+            if is_admin():
+                print("[Firewall] Intentando agregar regla automáticamente...")
+                if add_firewall_rule():
+                    print("[Firewall] ✅ Regla del firewall agregada exitosamente\n")
+                else:
+                    print("[Firewall] ❌ No se pudo agregar la regla automáticamente")
+                    print("[Firewall] El cliente puede no recibir broadcasts UDP de servidores")
+                    print("[Firewall] Para agregar manualmente, ejecuta como administrador:")
+                    print("[Firewall]   python firewall_manager.py add\n")
+            else:
+                print("[Firewall] ⚠️  Se requieren privilegios de administrador para agregar la regla")
+                print("[Firewall] El cliente puede no recibir broadcasts UDP de servidores")
+                print("[Firewall] Para agregar la regla, ejecuta como administrador:")
+                print("[Firewall]   python firewall_manager.py add")
+                print("[Firewall] O desde PowerShell como administrador:")
+                print("[Firewall]   netsh advfirewall firewall add rule name=\"CiberMonday Client UDP Discovery\" dir=in action=allow protocol=UDP localport=5001 enable=yes\n")
         else:
             print("[Firewall] ✅ Regla del firewall configurada correctamente\n")
     except ImportError:
         # firewall_manager no disponible, continuar sin verificar
-        pass
+        print("[Firewall] ⚠️  Módulo firewall_manager no disponible. No se puede verificar/configurar firewall.\n")
     except Exception as e:
-        print(f"[Firewall] ⚠️  No se pudo verificar regla del firewall: {e}\n")
+        print(f"[Firewall] ⚠️  Error al verificar/configurar firewall: {e}")
+        import traceback
+        traceback.print_exc()
+        print()
     
     # Iniciar listener de descubrimiento de servidores
     start_server_discovery_listener()

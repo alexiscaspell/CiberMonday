@@ -56,12 +56,19 @@ def register_client():
         is_reregister = False
     
     # Registrar/actualizar cliente en la base de datos
+    # Obtener información de contacto del cliente para notificaciones push
+    client_ip = data.get('client_ip') or request.remote_addr
+    diagnostic_port = data.get('diagnostic_port', 5002)
+    
     clients_db[client_id] = {
         'id': client_id,
         'name': client_name,
         'registered_at': datetime.now().isoformat(),
         'total_time_used': 0,
-        'is_active': False
+        'is_active': False,
+        'client_ip': client_ip,
+        'diagnostic_port': diagnostic_port,
+        'last_contact': datetime.now().isoformat()
     }
     
     # Almacenar configuración del cliente (o usar la existente si es re-registro)
@@ -103,6 +110,17 @@ def register_client():
     known_servers = data.get('known_servers', [])
     if known_servers:
         sync_servers(known_servers)
+    
+    # Guardar información del cliente para notificaciones (IP y puerto de diagnóstico)
+    client_ip = request.remote_addr
+    diagnostic_port = data.get('diagnostic_port', 5002)  # Puerto por defecto del servidor de diagnóstico
+    
+    # Almacenar información de contacto del cliente para notificaciones push
+    if client_id not in clients_db:
+        clients_db[client_id] = {}
+    clients_db[client_id]['client_ip'] = client_ip
+    clients_db[client_id]['diagnostic_port'] = diagnostic_port
+    clients_db[client_id]['last_contact'] = datetime.now().isoformat()
     
     # Auto-registrar este servidor en su propia lista
     local_ip = get_local_ip()
@@ -493,11 +511,46 @@ def register_server_endpoint():
     )
     result['known_servers'] = get_servers()
     
-    # Si se agregó un nuevo servidor y hay clientes conectados, sincronizar con ellos
+    # Si se agregó un nuevo servidor y hay clientes conectados, notificarlos inmediatamente
     if not server_exists and len(clients_db) > 0:
-        print(f"[Servidor] Nuevo servidor {server_url} agregado manualmente. Sincronizando con {len(clients_db)} cliente(s) conectado(s)...")
-        # Los clientes recibirán la lista actualizada en su próxima sincronización
-        # También podemos sincronizar inmediatamente con otros servidores conocidos
+        print(f"[Servidor] Nuevo servidor {server_url} agregado manualmente. Notificando a {len(clients_db)} cliente(s) conectado(s)...")
+        
+        # Notificar a todos los clientes conectados sobre el nuevo servidor
+        notified_count = 0
+        for client_id, client_data in clients_db.items():
+            client_ip = client_data.get('client_ip')
+            diagnostic_port = client_data.get('diagnostic_port', 5002)
+            
+            if client_ip:
+                try:
+                    import urllib.request
+                    import urllib.error
+                    import json as json_lib
+                    
+                    notification_url = f"http://{client_ip}:{diagnostic_port}/api/add-server"
+                    notification_data = {
+                        'url': server_url,
+                        'ip': data.get('ip'),
+                        'port': data.get('port', 5000)
+                    }
+                    
+                    req = urllib.request.Request(
+                        notification_url,
+                        data=json_lib.dumps(notification_data).encode('utf-8'),
+                        headers={'Content-Type': 'application/json'}
+                    )
+                    
+                    with urllib.request.urlopen(req, timeout=2) as response:
+                        if response.status == 200:
+                            notified_count += 1
+                            print(f"[Servidor] ✅ Cliente {client_id[:8]}... notificado exitosamente")
+                except Exception as e:
+                    # Cliente no disponible o no responde, continuar con el siguiente
+                    print(f"[Servidor] ⚠️  No se pudo notificar al cliente {client_id[:8]}... ({client_ip}:{diagnostic_port}): {e}")
+        
+        print(f"[Servidor] {notified_count}/{len(clients_db)} cliente(s) notificado(s) exitosamente")
+        
+        # También sincronizar con otros servidores conocidos
         _sync_with_other_servers()
     
     return jsonify(result), 201

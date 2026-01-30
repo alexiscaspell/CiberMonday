@@ -17,7 +17,21 @@ def is_admin():
     """Verifica si el script se está ejecutando con privilegios de administrador."""
     try:
         import ctypes
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        import sys
+        # En Windows, verificar si somos administrador
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except AttributeError:
+            # Si IsUserAnAdmin no está disponible, intentar otra forma
+            try:
+                # Intentar abrir una clave del registro que requiere admin
+                import winreg
+                winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, "SOFTWARE", 0, winreg.KEY_WRITE)
+                return True
+            except PermissionError:
+                return False
+            except:
+                return False
     except:
         return False
 
@@ -26,7 +40,7 @@ def add_firewall_rule():
     Agrega una regla al firewall de Windows para permitir tráfico UDP en el puerto de descubrimiento.
     
     Returns:
-        bool: True si se agregó correctamente, False en caso contrario
+        bool: True si se agregó correctamente o ya existe, False en caso contrario
     """
     if not is_admin():
         print(f"[Firewall] ⚠️  Se requieren privilegios de administrador para agregar regla del firewall")
@@ -39,7 +53,7 @@ def add_firewall_rule():
             'netsh', 'advfirewall', 'firewall', 'show', 'rule',
             f'name={FIREWALL_RULE_NAME}'
         ]
-        result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
         
         if result.returncode == 0 and FIREWALL_RULE_NAME in result.stdout:
             print(f"[Firewall] ✅ La regla '{FIREWALL_RULE_NAME}' ya existe")
@@ -58,21 +72,30 @@ def add_firewall_rule():
             'description=Permite que el cliente CiberMonday reciba broadcasts UDP de servidores en la red local'
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
         
         if result.returncode == 0:
             print(f"[Firewall] ✅ Regla del firewall agregada exitosamente")
             print(f"[Firewall] Puerto UDP {DISCOVERY_PORT} ahora está permitido para recibir broadcasts")
             return True
         else:
-            print(f"[Firewall] ❌ Error al agregar regla del firewall: {result.stderr}")
+            error_msg = result.stderr if result.stderr else result.stdout
+            print(f"[Firewall] ❌ Error al agregar regla del firewall")
+            print(f"[Firewall] Código de salida: {result.returncode}")
+            if error_msg:
+                print(f"[Firewall] Mensaje: {error_msg}")
             return False
             
     except subprocess.TimeoutExpired:
         print(f"[Firewall] ❌ Timeout al ejecutar comando del firewall")
         return False
+    except FileNotFoundError:
+        print(f"[Firewall] ❌ Error: netsh no encontrado. Asegúrate de estar en Windows.")
+        return False
     except Exception as e:
         print(f"[Firewall] ❌ Error al agregar regla del firewall: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def remove_firewall_rule():
@@ -125,14 +148,17 @@ def check_firewall_rule():
             f'name={FIREWALL_RULE_NAME}'
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
         
         if result.returncode == 0 and FIREWALL_RULE_NAME in result.stdout:
             return True
         return False
             
+    except FileNotFoundError:
+        # netsh no encontrado, probablemente no es Windows
+        return False
     except Exception as e:
-        print(f"[Firewall] Error al verificar regla: {e}")
+        # Silenciar errores en verificación para no molestar al usuario
         return False
 
 if __name__ == '__main__':
