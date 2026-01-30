@@ -37,8 +37,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var serversList: LinearLayout
     private lateinit var broadcastConfigSection: View
     private lateinit var tvBroadcastInterval: TextView
+    private lateinit var btnAddServer: TextView
+    private lateinit var btnToggleServers: TextView
+    private lateinit var btnHideServers: TextView
     
     private var serverIp: String = ""
+    private var serversSectionVisible = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val refreshInterval = 5000L // 5 segundos
@@ -74,6 +78,18 @@ class MainActivity : AppCompatActivity() {
         
         broadcastConfigSection.setOnClickListener {
             showBroadcastConfigDialog()
+        }
+        
+        btnAddServer.setOnClickListener {
+            showAddServerDialog()
+        }
+        
+        btnToggleServers.setOnClickListener {
+            toggleServersSection()
+        }
+        
+        btnHideServers.setOnClickListener {
+            toggleServersSection()
         }
     }
     
@@ -148,6 +164,9 @@ class MainActivity : AppCompatActivity() {
         serversList = findViewById(R.id.serversList)
         broadcastConfigSection = findViewById(R.id.broadcastConfigSection)
         tvBroadcastInterval = findViewById(R.id.tvBroadcastInterval)
+        btnAddServer = findViewById(R.id.btnAddServer)
+        btnToggleServers = findViewById(R.id.btnToggleServers)
+        btnHideServers = findViewById(R.id.btnHideServers)
         broadcastConfigSection = findViewById(R.id.broadcastConfigSection)
         tvBroadcastInterval = findViewById(R.id.tvBroadcastInterval)
 
@@ -219,47 +238,57 @@ class MainActivity : AppCompatActivity() {
                 val serversArray = org.json.JSONArray(serversJson)
                 val currentServerUrl = "http://$serverIp:5000"
                 
-                runOnUiThread {
-                    serversList.removeAllViews()
-                    
-                    var hasOtherServers = false
-                    for (i in 0 until serversArray.length()) {
-                        val serverObj = serversArray.getJSONObject(i)
-                        val serverUrl = serverObj.optString("url", "")
+                    runOnUiThread {
+                        serversList.removeAllViews()
                         
-                        // Filtrar el servidor actual
-                        if (serverUrl != currentServerUrl && serverUrl.isNotEmpty()) {
-                            hasOtherServers = true
+                        var hasOtherServers = false
+                        for (i in 0 until serversArray.length()) {
+                            val serverObj = serversArray.getJSONObject(i)
+                            val serverUrl = serverObj.optString("url", "")
                             
-                            val serverView = layoutInflater.inflate(android.R.layout.simple_list_item_2, serversList, false)
-                            val text1 = serverView.findViewById<TextView>(android.R.id.text1)
-                            val text2 = serverView.findViewById<TextView>(android.R.id.text2)
-                            
-                            text1.text = serverUrl
-                            val ip = serverObj.optString("ip", "")
-                            val port = serverObj.optInt("port", 5000)
-                            val lastSeen = serverObj.optString("last_seen", "")
-                            
-                            val details = buildString {
-                                if (ip.isNotEmpty()) append("IP: $ip:$port")
-                                if (lastSeen.isNotEmpty()) {
-                                    if (isNotEmpty()) append(" • ")
-                                    append("Visto: ${formatDate(lastSeen)}")
+                            // Filtrar el servidor actual
+                            if (serverUrl != currentServerUrl && serverUrl.isNotEmpty()) {
+                                hasOtherServers = true
+                                
+                                val serverView = layoutInflater.inflate(android.R.layout.simple_list_item_2, serversList, false)
+                                val text1 = serverView.findViewById<TextView>(android.R.id.text1)
+                                val text2 = serverView.findViewById<TextView>(android.R.id.text2)
+                                
+                                text1.text = serverUrl
+                                val ip = serverObj.optString("ip", "")
+                                val port = serverObj.optInt("port", 5000)
+                                val lastSeen = serverObj.optString("last_seen", "")
+                                
+                                val details = buildString {
+                                    if (ip.isNotEmpty()) append("IP: $ip:$port")
+                                    if (lastSeen.isNotEmpty()) {
+                                        if (isNotEmpty()) append(" • ")
+                                        append("Visto: ${formatDate(lastSeen)}")
+                                    }
                                 }
+                                text2.text = details
+                                
+                                serverView.setOnClickListener {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(serverUrl))
+                                    startActivity(intent)
+                                }
+                                
+                                serversList.addView(serverView)
                             }
-                            text2.text = details
-                            
-                            serverView.setOnClickListener {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(serverUrl))
-                                startActivity(intent)
-                            }
-                            
-                            serversList.addView(serverView)
+                        }
+                        
+                        // No cambiar la visibilidad aquí, se controla con el botón toggle
+                        // Solo actualizar el contenido de la lista
+                        if (!hasOtherServers) {
+                            val emptyView = TextView(this@MainActivity)
+                            emptyView.text = "No hay otros servidores conocidos.\nUsa el botón \"Agregar\" para agregar uno manualmente."
+                            emptyView.textSize = 12f
+                            emptyView.setTextColor(android.graphics.Color.parseColor("#999999"))
+                            emptyView.gravity = android.view.Gravity.CENTER
+                            emptyView.setPadding(0, 20, 0, 20)
+                            serversList.addView(emptyView)
                         }
                     }
-                    
-                    serversSection.visibility = if (hasOtherServers) View.VISIBLE else View.GONE
-                }
             } catch (e: Exception) {
                 e.printStackTrace()
                 runOnUiThread {
@@ -354,6 +383,84 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+    
+    private fun showAddServerDialog() {
+        val input = android.widget.EditText(this)
+        input.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+        input.hint = "http://192.168.0.3:5000"
+        
+        AlertDialog.Builder(this)
+            .setTitle("Agregar Servidor")
+            .setMessage("Ingresa la URL del servidor a agregar:")
+            .setView(input)
+            .setPositiveButton("Agregar") { _, _ ->
+                val serverUrl = input.text.toString().trim()
+                if (serverUrl.isNotEmpty()) {
+                    if (!serverUrl.startsWith("http://") && !serverUrl.startsWith("https://")) {
+                        Toast.makeText(this, "La URL debe comenzar con http:// o https://", Toast.LENGTH_SHORT).show()
+                        return@setPositiveButton
+                    }
+                    addServer(serverUrl)
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+    
+    private fun addServer(serverUrl: String) {
+        Thread {
+            try {
+                val py = Python.getInstance()
+                val module = py.getModule("cibermonday_android")
+                
+                // Extraer IP y puerto de la URL
+                var serverIp: String? = null
+                var serverPort = 5000
+                try {
+                    val url = java.net.URL(serverUrl)
+                    serverIp = url.host
+                    serverPort = if (url.port != -1) url.port else 5000
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                
+                val resultJson = module.callAttr("register_server_manual", serverUrl, serverIp ?: "", serverPort).toString()
+                val result = org.json.JSONObject(resultJson)
+                val success = result.optBoolean("success", false)
+                
+                runOnUiThread {
+                    if (success) {
+                        Toast.makeText(this, "Servidor $serverUrl agregado exitosamente", Toast.LENGTH_SHORT).show()
+                        loadServers()
+                    } else {
+                        val message = result.optString("message", "Error al agregar servidor")
+                        Toast.makeText(this, "Error: $message", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                runOnUiThread {
+                    Toast.makeText(this, "Error al agregar servidor", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
+    }
+    
+    private fun toggleServersSection() {
+        serversSectionVisible = !serversSectionVisible
+        
+        if (serversSectionVisible) {
+            serversSection.visibility = View.VISIBLE
+            btnToggleServers.text = "🌐 Ocultar Servidores"
+            btnToggleServers.setBackgroundColor(android.graphics.Color.parseColor("#999999"))
+            // Cargar servidores si aún no se han cargado
+            loadServers()
+        } else {
+            serversSection.visibility = View.GONE
+            btnToggleServers.text = "🌐 Ver Servidores Conocidos"
+            btnToggleServers.setBackgroundColor(android.graphics.Color.parseColor("#667eea"))
+        }
     }
 
     private fun loadClients() {

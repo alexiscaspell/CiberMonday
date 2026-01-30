@@ -14,6 +14,8 @@ from ctypes import wintypes
 import threading
 import socket
 import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
 # Importar protecciones
 try:
@@ -41,7 +43,9 @@ try:
     try:
         from registry_manager import (
             save_servers_to_registry,
-            get_servers_from_registry
+            get_servers_from_registry,
+            increment_server_timeouts,
+            reset_server_timeout_count
         )
     except ImportError:
         # Si no están disponibles, definir funciones dummy
@@ -49,6 +53,10 @@ try:
             return False
         def get_servers_from_registry():
             return []
+        def increment_server_timeouts(server_urls):
+            pass
+        def reset_server_timeout_count(server_url):
+            pass
 except ImportError:
     REGISTRY_AVAILABLE = False
     # Funciones dummy si no hay registro disponible
@@ -56,6 +64,10 @@ except ImportError:
         return False
     def get_servers_from_registry():
         return []
+    def increment_server_timeouts(server_urls):
+        pass
+    def reset_server_timeout_count(server_url):
+        pass
 
 # Manejar rutas cuando se ejecuta como .exe (PyInstaller)
 def get_base_path():
@@ -132,35 +144,18 @@ try:
                 CHECK_INTERVAL = config_data.get('check_interval', 5)
                 SYNC_INTERVAL_CONFIG = config_data.get('sync_interval', 30)
                 
-                # Asegurar que el servidor configurado esté en la lista de servidores conocidos
+                # NOTA: La lista de servidores conocidos se resetea cuando se configura un nuevo servidor
+                # desde la GUI (ver config_gui.py). Aquí solo verificamos que el servidor principal esté.
+                # Los servidores se descubren automáticamente durante la sincronización.
                 if REGISTRY_AVAILABLE:
                     try:
-                        from registry_manager import get_servers_from_registry, save_servers_to_registry
-                        from datetime import datetime
-                        import re
-                        
+                        from registry_manager import get_servers_from_registry
                         known_servers = get_servers_from_registry()
-                        
-                        # Verificar si el servidor principal ya está en la lista
-                        server_exists = any(s.get('url') == SERVER_URL for s in known_servers)
-                        
-                        if not server_exists:
-                            # Extraer IP y puerto de la URL
-                            url_match = re.match(r'http://([^:]+):?(\d+)?', SERVER_URL)
-                            server_ip = url_match.group(1) if url_match else None
-                            server_port = int(url_match.group(2)) if url_match and url_match.group(2) else 5000
-                            
-                            # Agregar servidor principal a la lista
-                            known_servers.append({
-                                'url': SERVER_URL,
-                                'ip': server_ip,
-                                'port': server_port,
-                                'last_seen': datetime.now().isoformat()
-                            })
-                            save_servers_to_registry(known_servers)
-                            print(f"[Inicio] Servidor principal {SERVER_URL} agregado a la lista de servidores conocidos")
+                        print(f"[Inicio] Servidores conocidos en registro: {len(known_servers)}")
+                        if known_servers:
+                            print(f"[Inicio] Servidores: {', '.join([s.get('url', 'Unknown') for s in known_servers])}")
                     except Exception as e:
-                        print(f"[Inicio] Advertencia: No se pudo actualizar lista de servidores: {e}")
+                        print(f"[Inicio] ⚠️  Advertencia: No se pudo leer lista de servidores: {e}")
             except Exception as e:
                 import traceback
                 print(f"Error al mostrar GUI de configuración: {e}")
@@ -185,35 +180,18 @@ try:
                     CHECK_INTERVAL = config_data.get('check_interval', 5)
                     SYNC_INTERVAL_CONFIG = config_data.get('sync_interval', 30)
                     
-                    # Asegurar que el servidor configurado esté en la lista de servidores conocidos
+                    # NOTA: La lista de servidores conocidos se resetea cuando se configura un nuevo servidor
+                    # desde la GUI (ver config_gui.py). Aquí solo verificamos que el servidor principal esté.
+                    # Los servidores se descubren automáticamente durante la sincronización.
                     if REGISTRY_AVAILABLE:
                         try:
-                            from registry_manager import get_servers_from_registry, save_servers_to_registry
-                            from datetime import datetime
-                            import re
-                            
+                            from registry_manager import get_servers_from_registry
                             known_servers = get_servers_from_registry()
-                            
-                            # Verificar si el servidor principal ya está en la lista
-                            server_exists = any(s.get('url') == SERVER_URL for s in known_servers)
-                            
-                            if not server_exists:
-                                # Extraer IP y puerto de la URL
-                                url_match = re.match(r'http://([^:]+):?(\d+)?', SERVER_URL)
-                                server_ip = url_match.group(1) if url_match else None
-                                server_port = int(url_match.group(2)) if url_match and url_match.group(2) else 5000
-                                
-                                # Agregar servidor principal a la lista
-                                known_servers.append({
-                                    'url': SERVER_URL,
-                                    'ip': server_ip,
-                                    'port': server_port,
-                                    'last_seen': datetime.now().isoformat()
-                                })
-                                save_servers_to_registry(known_servers)
-                                print(f"[Inicio] Servidor principal {SERVER_URL} agregado a la lista de servidores conocidos")
+                            print(f"[Inicio] Servidores conocidos en registro: {len(known_servers)}")
+                            if known_servers:
+                                print(f"[Inicio] Servidores: {', '.join([s.get('url', 'Unknown') for s in known_servers])}")
                         except Exception as e:
-                            print(f"[Inicio] Advertencia: No se pudo actualizar lista de servidores: {e}")
+                            print(f"[Inicio] ⚠️  Advertencia: No se pudo leer lista de servidores: {e}")
                 else:
                     # Usuario canceló pero hay configuración previa, usar esa
                     SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
@@ -231,35 +209,18 @@ try:
             CHECK_INTERVAL = config_data.get('check_interval', 5)
             SYNC_INTERVAL_CONFIG = config_data.get('sync_interval', 30)
             
-            # Asegurar que el servidor configurado esté en la lista de servidores conocidos
+            # NOTA: La lista de servidores conocidos se resetea cuando se configura un nuevo servidor
+            # desde la GUI (ver config_gui.py). Aquí solo verificamos que el servidor principal esté.
+            # Los servidores se descubren automáticamente durante la sincronización.
             if REGISTRY_AVAILABLE:
                 try:
-                    from registry_manager import get_servers_from_registry, save_servers_to_registry
-                    from datetime import datetime
-                    import re
-                    
+                    from registry_manager import get_servers_from_registry
                     known_servers = get_servers_from_registry()
-                    
-                    # Verificar si el servidor principal ya está en la lista
-                    server_exists = any(s.get('url') == SERVER_URL for s in known_servers)
-                    
-                    if not server_exists:
-                        # Extraer IP y puerto de la URL
-                        url_match = re.match(r'http://([^:]+):?(\d+)?', SERVER_URL)
-                        server_ip = url_match.group(1) if url_match else None
-                        server_port = int(url_match.group(2)) if url_match and url_match.group(2) else 5000
-                        
-                        # Agregar servidor principal a la lista
-                        known_servers.append({
-                            'url': SERVER_URL,
-                            'ip': server_ip,
-                            'port': server_port,
-                            'last_seen': datetime.now().isoformat()
-                        })
-                        save_servers_to_registry(known_servers)
-                        print(f"[Inicio] Servidor principal {SERVER_URL} agregado a la lista de servidores conocidos")
+                    print(f"[Inicio] Servidores conocidos en registro: {len(known_servers)}")
+                    if known_servers:
+                        print(f"[Inicio] Servidores: {', '.join([s.get('url', 'Unknown') for s in known_servers])}")
                 except Exception as e:
-                    print(f"[Inicio] Advertencia: No se pudo actualizar lista de servidores: {e}")
+                    print(f"[Inicio] ⚠️  Advertencia: No se pudo leer lista de servidores: {e}")
     
     CLIENT_ID_FILE = os.path.join(BASE_PATH, "client_id.txt")
     
@@ -521,6 +482,7 @@ def find_available_server(servers_list=None):
     """
     Intenta encontrar un servidor disponible de la lista.
     Retorna la URL del servidor disponible o None.
+    Incrementa timeout_count en caso de fallo y elimina servidores con 10+ timeouts.
     """
     if servers_list is None:
         servers_list = get_available_servers()
@@ -529,6 +491,9 @@ def find_available_server(servers_list=None):
     servers_list.sort(key=lambda x: (x.get('priority', 1), x.get('last_seen', ''), ''), reverse=True)
     
     print(f"[Servidores] Buscando servidor disponible de {len(servers_list)} servidores conocidos...")
+    
+    failed_servers = []
+    
     for idx, server in enumerate(servers_list, 1):
         server_url = server.get('url')
         if not server_url:
@@ -536,18 +501,28 @@ def find_available_server(servers_list=None):
         
         source = server.get('source', 'unknown')
         last_seen = server.get('last_seen', 'N/A')
-        print(f"[Servidores] [{idx}/{len(servers_list)}] Probando servidor: {server_url} (origen: {source}, visto: {last_seen})")
+        timeout_count = server.get('timeout_count', 0)
+        print(f"[Servidores] [{idx}/{len(servers_list)}] Probando servidor: {server_url} (origen: {source}, visto: {last_seen}, timeouts: {timeout_count})")
+        
         try:
             # Intentar conectar al servidor
             response = requests.get(f"{server_url}/api/health", timeout=3)
             if response.status_code == 200:
                 print(f"[Servidores] ✅ Servidor disponible encontrado: {server_url} (origen: {source})")
+                # Resetear contador de timeouts al tener éxito
+                if REGISTRY_AVAILABLE:
+                    reset_server_timeout_count(server_url)
                 return server_url
             else:
                 print(f"[Servidores] ⚠️  Servidor {server_url} respondió con código {response.status_code}")
+                failed_servers.append(server_url)
         except Exception as e:
             print(f"[Servidores] ❌ Servidor {server_url} no disponible: {e}")
-            continue
+            failed_servers.append(server_url)
+    
+    # Incrementar contadores de timeouts para servidores que fallaron
+    if REGISTRY_AVAILABLE and failed_servers:
+        increment_server_timeouts(failed_servers)
     
     print(f"[Servidores] ❌ No se encontró ningún servidor disponible")
     return None
@@ -814,6 +789,11 @@ def sync_with_all_servers(client_id):
     success_count = 0
     failed_servers = []
     
+    # Incrementar contadores de timeouts para servidores que fallaron al final
+    def increment_failed_servers():
+        if REGISTRY_AVAILABLE and failed_servers:
+            increment_server_timeouts(failed_servers)
+    
     # Sincronizar con cada servidor disponible
     for server_info in servers_list:
         server_url = server_info.get('url')
@@ -844,6 +824,9 @@ def sync_with_all_servers(client_id):
                     client_id = new_client_id
                     print(f"[Sincronización] ✅ Re-registrado en {server_url}")
                     success_count += 1
+                    # Resetear contador de timeouts al tener éxito
+                    if REGISTRY_AVAILABLE:
+                        reset_server_timeout_count(server_url)
                 else:
                     print(f"[Sincronización] ❌ Error al re-registrar en {server_url}")
                     failed_servers.append(server_url)
@@ -854,9 +837,49 @@ def sync_with_all_servers(client_id):
                 failed_servers.append(server_url)
                 continue
             
+            # Resetear contador de timeouts al tener éxito
+            if REGISTRY_AVAILABLE:
+                reset_server_timeout_count(server_url)
+            
             # Procesar respuesta exitosa
             data = response.json()
             client_data = data.get('client', {})
+            
+            # Actualizar lista de servidores conocidos si el servidor la envía
+            if 'known_servers' in data and REGISTRY_AVAILABLE:
+                try:
+                    from registry_manager import save_servers_to_registry
+                    from datetime import datetime
+                    received_servers = data.get('known_servers', [])
+                    if received_servers:
+                        # Actualizar last_seen para servidores existentes o agregar nuevos
+                        current_servers = get_servers_from_registry()
+                        current_urls = {s.get('url') for s in current_servers}
+                        
+                        for server in received_servers:
+                            server_url_received = server.get('url')
+                            if server_url_received:
+                                if server_url_received in current_urls:
+                                    # Actualizar last_seen y resetear timeout_count
+                                    for s in current_servers:
+                                        if s.get('url') == server_url_received:
+                                            s['last_seen'] = datetime.now().isoformat()
+                                            s['timeout_count'] = 0  # Resetear al recibir del servidor
+                                            break
+                                else:
+                                    # Agregar nuevo servidor (con timeout_count inicializado en 0)
+                                    current_servers.append({
+                                        'url': server_url_received,
+                                        'ip': server.get('ip'),
+                                        'port': server.get('port', 5000),
+                                        'last_seen': datetime.now().isoformat(),
+                                        'timeout_count': 0
+                                    })
+                        
+                        save_servers_to_registry(current_servers)
+                        print(f"[Sincronización] ✅ Lista de servidores actualizada desde {server_url}")
+                except Exception as e:
+                    print(f"[Sincronización] ⚠️  Error al actualizar servidores: {e}")
             
             # Aplicar configuración del servidor si está disponible
             server_config = client_data.get('config')
@@ -1111,22 +1134,62 @@ def start_server_discovery_listener():
     def listener_thread():
         # Puerto para recibir broadcasts de servidores
         DISCOVERY_PORT = 5001
+        broadcast_count = 0
+        last_broadcast_time = None
         
         try:
             # Crear socket UDP para escuchar broadcasts
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            # En Windows, SO_REUSEADDR puede comportarse diferente
+            # Intentar configurarlo, pero continuar si falla
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            except Exception as e:
+                print(f"[Discovery] Advertencia: No se pudo configurar SO_REUSEADDR: {e}")
+            
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.bind(('', DISCOVERY_PORT))
+            
+            # Intentar hacer bind al puerto
+            try:
+                sock.bind(('0.0.0.0', DISCOVERY_PORT))
+                print(f"[Discovery] ✅ Socket vinculado correctamente a 0.0.0.0:{DISCOVERY_PORT}")
+            except OSError as e:
+                if e.errno == 10048 or "Address already in use" in str(e):
+                    print(f"[Discovery] ❌ ERROR: El puerto {DISCOVERY_PORT} ya está en uso")
+                    print(f"[Discovery] Posible causa: Otro proceso está usando el puerto o el listener anterior no se cerró")
+                    print(f"[Discovery] Solución: Cierra otros procesos que usen el puerto {DISCOVERY_PORT} o reinicia el cliente")
+                    return
+                else:
+                    raise
+            
             sock.settimeout(1.0)  # Timeout para poder verificar si el thread debe continuar
             
-            print(f"[Discovery] Escuchando broadcasts de servidores en puerto {DISCOVERY_PORT}...")
-            print(f"[Discovery] El listener está activo y escuchando...")
+            print(f"[Discovery] ✅ Escuchando broadcasts de servidores en puerto {DISCOVERY_PORT}...")
+            print(f"[Discovery] ✅ El listener está activo y escuchando...")
+            print(f"[Discovery] Esperando broadcasts UDP desde la red local...")
+            
+            # Marcar listener como iniciado
+            global _discovery_stats
+            _discovery_stats['listener_started'] = True
+            
+            # Log cada 30 segundos si no se reciben broadcasts
+            last_status_log = time.time()
             
             while True:
                 try:
                     data, addr = sock.recvfrom(1024)
-                    print(f"[Discovery] Datos recibidos desde {addr[0]}:{addr[1]} ({len(data)} bytes)")
+                    broadcast_count += 1
+                    last_broadcast_time = time.time()
+                    current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    print(f"[Discovery] 📡 Broadcast #{broadcast_count} recibido desde {addr[0]}:{addr[1]} ({len(data)} bytes)")
+                    
+                    # Actualizar estadísticas globales
+                    update_discovery_stats(
+                        broadcast_count=broadcast_count,
+                        last_broadcast_time=current_time_str,
+                        last_broadcast_from=addr[0]
+                    )
                     
                     try:
                         server_info = json.loads(data.decode('utf-8'))
@@ -1138,6 +1201,10 @@ def start_server_discovery_listener():
                     server_url = server_info.get('url')
                     server_ip = server_info.get('ip', addr[0])
                     server_port = server_info.get('port', 5000)
+                    
+                    # Actualizar estadísticas
+                    if server_url:
+                        update_discovery_stats(server_url=server_url)
                     
                     if server_url:
                         print(f"[Discovery] Nuevo servidor detectado: {server_url} desde {addr[0]}")
@@ -1195,6 +1262,16 @@ def start_server_discovery_listener():
                             
                 except socket.timeout:
                     # Timeout normal, continuar escuchando
+                    # Log cada 30 segundos si no se reciben broadcasts
+                    current_time = time.time()
+                    if current_time - last_status_log >= 30:
+                        if broadcast_count == 0:
+                            print(f"[Discovery] ⚠️  Aún no se han recibido broadcasts después de {int(current_time - (last_status_log - 30))} segundos")
+                            print(f"[Discovery] Verifica que el servidor esté enviando broadcasts y que no haya firewall bloqueando UDP")
+                        else:
+                            time_since_last = int(current_time - last_broadcast_time) if last_broadcast_time else 0
+                            print(f"[Discovery] 📊 Estado: {broadcast_count} broadcast(s) recibido(s) hasta ahora. Último hace {time_since_last}s")
+                        last_status_log = current_time
                     continue
                 except Exception as e:
                     # Error al procesar, continuar escuchando
@@ -1203,8 +1280,23 @@ def start_server_discovery_listener():
                     traceback.print_exc()
                     continue
                     
+        except OSError as e:
+            if e.errno == 10048 or "Address already in use" in str(e):
+                print(f"[Discovery] ❌ ERROR CRÍTICO: El puerto {DISCOVERY_PORT} ya está en uso")
+                print(f"[Discovery] El listener no puede iniciarse porque otro proceso está usando el puerto")
+                print(f"[Discovery] Esto impedirá que el cliente reciba broadcasts de servidores")
+                print(f"[Discovery] Solución: Cierra otros procesos o reinicia el cliente")
+            else:
+                print(f"[Discovery] ❌ Error en listener (OSError): {e}")
+                import traceback
+                traceback.print_exc()
+            # Reintentar después de un delay más largo para errores críticos
+            time.sleep(10)
+            start_server_discovery_listener()
         except Exception as e:
-            print(f"[Discovery] Error en listener: {e}")
+            print(f"[Discovery] ❌ Error en listener: {e}")
+            import traceback
+            traceback.print_exc()
             # Reintentar después de un delay
             time.sleep(5)
             start_server_discovery_listener()
@@ -1213,6 +1305,313 @@ def start_server_discovery_listener():
     thread = threading.Thread(target=listener_thread, daemon=True)
     thread.start()
     print(f"[Discovery] Thread de descubrimiento iniciado (daemon={thread.daemon})")
+
+# Variables globales para el servidor de diagnóstico
+_diagnostic_server = None
+_discovery_stats = {
+    'broadcast_count': 0,
+    'last_broadcast_time': None,
+    'last_broadcast_from': None,
+    'servers_discovered': set(),
+    'listener_started': False
+}
+
+class DiagnosticHandler(BaseHTTPRequestHandler):
+    """Handler HTTP para endpoints de diagnóstico del cliente"""
+    
+    def log_message(self, format, *args):
+        """Suprimir logs del servidor HTTP"""
+        pass
+    
+    def do_GET(self):
+        """Handle GET requests"""
+        path = self.path.split('?')[0]
+        
+        if path == '/api/diagnostic':
+            self._send_diagnostic_info()
+        elif path == '/api/servers':
+            self._send_servers_info()
+        elif path == '/api/status':
+            self._send_status_info()
+        elif path == '/api/discovery':
+            self._send_discovery_info()
+        elif path == '/':
+            self._send_html_dashboard()
+        else:
+            self._send_json({'error': 'Not found'}, 404)
+    
+    def _send_json(self, data, status=200):
+        """Envía respuesta JSON"""
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data, indent=2).encode('utf-8'))
+    
+    def _send_html_dashboard(self):
+        """Envía dashboard HTML de diagnóstico"""
+        html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>CiberMonday - Diagnóstico del Cliente</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { background: white; padding: 20px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        h2 { color: #667eea; border-bottom: 2px solid #667eea; padding-bottom: 5px; }
+        .status { padding: 5px 10px; border-radius: 3px; display: inline-block; }
+        .status.ok { background: #4CAF50; color: white; }
+        .status.error { background: #f44336; color: white; }
+        .status.warning { background: #ff9800; color: white; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f5f5f5; }
+        .refresh-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
+        .refresh-btn:hover { background: #5568d3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖥️ CiberMonday - Diagnóstico del Cliente</h1>
+        <button class="refresh-btn" onclick="location.reload()">🔄 Actualizar</button>
+        
+        <div class="card">
+            <h2>Estado General</h2>
+            <div id="status-info">Cargando...</div>
+        </div>
+        
+        <div class="card">
+            <h2>Descubrimiento de Servidores</h2>
+            <div id="discovery-info">Cargando...</div>
+        </div>
+        
+        <div class="card">
+            <h2>Servidores Conocidos</h2>
+            <div id="servers-info">Cargando...</div>
+        </div>
+        
+        <div class="card">
+            <h2>Información Completa</h2>
+            <pre id="full-info">Cargando...</pre>
+        </div>
+    </div>
+    
+    <script>
+        async function loadData() {
+            try {
+                const [status, discovery, servers, diagnostic] = await Promise.all([
+                    fetch('/api/status').then(r => r.json()),
+                    fetch('/api/discovery').then(r => r.json()),
+                    fetch('/api/servers').then(r => r.json()),
+                    fetch('/api/diagnostic').then(r => r.json())
+                ]);
+                
+                // Estado general
+                document.getElementById('status-info').innerHTML = `
+                    <p><strong>Cliente ID:</strong> ${status.client_id || 'N/A'}</p>
+                    <p><strong>Servidor Principal:</strong> ${status.server_url || 'N/A'}</p>
+                    <p><strong>Registro Disponible:</strong> <span class="status ${status.registry_available ? 'ok' : 'error'}">${status.registry_available ? 'Sí' : 'No'}</span></p>
+                    <p><strong>Sesión Activa:</strong> <span class="status ${status.has_session ? 'ok' : 'warning'}">${status.has_session ? 'Sí' : 'No'}</span></p>
+                    ${status.has_session ? `<p><strong>Tiempo Restante:</strong> ${status.remaining_seconds || 0} segundos</p>` : ''}
+                `;
+                
+                // Descubrimiento
+                document.getElementById('discovery-info').innerHTML = `
+                    <p><strong>Listener Activo:</strong> <span class="status ${discovery.listener_active ? 'ok' : 'error'}">${discovery.listener_active ? 'Sí' : 'No'}</span></p>
+                    <p><strong>Broadcasts Recibidos:</strong> ${discovery.broadcast_count || 0}</p>
+                    <p><strong>Último Broadcast:</strong> ${discovery.last_broadcast_time || 'Nunca'}</p>
+                    <p><strong>Desde:</strong> ${discovery.last_broadcast_from || 'N/A'}</p>
+                    <p><strong>Servidores Descubiertos:</strong> ${discovery.servers_discovered_count || 0}</p>
+                `;
+                
+                // Servidores conocidos
+                if (servers.servers && servers.servers.length > 0) {
+                    let table = '<table><tr><th>URL</th><th>IP</th><th>Puerto</th><th>Última Vez Visto</th><th>Estado</th></tr>';
+                    servers.servers.forEach(server => {
+                        const status = server.available ? '<span class="status ok">Disponible</span>' : '<span class="status error">No disponible</span>';
+                        table += `<tr>
+                            <td>${server.url}</td>
+                            <td>${server.ip || 'N/A'}</td>
+                            <td>${server.port || 'N/A'}</td>
+                            <td>${server.last_seen || 'N/A'}</td>
+                            <td>${status}</td>
+                        </tr>`;
+                    });
+                    table += '</table>';
+                    document.getElementById('servers-info').innerHTML = table;
+                } else {
+                    document.getElementById('servers-info').innerHTML = '<p>No hay servidores conocidos</p>';
+                }
+                
+                // Información completa
+                document.getElementById('full-info').textContent = JSON.stringify(diagnostic, null, 2);
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+        
+        loadData();
+        setInterval(loadData, 5000); // Actualizar cada 5 segundos
+    </script>
+</body>
+</html>"""
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html')
+        self.end_headers()
+        self.wfile.write(html.encode('utf-8'))
+    
+    def _send_diagnostic_info(self):
+        """Envía información completa de diagnóstico"""
+        global _discovery_stats
+        
+        # Obtener información del cliente
+        client_id = None
+        try:
+            if REGISTRY_AVAILABLE:
+                client_id = get_client_id_from_registry()
+        except:
+            pass
+        
+        # Obtener información de sesión
+        session_info = None
+        if REGISTRY_AVAILABLE:
+            try:
+                session_info = get_session_info()
+            except:
+                pass
+        
+        # Obtener servidores conocidos
+        known_servers = []
+        if REGISTRY_AVAILABLE:
+            try:
+                known_servers = get_servers_from_registry()
+            except:
+                pass
+        
+        # Probar disponibilidad de servidores
+        for server in known_servers:
+            server_url = server.get('url')
+            if server_url:
+                try:
+                    response = requests.get(f"{server_url}/api/health", timeout=2)
+                    server['available'] = response.status_code == 200
+                except:
+                    server['available'] = False
+        
+        self._send_json({
+            'success': True,
+            'client_id': client_id,
+            'server_url': SERVER_URL,
+            'registry_available': REGISTRY_AVAILABLE,
+            'session': session_info,
+            'known_servers': known_servers,
+            'discovery': {
+                'listener_active': _discovery_stats['listener_started'],
+                'broadcast_count': _discovery_stats['broadcast_count'],
+                'last_broadcast_time': _discovery_stats['last_broadcast_time'],
+                'last_broadcast_from': _discovery_stats['last_broadcast_from'],
+                'servers_discovered': list(_discovery_stats['servers_discovered'])
+            }
+        })
+    
+    def _send_status_info(self):
+        """Envía información de estado del cliente"""
+        client_id = None
+        session_info = None
+        
+        if REGISTRY_AVAILABLE:
+            try:
+                client_id = get_client_id_from_registry()
+                session_info = get_session_info()
+            except:
+                pass
+        
+        self._send_json({
+            'success': True,
+            'client_id': client_id,
+            'server_url': SERVER_URL,
+            'registry_available': REGISTRY_AVAILABLE,
+            'has_session': session_info is not None and not session_info.get('is_expired', True),
+            'remaining_seconds': session_info.get('remaining_seconds', 0) if session_info else 0
+        })
+    
+    def _send_discovery_info(self):
+        """Envía información sobre el descubrimiento de servidores"""
+        global _discovery_stats
+        self._send_json({
+            'success': True,
+            'listener_active': _discovery_stats['listener_started'],
+            'broadcast_count': _discovery_stats['broadcast_count'],
+            'last_broadcast_time': _discovery_stats['last_broadcast_time'],
+            'last_broadcast_from': _discovery_stats['last_broadcast_from'],
+            'servers_discovered_count': len(_discovery_stats['servers_discovered']),
+            'servers_discovered': list(_discovery_stats['servers_discovered'])
+        })
+    
+    def _send_servers_info(self):
+        """Envía información sobre servidores conocidos"""
+        known_servers = []
+        if REGISTRY_AVAILABLE:
+            try:
+                known_servers = get_servers_from_registry()
+                # Probar disponibilidad
+                for server in known_servers:
+                    server_url = server.get('url')
+                    if server_url:
+                        try:
+                            response = requests.get(f"{server_url}/api/health", timeout=2)
+                            server['available'] = response.status_code == 200
+                        except:
+                            server['available'] = False
+            except:
+                pass
+        
+        self._send_json({
+            'success': True,
+            'servers': known_servers,
+            'count': len(known_servers)
+        })
+
+def start_diagnostic_server(port=5002):
+    """Inicia el servidor HTTP de diagnóstico del cliente"""
+    global _diagnostic_server
+    
+    def server_thread():
+        try:
+            server = HTTPServer(('127.0.0.1', port), DiagnosticHandler)
+            _diagnostic_server = server
+            print(f"[Diagnóstico] Servidor de diagnóstico iniciado en http://127.0.0.1:{port}")
+            print(f"[Diagnóstico] Dashboard disponible en http://127.0.0.1:{port}/")
+            print(f"[Diagnóstico] Endpoints disponibles:")
+            print(f"[Diagnóstico]   GET /api/diagnostic - Información completa")
+            print(f"[Diagnóstico]   GET /api/status - Estado del cliente")
+            print(f"[Diagnóstico]   GET /api/discovery - Estado del descubrimiento")
+            print(f"[Diagnóstico]   GET /api/servers - Servidores conocidos")
+            server.serve_forever()
+        except OSError as e:
+            if e.errno == 10048 or "Address already in use" in str(e):
+                print(f"[Diagnóstico] ⚠️  El puerto {port} ya está en uso. El servidor de diagnóstico no se iniciará.")
+            else:
+                print(f"[Diagnóstico] ❌ Error al iniciar servidor de diagnóstico: {e}")
+        except Exception as e:
+            print(f"[Diagnóstico] ❌ Error en servidor de diagnóstico: {e}")
+    
+    thread = threading.Thread(target=server_thread, daemon=True)
+    thread.start()
+
+def update_discovery_stats(broadcast_count=None, last_broadcast_time=None, last_broadcast_from=None, server_url=None):
+    """Actualiza las estadísticas de descubrimiento"""
+    global _discovery_stats
+    if broadcast_count is not None:
+        _discovery_stats['broadcast_count'] = broadcast_count
+    if last_broadcast_time is not None:
+        _discovery_stats['last_broadcast_time'] = last_broadcast_time
+    if last_broadcast_from is not None:
+        _discovery_stats['last_broadcast_from'] = last_broadcast_from
+    if server_url is not None:
+        _discovery_stats['servers_discovered'].add(server_url)
 
 def monitor_time(client_id):
     """
@@ -1235,6 +1634,9 @@ def monitor_time(client_id):
     
     # Iniciar listener de descubrimiento de servidores
     start_server_discovery_listener()
+    
+    # Iniciar servidor de diagnóstico
+    start_diagnostic_server(port=5002)
     
     last_remaining = None
     last_sync_time = 0

@@ -302,6 +302,11 @@ def save_servers_to_registry(servers_list):
         if key is None:
             return False
         
+        # Asegurar que cada servidor tenga timeout_count (compatibilidad con versiones anteriores)
+        for server in servers_list:
+            if 'timeout_count' not in server:
+                server['timeout_count'] = 0
+        
         servers_json = json.dumps(servers_list)
         winreg.SetValueEx(key, REGISTRY_VALUE_SERVERS, 0, winreg.REG_SZ, servers_json)
         winreg.CloseKey(key)
@@ -311,18 +316,110 @@ def save_servers_to_registry(servers_list):
         return False
 
 def get_servers_from_registry():
-    """Obtiene la lista de servidores conocidos del registro."""
+    """Obtiene la lista de servidores conocidos del registro y elimina los que tienen 10+ timeouts."""
     try:
         key = get_registry_key(create=False)
         if key is None:
+            # Si no hay clave pero el registro está disponible, retornar lista vacía
+            # Esto es normal en la primera ejecución
             return []
         
         servers_json, _ = winreg.QueryValueEx(key, REGISTRY_VALUE_SERVERS)
         winreg.CloseKey(key)
         servers_list = json.loads(servers_json)
-        return servers_list if isinstance(servers_list, list) else []
+        
+        if not isinstance(servers_list, list):
+            return []
+        
+        # Filtrar servidores con 10+ timeouts y asegurar que todos tengan timeout_count
+        MAX_TIMEOUTS = 10
+        filtered_servers = []
+        removed_servers = []
+        
+        for server in servers_list:
+            # Asegurar compatibilidad con versiones anteriores
+            if 'timeout_count' not in server:
+                server['timeout_count'] = 0
+            
+            timeout_count = server.get('timeout_count', 0)
+            if timeout_count >= MAX_TIMEOUTS:
+                removed_servers.append(server.get('url', 'Unknown'))
+            else:
+                filtered_servers.append(server)
+        
+        # Si se eliminaron servidores, guardar la lista filtrada
+        if removed_servers:
+            print(f"[Servidores] 🗑️  Eliminando {len(removed_servers)} servidor(es) con {MAX_TIMEOUTS}+ timeouts: {', '.join(removed_servers)}")
+            save_servers_to_registry(filtered_servers)
+        
+        return filtered_servers
     except FileNotFoundError:
+        # Primera vez que se ejecuta - no hay servidores guardados aún
+        # Esto es normal y esperado
+        return []
+    except json.JSONDecodeError as e:
+        # Error al parsear JSON - el valor existe pero está corrupto
+        print(f"[Advertencia] Error al parsear servidores del registro (JSON corrupto): {e}")
+        print(f"[Advertencia] Se retornará lista vacía. Los servidores conocidos se recuperarán en la próxima sincronización.")
         return []
     except Exception as e:
-        print(f"Error al leer servidores del registro: {e}")
+        # Otros errores - loguear pero retornar lista vacía
+        print(f"[Error] Error al leer servidores del registro: {e}")
+        print(f"[Error] Se retornará lista vacía. Los servidores conocidos se recuperarán en la próxima sincronización.")
         return []
+
+def increment_server_timeouts(server_urls):
+    """
+    Incrementa el contador de timeouts para los servidores especificados.
+    Si un servidor alcanza 10 timeouts, se elimina de la lista.
+    
+    Args:
+        server_urls: Lista de URLs de servidores que fallaron
+    """
+    if not server_urls:
+        return
+    
+    try:
+        servers_list = get_servers_from_registry()
+        updated = False
+        
+        for server in servers_list:
+            server_url = server.get('url')
+            if server_url in server_urls:
+                timeout_count = server.get('timeout_count', 0)
+                server['timeout_count'] = timeout_count + 1
+                updated = True
+                print(f"[Servidores] ⚠️  Servidor {server_url} - Timeouts: {server['timeout_count']}/10")
+        
+        if updated:
+            save_servers_to_registry(servers_list)
+    except Exception as e:
+        print(f"[Error] Error al incrementar contadores de timeout: {e}")
+
+def reset_server_timeout_count(server_url):
+    """
+    Resetea el contador de timeouts para un servidor específico.
+    
+    Args:
+        server_url: URL del servidor que respondió exitosamente
+    """
+    if not server_url:
+        return
+    
+    try:
+        servers_list = get_servers_from_registry()
+        updated = False
+        
+        for server in servers_list:
+            if server.get('url') == server_url:
+                old_count = server.get('timeout_count', 0)
+                if old_count > 0:
+                    server['timeout_count'] = 0
+                    updated = True
+                    print(f"[Servidores] ✅ Servidor {server_url} - Timeouts reseteados (era {old_count})")
+                break
+        
+        if updated:
+            save_servers_to_registry(servers_list)
+    except Exception as e:
+        print(f"[Error] Error al resetear contador de timeout: {e}")

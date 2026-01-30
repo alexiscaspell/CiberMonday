@@ -230,9 +230,11 @@ def get_client_status(client_id):
     # Incluir configuración del cliente
     client_data['config'] = client_configs.get(client_id, DEFAULT_CLIENT_CONFIG.copy())
     
+    # Incluir lista de servidores conocidos para que el cliente los sincronice
     return jsonify({
         'success': True,
-        'client': client_data
+        'client': client_data,
+        'known_servers': get_servers()  # Incluir servidores conocidos en cada sincronización
     }), 200
 
 @app.route('/api/client/<client_id>/config', methods=['GET'])
@@ -470,12 +472,19 @@ def set_server_config():
 
 @app.route('/api/register-server', methods=['POST'])
 def register_server_endpoint():
-    """Registra un nuevo servidor (llamado por clientes u otros servidores)"""
+    """Registra un nuevo servidor (llamado por clientes u otros servidores o manualmente desde UI)"""
     data = request.json
     server_url = data.get('url')
     
     if not server_url:
         return jsonify({'success': False, 'message': 'URL del servidor requerida'}), 400
+    
+    # Verificar si el servidor ya existe
+    server_exists = False
+    for server_id, server_data in servers_db.items():
+        if server_data.get('url') == server_url:
+            server_exists = True
+            break
     
     result = register_server(
         server_url,
@@ -483,6 +492,14 @@ def register_server_endpoint():
         data.get('port')
     )
     result['known_servers'] = get_servers()
+    
+    # Si se agregó un nuevo servidor y hay clientes conectados, sincronizar con ellos
+    if not server_exists and len(clients_db) > 0:
+        print(f"[Servidor] Nuevo servidor {server_url} agregado manualmente. Sincronizando con {len(clients_db)} cliente(s) conectado(s)...")
+        # Los clientes recibirán la lista actualizada en su próxima sincronización
+        # También podemos sincronizar inmediatamente con otros servidores conocidos
+        _sync_with_other_servers()
+    
     return jsonify(result), 201
 
 @app.route('/api/servers', methods=['GET'])

@@ -478,8 +478,25 @@
             </div>
         </header>
         
+        <!-- Botón para mostrar/ocultar servidores -->
+        <div style="margin-bottom: 10px; text-align: center;">
+            <button onclick="toggleServersSection()" id="toggle-servers-btn" style="background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: bold;">
+                🌐 Ver Servidores Conocidos
+            </button>
+        </div>
+        
         <div class="servers-section" id="servers-section" style="display: none; margin-bottom: 20px;">
-            <h2 style="margin-bottom: 10px; color: #333;">🌐 Otros Servidores Conocidos</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h2 style="margin: 0; color: #333;">🌐 Otros Servidores Conocidos</h2>
+                <div>
+                    <button onclick="showAddServerDialog()" style="background: #4CAF50; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 14px; margin-right: 8px;">
+                        ➕ Agregar Servidor
+                    </button>
+                    <button onclick="toggleServersSection()" style="background: #999; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 14px;">
+                        ✕ Ocultar
+                    </button>
+                </div>
+            </div>
             <div class="servers-list" id="servers-list">
                 <p>Cargando servidores...</p>
             </div>
@@ -583,31 +600,114 @@
                     const currentServerUrl = serverUrl || '';
                     const otherServers = serversList.filter(s => s.url !== currentServerUrl);
                     
+                    // Actualizar contenido de la lista (pero no mostrar la sección automáticamente)
+                    // La sección se muestra/oculta con el botón toggle
                     if (otherServers.length > 0) {
-                        serversSection.style.display = 'block';
-                        serversContainer.innerHTML = otherServers.map(server => {
-                            const lastSeen = server.last_seen ? new Date(server.last_seen).toLocaleString() : 'N/A';
-                            return `
-                                <div style="background: #f5f5f5; padding: 10px; margin-bottom: 8px; border-radius: 5px; border-left: 3px solid #4CAF50;">
-                                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                                        <div>
-                                            <strong style="color: #333;">${server.url}</strong>
-                                            ${server.ip ? `<div style="font-size: 0.9em; color: #666;">IP: ${server.ip}:${server.port || 5000}</div>` : ''}
-                                            <div style="font-size: 0.85em; color: #999;">Visto: ${lastSeen}</div>
+                            serversContainer.innerHTML = otherServers.map(server => {
+                                const lastSeen = server.last_seen ? new Date(server.last_seen).toLocaleString() : 'N/A';
+                                return `
+                                    <div style="background: #f5f5f5; padding: 10px; margin-bottom: 8px; border-radius: 5px; border-left: 3px solid #4CAF50;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                            <div>
+                                                <strong style="color: #333;">${server.url}</strong>
+                                                ${server.ip ? `<div style="font-size: 0.9em; color: #666;">IP: ${server.ip}:${server.port || 5000}</div>` : ''}
+                                                <div style="font-size: 0.85em; color: #999;">Visto: ${lastSeen}</div>
+                                            </div>
+                                            <div>
+                                                <button onclick="window.open('${server.url}', '_blank')" style="background: #4CAF50; color: white; border: none; padding: 5px 15px; border-radius: 3px; cursor: pointer; margin-right: 5px;">
+                                                    Abrir
+                                                </button>
+                                                <button onclick="removeServer('${server.url}')" style="background: #f44336; color: white; border: none; padding: 5px 15px; border-radius: 3px; cursor: pointer;">
+                                                    Eliminar
+                                                </button>
+                                            </div>
                                         </div>
-                                        <button onclick="window.open('${server.url}', '_blank')" style="background: #4CAF50; color: white; border: none; padding: 5px 15px; border-radius: 3px; cursor: pointer;">
-                                            Abrir
-                                        </button>
                                     </div>
-                                </div>
-                            `;
-                        }).join('');
-                    } else {
-                        serversSection.style.display = 'none';
-                    }
+                                `;
+                            }).join('');
+                        } else {
+                            serversContainer.innerHTML = '<p style="color: #999; font-style: italic;">No hay otros servidores conocidos. Usa el botón "Agregar Servidor" para agregar uno manualmente.</p>';
+                        }
                 }
             } catch (error) {
                 console.error('Error al cargar servidores:', error);
+            }
+        }
+        
+        function showAddServerDialog() {
+            const url = prompt('Ingresa la URL del servidor a agregar:\n\nEjemplo: http://192.168.0.3:5000');
+            if (!url) return;
+            
+            // Validar formato básico
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                alert('La URL debe comenzar con http:// o https://');
+                return;
+            }
+            
+            // Extraer IP y puerto de la URL
+            let serverIp = null;
+            let serverPort = 5000;
+            try {
+                const urlObj = new URL(url);
+                serverIp = urlObj.hostname;
+                serverPort = urlObj.port ? parseInt(urlObj.port) : 5000;
+            } catch (e) {
+                console.error('Error al parsear URL:', e);
+            }
+            
+            // Agregar servidor
+            fetch(`${API_URL}/register-server`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    url: url,
+                    ip: serverIp,
+                    port: serverPort
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(`Servidor ${url} agregado exitosamente.\n\nLos clientes conectados recibirán esta información en la próxima sincronización.`);
+                    loadServers();
+                } else {
+                    alert('Error: ' + (data.message || 'No se pudo agregar el servidor'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error al agregar servidor');
+            });
+        }
+        
+        function removeServer(serverUrl) {
+            if (!confirm(`¿Eliminar el servidor ${serverUrl} de la lista de servidores conocidos?`)) {
+                return;
+            }
+            
+            // Nota: Necesitaríamos un endpoint DELETE para eliminar servidores
+            // Por ahora, solo mostramos un mensaje
+            alert('Funcionalidad de eliminación pendiente de implementar.\n\nPor ahora, los servidores se eliminan automáticamente después de un tiempo sin ser vistos.');
+        }
+        
+        function toggleServersSection() {
+            const serversSection = document.getElementById('servers-section');
+            const toggleBtn = document.getElementById('toggle-servers-btn');
+            
+            if (serversSection.style.display === 'none' || serversSection.style.display === '') {
+                serversSection.style.display = 'block';
+                toggleBtn.textContent = '🌐 Ocultar Servidores';
+                toggleBtn.style.background = '#999';
+                // Cargar servidores si aún no se han cargado
+                if (document.getElementById('servers-list').innerHTML.includes('Cargando')) {
+                    loadServers();
+                }
+            } else {
+                serversSection.style.display = 'none';
+                toggleBtn.textContent = '🌐 Ver Servidores Conocidos';
+                toggleBtn.style.background = '#667eea';
             }
         }
         

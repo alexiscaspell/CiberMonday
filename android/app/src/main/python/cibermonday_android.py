@@ -451,6 +451,17 @@ def set_server_config(broadcast_interval):
         'message': 'Configuración actualizada correctamente'
     })
 
+def register_server_manual(server_url, server_ip=None, server_port=None):
+    """Registra un servidor manualmente desde la UI."""
+    manager = get_manager()
+    result = manager.register_server(server_url, server_ip, server_port)
+    
+    # Si se agregó exitosamente y hay clientes conectados, sincronizar
+    if result.get('success') and len(manager.clients_db) > 0:
+        print(f"[Servidor] Nuevo servidor {server_url} agregado manualmente. Los clientes lo recibirán en su próxima sincronización.")
+    
+    return json.dumps(result)
+
 
 # ============== SERVIDOR HTTP NATIVO (para clientes remotos) ==============
 
@@ -632,7 +643,12 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
             client_id = path.split('/')[3]
             client = self.manager.get_client_status(client_id)
             if client:
-                self._send_json({'success': True, 'client': client})
+                # Incluir lista de servidores conocidos para que el cliente los sincronice
+                self._send_json({
+                    'success': True,
+                    'client': client,
+                    'known_servers': self.manager.get_servers()  # Incluir servidores conocidos
+                })
             else:
                 self._send_json({'success': False, 'message': 'Cliente no encontrado'}, 404)
         
