@@ -1148,7 +1148,22 @@ def start_server_discovery_listener():
                             print(f"[Discovery] Servidores conocidos actualmente: {len(known_servers)}")
                             
                             # Verificar si ya existe
-                            if not any(s.get('url') == server_url for s in known_servers):
+                            server_exists = False
+                            for server in known_servers:
+                                if server.get('url') == server_url:
+                                    # Actualizar last_seen y datos del servidor existente
+                                    server['last_seen'] = datetime.now().isoformat()
+                                    if server_ip:
+                                        server['ip'] = server_ip
+                                    if server_port:
+                                        server['port'] = server_port
+                                    save_servers_to_registry(known_servers)
+                                    print(f"[Discovery] ✅ Servidor {server_url} actualizado (last_seen actualizado)")
+                                    server_exists = True
+                                    break
+                            
+                            if not server_exists:
+                                # Agregar nuevo servidor
                                 known_servers.append({
                                     'url': server_url,
                                     'ip': server_ip,
@@ -1157,8 +1172,6 @@ def start_server_discovery_listener():
                                 })
                                 save_servers_to_registry(known_servers)
                                 print(f"[Discovery] ✅ Servidor {server_url} registrado exitosamente")
-                            else:
-                                print(f"[Discovery] ⚠️  Servidor {server_url} ya conocido (no se registra nuevamente)")
                         else:
                             print(f"[Discovery] ⚠️  Registry no disponible, no se puede guardar el servidor")
                         
