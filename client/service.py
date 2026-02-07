@@ -238,10 +238,16 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
                         log_file = None
                     
                     # Iniciar el proceso del cliente con logs redirigidos
+                    # PYTHONUNBUFFERED=1 fuerza que stdout se escriba inmediatamente
+                    # (sin esto, Python buferea la salida cuando detecta que no es un terminal)
+                    client_env = os.environ.copy()
+                    client_env['PYTHONUNBUFFERED'] = '1'
+                    
                     self.process = subprocess.Popen(
                         client_cmd,
                         stdout=log_file if log_file else subprocess.DEVNULL,
                         stderr=subprocess.STDOUT if log_file else subprocess.DEVNULL,
+                        env=client_env,
                         creationflags=subprocess.CREATE_NO_WINDOW
                     )
                     
