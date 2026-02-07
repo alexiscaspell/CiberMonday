@@ -11,9 +11,12 @@ services:
       - FLASK_ENV=production
       - PORT=5000
       - HOST=0.0.0.0
-      - HOST_IP=192.168.68.101  # IP del host para broadcasts
+      # HOST_IP es la IP de tu máquina en la LAN (no la del container Docker).
+      # Necesario para que el broadcast anuncie la IP correcta.
+      # NOTA: En macOS, los broadcasts UDP desde Docker no llegan a la LAN.
+      # Si necesitás auto-descubrimiento por broadcast, ejecutá el servidor sin Docker.
+      - HOST_IP=192.168.68.103
     volumes:
-      # Opcional: montar logs si los agregas en el futuro
       - ./logs:/app/logs
     restart: unless-stopped
     networks:

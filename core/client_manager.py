@@ -27,7 +27,7 @@ class ClientManager:
         'max_server_timeouts': 10,
     }
     
-    def __init__(self):
+    def __init__(self, server_port=5000):
         self.clients_db = {}
         self.client_sessions = {}
         self.client_configs = {}
@@ -35,6 +35,22 @@ class ClientManager:
         self.server_config = {
             'broadcast_interval': 1
         }
+        self.server_port = server_port
+        self._local_server_url = None
+    
+    @property
+    def local_server_url(self):
+        """URL del servidor local. Se usa para no sincronizar consigo mismo."""
+        if self._local_server_url:
+            return self._local_server_url
+        local_ip = self.get_local_ip()
+        if local_ip and local_ip != "127.0.0.1":
+            return f"http://{local_ip}:{self.server_port}"
+        return None
+    
+    @local_server_url.setter
+    def local_server_url(self, url):
+        self._local_server_url = url
     
     # ==================== CLIENT MANAGEMENT ====================
     
@@ -121,8 +137,8 @@ class ClientManager:
         # Auto-registrar el servidor local
         local_ip = self.get_local_ip()
         if local_ip and local_ip != "127.0.0.1":
-            local_url = f"http://{local_ip}:5000"
-            self.register_server(local_url, local_ip, 5000)
+            local_url = f"http://{local_ip}:{self.server_port}"
+            self.register_server(local_url, local_ip, self.server_port)
         
         message = 'Cliente re-registrado' if is_reregister else 'Cliente registrado'
         print(f"[Registro] {message}: {client_id[:8]}... nombre={name}")
@@ -457,11 +473,9 @@ class ClientManager:
     
     def _sync_with_other_servers(self):
         """Sincroniza información con otros servidores conocidos."""
-        local_ip = self.get_local_ip()
-        if local_ip == "127.0.0.1" or not local_ip:
+        my_url = self.local_server_url
+        if not my_url:
             return
-        
-        local_server_url = f"http://{local_ip}:5000"
         
         sync_data = {
             'servers': self.get_servers(),
@@ -470,7 +484,7 @@ class ClientManager:
         
         for server_id, server_data in list(self.servers_db.items()):
             server_url = server_data.get('url')
-            if not server_url or server_url == local_server_url:
+            if not server_url or server_url == my_url:
                 continue
             
             try:
@@ -485,7 +499,7 @@ class ClientManager:
                         response_data = json.loads(response.read().decode('utf-8'))
                         if response_data.get('known_servers'):
                             for other_server in response_data['known_servers']:
-                                if other_server.get('url') != local_server_url:
+                                if other_server.get('url') != my_url:
                                     self.register_server(
                                         other_server.get('url'),
                                         other_server.get('ip'),
@@ -545,17 +559,26 @@ class ClientManager:
             return "127.0.0.1"
     
     @staticmethod
-    def get_broadcast_address():
-        """Obtiene la dirección de broadcast de la red local."""
+    def get_broadcast_address(ip_address=None):
+        """
+        Obtiene la dirección de broadcast de la red local.
+        Si se proporciona ip_address, calcula el broadcast basado en esa IP.
+        Si no, usa get_local_ip() para determinarlo automáticamente.
+        Esto es importante en Docker donde get_local_ip() retorna la IP del container,
+        pero queremos calcular el broadcast basado en la IP del host (HOST_IP).
+        """
         try:
-            local_ip = ClientManager.get_local_ip()
-            if local_ip == "127.0.0.1":
+            if ip_address is None:
+                ip_address = ClientManager.get_local_ip()
+            if ip_address == "127.0.0.1":
                 return "255.255.255.255"
-            parts = local_ip.split('.')
-            parts[3] = '255'
-            return '.'.join(parts)
+            parts = ip_address.split('.')
+            if len(parts) == 4:
+                parts[3] = '255'
+                return '.'.join(parts)
         except Exception:
-            return "255.255.255.255"
+            pass
+        return "255.255.255.255"
     
     # ==================== SERIALIZATION ====================
     

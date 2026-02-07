@@ -20,7 +20,8 @@ app = Flask(__name__, template_folder='templates')
 CORS(app)
 
 # Instancia única del gestor de clientes/servidores
-manager = ClientManager()
+_port = int(os.getenv('PORT', 5000))
+manager = ClientManager(server_port=_port)
 
 
 # ==================== CLIENT ROUTES ====================
@@ -297,7 +298,7 @@ def _notify_clients_new_server(server_url, data):
     print(f"[Servidor] {notified_count}/{len(manager.clients_db)} cliente(s) notificado(s) exitosamente")
 
 
-def broadcast_server_presence():
+def broadcast_server_presence(server_port=5000):
     """
     Hace broadcast UDP para anunciar la presencia de este servidor a los clientes.
     Los clientes escuchan en el puerto 5001 y registran automáticamente nuevos servidores.
@@ -318,14 +319,14 @@ def broadcast_server_presence():
                 print(f"[Broadcast] IP no válida para broadcast: {local_ip}")
                 return
             
-            server_url = f"http://{local_ip}:5000"
+            server_url = f"http://{local_ip}:{server_port}"
             server_info_data = {
                 'url': server_url,
                 'ip': local_ip,
-                'port': 5000
+                'port': server_port
             }
             
-            broadcast_addr = manager.get_broadcast_address()
+            broadcast_addr = manager.get_broadcast_address(local_ip)
             
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -335,13 +336,20 @@ def broadcast_server_presence():
                 print(f"[Broadcast] Advertencia al hacer bind: {bind_error}")
             
             config = manager.get_server_config()
-            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:5000")
+            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:{server_port}")
             print(f"[Broadcast] Dirección de broadcast: {broadcast_addr}:{DISCOVERY_PORT}")
             print(f"[Broadcast] Enviando broadcasts UDP cada {config['broadcast_interval']} segundos")
             print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
             
             last_client_count = 0
             broadcasts_paused = False
+            
+            # Direcciones de broadcast a intentar (subred específica + broadcast general)
+            broadcast_targets = [broadcast_addr]
+            if broadcast_addr != "255.255.255.255":
+                broadcast_targets.append("255.255.255.255")
+            
+            last_error_logged = 0
             
             while True:
                 try:
@@ -364,13 +372,42 @@ def broadcast_server_presence():
                         last_client_count = 0
                     
                     message = json.dumps(server_info_data).encode('utf-8')
-                    sock.sendto(message, (broadcast_addr, DISCOVERY_PORT))
-                    print(f"[Broadcast] 📡 Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
+                    sent = False
+                    for target_addr in broadcast_targets:
+                        try:
+                            sock.sendto(message, (target_addr, DISCOVERY_PORT))
+                            sent = True
+                            break
+                        except OSError:
+                            continue
+                    
+                    if sent:
+                        last_error_logged = 0
+                    else:
+                        # Todos los targets fallaron - recrear socket e intentar una vez más
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                        sock.bind(('', 0))
+                        try:
+                            sock.sendto(message, ('255.255.255.255', DISCOVERY_PORT))
+                            sent = True
+                            last_error_logged = 0
+                        except OSError as e:
+                            now = time.time()
+                            if now - last_error_logged > 30:
+                                print(f"[Broadcast] ⚠️  No se pudo enviar broadcast: {e}")
+                                last_error_logged = now
+                    
                     time.sleep(config['broadcast_interval'])
                 except Exception as e:
-                    print(f"[Broadcast] Error al enviar broadcast: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    now = time.time()
+                    if now - last_error_logged > 30:
+                        print(f"[Broadcast] Error al enviar broadcast: {e}")
+                        last_error_logged = now
                     time.sleep(config.get('broadcast_interval', 1))
         except Exception as e:
             print(f"[Broadcast] Error en thread de broadcast: {e}")
@@ -399,6 +436,6 @@ if __name__ == '__main__':
     print("  DELETE /api/client/<id> - Eliminar cliente")
     print("=" * 50)
     
-    broadcast_server_presence()
+    broadcast_server_presence(server_port=port)
     
     app.run(host=host, port=port, debug=debug)

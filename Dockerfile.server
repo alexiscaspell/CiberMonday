@@ -4,6 +4,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY requirements.txt .
+COPY core/ ./core/
 COPY server/ ./server/
 
 # Instalar dependencias del sistema (wget para healthcheck)

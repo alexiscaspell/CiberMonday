@@ -952,8 +952,8 @@ def sync_with_all_servers(client_id):
                         if REGISTRY_AVAILABLE:
                             save_session_to_registry(
                                 time_limit_seconds=time_limit,
-                                start_time=start_time_local.isoformat(),
-                                end_time=end_time_local.isoformat()
+                                start_time_iso=start_time_local.isoformat(),
+                                end_time_iso=end_time_local.isoformat()
                             )
                             last_known_remaining = remaining_from_server
                             print(f"[Sincronización] ✅ Sesión actualizada desde {server_url}: {remaining_from_server}s restantes")
@@ -1281,8 +1281,8 @@ class SyncManager:
         if REGISTRY_AVAILABLE:
             save_session_to_registry(
                 time_limit_seconds=time_limit,
-                start_time=start_time_local.isoformat(),
-                end_time=end_time_local.isoformat()
+                start_time_iso=start_time_local.isoformat(),
+                end_time_iso=end_time_local.isoformat()
             )
             
             # Detectar nueva sesión o cambio drástico para resetear alertas
