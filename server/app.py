@@ -1,5 +1,6 @@
 import sys
 import os
+import functools
 
 # Agregar el directorio padre al path para poder importar core
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -22,6 +23,32 @@ CORS(app)
 # Instancia única del gestor de clientes/servidores
 _port = int(os.getenv('PORT', 5000))
 manager = ClientManager(server_port=_port)
+
+# ==================== ADMIN ACCESS CONTROL ====================
+
+# IPs permitidas para acceder a rutas de admin
+# Siempre incluye localhost; se pueden agregar más via ADMIN_ALLOWED_IPS (comma-separated)
+_LOCALHOST_IPS = {'127.0.0.1', '::1'}
+_extra_ips = os.getenv('ADMIN_ALLOWED_IPS', '')
+ADMIN_ALLOWED_IPS = _LOCALHOST_IPS | {ip.strip() for ip in _extra_ips.split(',') if ip.strip()}
+
+
+def _is_admin_request():
+    """Verifica si la request viene de una IP autorizada para admin."""
+    return request.remote_addr in ADMIN_ALLOWED_IPS
+
+
+def admin_only(f):
+    """Decorator que restringe una ruta a IPs de admin (localhost por defecto)."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not _is_admin_request():
+            return jsonify({
+                'success': False,
+                'message': 'Acceso denegado. Solo disponible desde el servidor.'
+            }), 403
+        return f(*args, **kwargs)
+    return decorated
 
 
 # ==================== CLIENT ROUTES ====================
@@ -56,6 +83,7 @@ def register_client():
 
 
 @app.route('/api/clients', methods=['GET'])
+@admin_only
 def get_clients():
     """Obtiene la lista de todos los clientes registrados."""
     return jsonify({
@@ -65,6 +93,7 @@ def get_clients():
 
 
 @app.route('/api/client/<client_id>/set-time', methods=['POST'])
+@admin_only
 def set_client_time(client_id):
     """Establece el tiempo de uso para un cliente específico."""
     data = request.json
@@ -106,8 +135,15 @@ def set_client_config(client_id):
     """Modifica la configuración de un cliente."""
     data = request.json
     
-    # Si from_client=True, es el cliente reportando su config, no notificar de vuelta
+    # Si from_client=True, es el cliente reportando su config (público)
+    # Si no, es el admin cambiando config (solo localhost)
     from_client = data.get('from_client', False)
+    
+    if not from_client and not _is_admin_request():
+        return jsonify({
+            'success': False,
+            'message': 'Acceso denegado. Solo disponible desde el servidor.'
+        }), 403
     
     result = manager.set_client_config(
         client_id,
@@ -136,6 +172,7 @@ def report_client_session(client_id):
 
 
 @app.route('/api/client/<client_id>/stop', methods=['POST'])
+@admin_only
 def stop_client_session(client_id):
     """Detiene la sesión de un cliente."""
     result = manager.stop_client_session(client_id)
@@ -144,6 +181,7 @@ def stop_client_session(client_id):
 
 
 @app.route('/api/client/<client_id>', methods=['DELETE'])
+@admin_only
 def delete_client(client_id):
     """Elimina un cliente del sistema."""
     result = manager.delete_client(client_id)
@@ -181,6 +219,7 @@ def server_info():
 
 
 @app.route('/api/server-config', methods=['GET'])
+@admin_only
 def get_server_config():
     """Obtiene la configuración del servidor."""
     return jsonify({
@@ -190,6 +229,7 @@ def get_server_config():
 
 
 @app.route('/api/server-config', methods=['POST'])
+@admin_only
 def set_server_config():
     """Actualiza la configuración del servidor."""
     data = request.json
@@ -255,6 +295,7 @@ def sync_servers_endpoint():
 
 
 @app.route('/api/force-sync', methods=['POST'])
+@admin_only
 def force_sync_endpoint():
     """Fuerza una sincronización completa con todos los servidores conocidos."""
     try:
@@ -275,6 +316,7 @@ def force_sync_endpoint():
 # ==================== WEB UI ====================
 
 @app.route('/', methods=['GET'])
+@admin_only
 def index():
     """Interfaz web del panel de control."""
     return render_template('index.html')
