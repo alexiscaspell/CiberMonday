@@ -66,12 +66,7 @@ jobs:
           --hidden-import "win32event" `
           --hidden-import "servicemanager" `
           --hidden-import "protection" `
-          --hidden-import "registry_manager" `
-          --hidden-import "config_gui" `
-          --hidden-import "tkinter" `
-          --hidden-import "tkinter.ttk" `
-          --hidden-import "tkinter.messagebox" `
-          --hidden-import "requests" `
+          --hidden-import "firewall_manager" `
           --hidden-import "ctypes" `
           --hidden-import "ctypes.wintypes" `
           service.py
@@ -83,6 +78,9 @@ jobs:
           --name "CiberMondayWatchdog" `
           --hidden-import "winreg" `
           --hidden-import "subprocess" `
+          --hidden-import "protection" `
+          --hidden-import "ctypes" `
+          --hidden-import "ctypes.wintypes" `
           watchdog.py
     
     - name: Verificar ejecutables generados
@@ -102,6 +100,7 @@ jobs:
           client/dist/CiberMondayService.exe
           client/dist/CiberMondayWatchdog.exe
           client/install_exe_service.bat
+          client/uninstall_exe_service.bat
         tag_name: v${{ github.event.inputs.version }}
         name: CiberMonday Client v${{ github.event.inputs.version }}
         prerelease: ${{ github.event.inputs.prerelease }}
@@ -116,21 +115,15 @@ jobs:
           - **CiberMondayService.exe** - Servicio de Windows
           - **CiberMondayWatchdog.exe** - Watchdog independiente
           - **install_exe_service.bat** - Instalador del servicio
+          - **uninstall_exe_service.bat** - Desinstalador del servicio
           
           ## 🚀 Instrucciones de instalación
           
           1. Descarga **todos los archivos** del release
           2. Extrae los archivos en una carpeta (ej: `C:\CiberMonday\`)
-          3. **Opción A - Ejecución directa:**
-             - Ejecuta `CiberMondayClient.exe` como Administrador
-             - **Se abrirá una ventana de configuración** la primera vez
-             - Ingresa la URL del servidor (ej: `http://192.168.1.100:5000`)
-             - La configuración se guardará automáticamente en el registro de Windows
-          
-          4. **Opción B - Como servicio (Recomendado):**
-             - Ejecuta `install_exe_service.bat` como Administrador
-             - Si es la primera vez, se abrirá la ventana de configuración
-             - El servicio se iniciará automáticamente después de configurar
+          3. Ejecuta `install_exe_service.bat` como Administrador
+          4. Si es la primera vez, se abrirá la ventana de configuración del servidor
+          5. El servicio se instalará, configurará e iniciará automáticamente
           
           **Estructura de archivos después de extraer:**
           ```
@@ -138,10 +131,20 @@ jobs:
           ├── CiberMondayClient.exe
           ├── CiberMondayService.exe
           ├── CiberMondayWatchdog.exe
-          └── install_exe_service.bat
+          ├── install_exe_service.bat
+          └── uninstall_exe_service.bat
           ```
           
-          **Nota**: Ya no necesitas `config.py`. La configuración se guarda en el registro de Windows y se muestra una ventana GUI la primera vez que ejecutas el cliente.
+          **Nota**: La configuración se guarda en el registro de Windows y se muestra una ventana GUI la primera vez.
+          
+          ## 🛡️ Protecciones del servicio
+          
+          El instalador configura múltiples capas de protección:
+          - **Inicio automático**: Se inicia con Windows en cada arranque
+          - **Recuperación automática**: Si el servicio falla, Windows lo reinicia en 5 segundos
+          - **Watchdog interno**: Si el proceso del cliente muere, el servicio lo reinicia en 3 segundos
+          - **Protección DACL**: El proceso no puede ser terminado desde Task Manager por usuarios normales
+          - **Permisos restringidos**: Solo administradores pueden detener el servicio
           
           ## 📋 Requisitos
           
@@ -149,16 +152,20 @@ jobs:
           - Permisos de Administrador
           - Conexión de red al servidor
           
-          ## 🔧 Gestión del servicio
+          ## 🔧 Gestión del servicio (requiere Administrador)
           
           ```bash
-          CiberMondayService.exe start    # Iniciar
-          CiberMondayService.exe stop     # Detener
-          CiberMondayService.exe restart  # Reiniciar
-          CiberMondayService.exe remove   # Desinstalar
+          net start CiberMondayClient    # Iniciar
+          net stop CiberMondayClient     # Detener
           ```
           
-          O desde `services.msc` buscando "CiberMonday Client Service"
+          ## 🗑️ Desinstalación
+          
+          Ejecuta `uninstall_exe_service.bat` como Administrador. Esto:
+          - Detiene el servicio y mata procesos residuales
+          - Elimina el servicio de Windows
+          - Limpia las reglas del firewall
+          - Rehabilita el Task Manager si fue deshabilitado
           
           ## 📝 Notas
           

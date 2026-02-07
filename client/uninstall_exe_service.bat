@@ -1,7 +1,6 @@
 @echo off
 echo ========================================
 echo Desinstalador del Servicio CiberMonday
-echo (Version Python)
 echo ========================================
 echo.
 
@@ -26,6 +25,7 @@ if /I not "%CONFIRM%"=="SI" (
 
 echo.
 echo [1/5] Desactivando recuperacion automatica...
+REM Desactivar recovery para que no se reinicie mientras desinstalamos
 sc failure CiberMondayClient reset= 0 actions= "" >nul 2>&1
 echo    Recuperacion automatica desactivada.
 
@@ -40,10 +40,17 @@ if %errorLevel% equ 0 (
 REM Esperar a que el servicio termine completamente
 timeout /t 3 /nobreak >nul 2>&1
 
+REM Matar cualquier proceso residual del cliente
+taskkill /F /IM CiberMondayClient.exe >nul 2>&1
+taskkill /F /IM CiberMondayService.exe >nul 2>&1
+taskkill /F /IM CiberMondayWatchdog.exe >nul 2>&1
+
 echo.
 echo [3/5] Eliminando servicio de Windows...
-python service.py remove >nul 2>&1
-REM Respaldo: usar sc delete directamente
+if exist "CiberMondayService.exe" (
+    CiberMondayService.exe remove >nul 2>&1
+)
+REM Respaldo: usar sc delete directamente por si el EXE no funciona
 sc delete CiberMondayClient >nul 2>&1
 if %errorLevel% equ 0 (
     echo    Servicio eliminado del registro de Windows.
@@ -53,7 +60,6 @@ if %errorLevel% equ 0 (
 
 echo.
 echo [4/5] Eliminando reglas del firewall...
-python firewall_manager.py remove >nul 2>&1
 netsh advfirewall firewall delete rule name="CiberMonday Client UDP Discovery" >nul 2>&1
 if %errorLevel% equ 0 (
     echo    Regla de descubrimiento UDP eliminada.
@@ -79,5 +85,8 @@ echo ========================================
 echo.
 echo El servicio CiberMonday ha sido removido completamente.
 echo La PC ya no sera controlada por CiberMonday.
+echo.
+echo Nota: Los archivos ejecutables no fueron eliminados.
+echo Puedes eliminar esta carpeta manualmente si lo deseas.
 echo.
 pause

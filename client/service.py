@@ -2,6 +2,12 @@
 Servicio de Windows para CiberMonday Client
 Este módulo permite ejecutar el cliente como un servicio de Windows
 que se inicia automáticamente y se reinicia si falla.
+
+Protección multicapa:
+- Watchdog interno: reinicia el cliente si muere (cada 3 segundos)
+- Protección DACL: impide que usuarios no-SYSTEM maten el proceso
+- Recovery options: Windows reinicia el servicio si se cae (configurado en instalador)
+- Security descriptor: restringe quién puede detener el servicio (configurado en instalador)
 """
 
 import win32serviceutil
@@ -14,8 +20,63 @@ import subprocess
 import time
 import threading
 
-# Agregar el directorio actual al path para importar client
+# Agregar el directorio actual al path para importar módulos locales
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Intervalo del watchdog en segundos (qué tan rápido detecta que el cliente murió)
+WATCHDOG_CHECK_INTERVAL = 3
+# Espera antes de reiniciar tras un error del watchdog
+WATCHDOG_ERROR_WAIT = 10
+
+
+def _get_client_command():
+    """
+    Determina el comando correcto para lanzar el cliente según el entorno.
+    - Entorno congelado (PyInstaller): busca CiberMondayClient.exe en el mismo directorio
+    - Entorno Python normal: ejecuta client.py con el intérprete actual
+    
+    Returns:
+        list: Comando como lista para subprocess.Popen
+    
+    Raises:
+        FileNotFoundError: Si no se encuentra el ejecutable/script del cliente
+    """
+    if getattr(sys, 'frozen', False):
+        # Entorno congelado (PyInstaller) - buscar el EXE del cliente
+        exe_dir = os.path.dirname(sys.executable)
+        client_exe = os.path.join(exe_dir, 'CiberMondayClient.exe')
+        if not os.path.exists(client_exe):
+            raise FileNotFoundError(
+                f"No se encontró CiberMondayClient.exe en {exe_dir}. "
+                "Asegúrate de que ambos EXE estén en la misma carpeta."
+            )
+        return [client_exe]
+    else:
+        # Entorno Python normal - ejecutar script directamente
+        client_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'client.py')
+        if not os.path.exists(client_script):
+            raise FileNotFoundError(
+                f"No se encontró client.py en {os.path.dirname(os.path.abspath(__file__))}"
+            )
+        return [sys.executable, client_script]
+
+
+def _protect_child_process(pid):
+    """
+    Aplica protección DACL al proceso hijo para impedir que usuarios lo maten.
+    Solo SYSTEM podrá terminar el proceso.
+    
+    Args:
+        pid: ID del proceso hijo a proteger
+    """
+    try:
+        from protection import protect_process_by_pid
+        protect_process_by_pid(pid)
+    except ImportError:
+        pass  # protection.py no disponible
+    except Exception:
+        pass  # No es crítico, el watchdog lo reiniciará de todas formas
+
 
 class CiberMondayService(win32serviceutil.ServiceFramework):
     """Servicio de Windows para el cliente CiberMonday"""
@@ -42,10 +103,10 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
             try:
                 self.process.terminate()
                 self.process.wait(timeout=5)
-            except:
+            except Exception:
                 try:
                     self.process.kill()
-                except:
+                except Exception:
                     pass
         
     def SvcDoRun(self):
@@ -57,6 +118,15 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
         )
         
         self.running = True
+        
+        # Proteger el proceso del servicio mismo
+        try:
+            from protection import protect_current_process
+            protect_current_process()
+        except ImportError:
+            pass
+        except Exception:
+            pass
         
         # Iniciar el watchdog en un hilo separado
         self.watchdog_thread = threading.Thread(target=self.watchdog, daemon=True)
@@ -73,39 +143,66 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
         )
     
     def watchdog(self):
-        """Watchdog que mantiene el cliente corriendo y lo reinicia si falla"""
-        client_script = os.path.join(os.path.dirname(__file__), 'client.py')
+        """
+        Watchdog que mantiene el cliente corriendo y lo reinicia si falla.
+        
+        - Detecta entorno congelado (PyInstaller) vs Python para lanzar el comando correcto
+        - Aplica protección DACL al proceso hijo después de lanzarlo
+        - Reinicia el cliente en WATCHDOG_CHECK_INTERVAL segundos si muere
+        """
+        try:
+            client_cmd = _get_client_command()
+        except FileNotFoundError as e:
+            servicemanager.LogErrorMsg(f"Error fatal en watchdog: {e}")
+            return
+        
+        servicemanager.LogMsg(
+            servicemanager.EVENTLOG_INFORMATION_TYPE,
+            servicemanager.PYS_SERVICE_STARTED,
+            (self._svc_name_, f'Watchdog iniciado. Comando: {" ".join(client_cmd)}')
+        )
         
         while self.running:
             try:
                 # Verificar si el proceso está corriendo
                 if self.process is None or self.process.poll() is not None:
-                    # Proceso no existe o terminó, reiniciarlo
-                    servicemanager.LogMsg(
-                        servicemanager.EVENTLOG_INFORMATION_TYPE,
-                        servicemanager.PYS_SERVICE_STARTED,
-                        (self._svc_name_, 'Reiniciando cliente...')
-                    )
+                    if self.process is not None:
+                        exit_code = self.process.returncode
+                        servicemanager.LogMsg(
+                            servicemanager.EVENTLOG_INFORMATION_TYPE,
+                            servicemanager.PYS_SERVICE_STARTED,
+                            (self._svc_name_, f'Cliente terminó (código: {exit_code}). Reiniciando...')
+                        )
+                    else:
+                        servicemanager.LogMsg(
+                            servicemanager.EVENTLOG_INFORMATION_TYPE,
+                            servicemanager.PYS_SERVICE_STARTED,
+                            (self._svc_name_, 'Iniciando cliente...')
+                        )
                     
                     # Iniciar el proceso del cliente
                     self.process = subprocess.Popen(
-                        [sys.executable, client_script],
+                        client_cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
-                        creationflags=subprocess.CREATE_NO_WINDOW  # Ocultar ventana
+                        creationflags=subprocess.CREATE_NO_WINDOW
                     )
+                    
+                    # Aplicar protección DACL al proceso hijo
+                    _protect_child_process(self.process.pid)
                 
-                # Esperar un poco antes de verificar de nuevo
-                time.sleep(5)
+                # Esperar antes de verificar de nuevo
+                time.sleep(WATCHDOG_CHECK_INTERVAL)
                 
             except Exception as e:
                 servicemanager.LogErrorMsg(f"Error en watchdog: {e}")
-                time.sleep(10)
+                time.sleep(WATCHDOG_ERROR_WAIT)
+
 
 def main():
     """Función principal para manejar comandos del servicio"""
     if len(sys.argv) == 1:
-        # Si no hay argumentos, intentar instalar el servicio
+        # Sin argumentos = ejecutado por el SCM (Service Control Manager)
         servicemanager.Initialize()
         servicemanager.PrepareToHostSingle(CiberMondayService)
         servicemanager.StartServiceCtrlDispatcher()
@@ -120,23 +217,12 @@ def main():
                 print("\n[Instalación] Configurando firewall...")
                 add_firewall_rule()
             except ImportError:
-                print("\n[Instalación] ⚠️  No se pudo importar firewall_manager. La regla del firewall no se agregará automáticamente.")
+                print("\n[Instalación] No se pudo importar firewall_manager. La regla del firewall no se agregará automáticamente.")
             except Exception as e:
-                print(f"\n[Instalación] ⚠️  Error al configurar firewall: {e}")
-        
-        # Si se está desinstalando, opcionalmente eliminar regla del firewall
-        # (comentado por defecto para no eliminar la regla si el usuario quiere mantenerla)
-        # elif command == 'remove':
-        #     try:
-        #         from firewall_manager import remove_firewall_rule
-        #         print("\n[Desinstalación] Eliminando regla del firewall...")
-        #         remove_firewall_rule()
-        #     except ImportError:
-        #         pass
-        #     except Exception as e:
-        #         print(f"\n[Desinstalación] ⚠️  Error al eliminar regla del firewall: {e}")
+                print(f"\n[Instalación] Error al configurar firewall: {e}")
         
         win32serviceutil.HandleCommandLine(CiberMondayService)
+
 
 if __name__ == '__main__':
     main()

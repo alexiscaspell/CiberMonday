@@ -45,20 +45,20 @@ echo.
 echo Compilando servicio...
 echo.
 
-REM Compilar el servicio
+REM Compilar el servicio (ya no necesita client.py como data, lanza CiberMondayClient.exe)
 pyinstaller --onefile ^
     --windowed ^
     --name "CiberMondayService" ^
     --icon=NONE ^
-    --add-data "config.py;." ^
-    --add-data "client.py;." ^
     --hidden-import "winreg" ^
     --hidden-import "win32serviceutil" ^
     --hidden-import "win32service" ^
     --hidden-import "win32event" ^
     --hidden-import "servicemanager" ^
     --hidden-import "protection" ^
-    --hidden-import "registry_manager" ^
+    --hidden-import "firewall_manager" ^
+    --hidden-import "ctypes" ^
+    --hidden-import "ctypes.wintypes" ^
     service.py
 
 if %errorLevel% neq 0 (
@@ -72,12 +72,15 @@ echo.
 echo Compilando watchdog...
 echo.
 
-REM Compilar el watchdog
+REM Compilar el watchdog (ahora incluye protección DACL)
 pyinstaller --onefile ^
     --windowed ^
     --name "CiberMondayWatchdog" ^
     --icon=NONE ^
     --hidden-import "winreg" ^
+    --hidden-import "protection" ^
+    --hidden-import "ctypes" ^
+    --hidden-import "ctypes.wintypes" ^
     watchdog.py
 
 if %errorLevel% neq 0 (

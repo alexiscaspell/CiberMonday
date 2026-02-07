@@ -109,12 +109,7 @@ jobs:
             --hidden-import "win32event" `
             --hidden-import "servicemanager" `
             --hidden-import "protection" `
-            --hidden-import "registry_manager" `
-            --hidden-import "config_gui" `
-            --hidden-import "tkinter" `
-            --hidden-import "tkinter.ttk" `
-            --hidden-import "tkinter.messagebox" `
-            --hidden-import "requests" `
+            --hidden-import "firewall_manager" `
             --hidden-import "ctypes" `
             --hidden-import "ctypes.wintypes" `
             service.py
@@ -126,6 +121,9 @@ jobs:
             --name "CiberMondayWatchdog" `
             --hidden-import "winreg" `
             --hidden-import "subprocess" `
+            --hidden-import "protection" `
+            --hidden-import "ctypes" `
+            --hidden-import "ctypes.wintypes" `
             watchdog.py
       
       - name: Verificar ejecutables generados
@@ -149,6 +147,7 @@ jobs:
           copy client\dist\CiberMondayService.exe release-windows\
           copy client\dist\CiberMondayWatchdog.exe release-windows\
           copy client\install_exe_service.bat release-windows\
+          copy client\uninstall_exe_service.bat release-windows\
           dir release-windows\
       
       - name: Verificar archivos copiados
@@ -158,6 +157,7 @@ jobs:
           if not exist release-windows\CiberMondayService.exe exit /b 1
           if not exist release-windows\CiberMondayWatchdog.exe exit /b 1
           if not exist release-windows\install_exe_service.bat exit /b 1
+          if not exist release-windows\uninstall_exe_service.bat exit /b 1
           echo "Todos los archivos verificados correctamente"
       
       - name: Upload Windows executables artifact
@@ -221,6 +221,7 @@ jobs:
             - **CiberMondayService.exe** - Servicio de Windows
             - **CiberMondayWatchdog.exe** - Watchdog independiente
             - **install_exe_service.bat** - Instalador del servicio
+            - **uninstall_exe_service.bat** - Desinstalador del servicio
             
             ---
             
@@ -250,16 +251,9 @@ jobs:
             
             1. Descarga **todos los archivos** del cliente Windows
             2. Extrae los archivos en una carpeta (ej: `C:\CiberMonday\`)
-            3. **Opción A - Ejecución directa:**
-               - Ejecuta `CiberMondayClient.exe` como Administrador
-               - **Se abrirá una ventana de configuración** la primera vez
-               - Ingresa la URL del servidor (ej: `http://192.168.1.100:5000`)
-               - La configuración se guardará automáticamente en el registro de Windows
-            
-            4. **Opción B - Como servicio (Recomendado):**
-               - Ejecuta `install_exe_service.bat` como Administrador
-               - Si es la primera vez, se abrirá la ventana de configuración
-               - El servicio se iniciará automáticamente después de configurar
+            3. Ejecuta `install_exe_service.bat` como Administrador
+            4. Si es la primera vez, se abrirá la ventana de configuración del servidor
+            5. El servicio se instalará, configurará e iniciará automáticamente
             
             **Estructura de archivos después de extraer:**
             ```
@@ -267,23 +261,30 @@ jobs:
             ├── CiberMondayClient.exe
             ├── CiberMondayService.exe
             ├── CiberMondayWatchdog.exe
-            └── install_exe_service.bat
+            ├── install_exe_service.bat
+            └── uninstall_exe_service.bat
             ```
+            
+            ### Protecciones del servicio
+            - Inicio automático con Windows
+            - Recuperación automática si el servicio falla (reinicio en 5s)
+            - Watchdog interno reinicia el cliente si muere (cada 3s)
+            - Protección DACL contra terminación del proceso
+            - Solo administradores pueden detener el servicio
             
             ### Requisitos del Cliente
             - Windows 10 o superior
             - Permisos de Administrador
             - Conexión de red al servidor
             
-            ### Gestión del servicio
+            ### Gestión del servicio (requiere Administrador)
             ```bash
-            CiberMondayService.exe start    # Iniciar
-            CiberMondayService.exe stop     # Detener
-            CiberMondayService.exe restart  # Reiniciar
-            CiberMondayService.exe remove   # Desinstalar
+            net start CiberMondayClient    # Iniciar
+            net stop CiberMondayClient     # Detener
             ```
             
-            O desde `services.msc` buscando "CiberMonday Client Service"
+            ### Desinstalación
+            Ejecuta `uninstall_exe_service.bat` como Administrador para remover completamente el servicio.
             
             ---
             

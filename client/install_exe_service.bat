@@ -13,7 +13,7 @@ if %errorLevel% neq 0 (
     exit /b 1
 )
 
-REM Verificar que existe el ejecutable
+REM Verificar que existen los ejecutables necesarios
 if not exist "CiberMondayService.exe" (
     echo ERROR: No se encontro CiberMondayService.exe
     echo Por favor compila primero el ejecutable usando build_exe.bat
@@ -21,34 +21,96 @@ if not exist "CiberMondayService.exe" (
     exit /b 1
 )
 
-echo Configurando firewall de Windows...
-REM Intentar agregar regla del firewall usando Python si está disponible
-python firewall_manager.py add 2>nul
-if %errorLevel% neq 0 (
-    echo ADVERTENCIA: No se pudo agregar la regla del firewall automáticamente.
-    echo Puedes agregarla manualmente ejecutando: python firewall_manager.py add
-    echo O desde PowerShell como administrador:
-    echo netsh advfirewall firewall add rule name="CiberMonday Client UDP Discovery" dir=in action=allow protocol=UDP localport=5001 enable=yes
-    echo.
+if not exist "CiberMondayClient.exe" (
+    echo ERROR: No se encontro CiberMondayClient.exe
+    echo El servicio necesita CiberMondayClient.exe en la misma carpeta.
+    echo Por favor compila primero los ejecutables usando build_exe.bat
+    pause
+    exit /b 1
 )
 
-echo Instalando servicio de Windows...
+echo [1/6] Configurando firewall de Windows...
+REM Agregar regla del firewall para descubrimiento UDP
+netsh advfirewall firewall show rule name="CiberMonday Client UDP Discovery" >nul 2>&1
+if %errorLevel% neq 0 (
+    netsh advfirewall firewall add rule name="CiberMonday Client UDP Discovery" dir=in action=allow protocol=UDP localport=5001 enable=yes profile=any description="Permite que el cliente CiberMonday reciba broadcasts UDP de servidores en la red local" >nul 2>&1
+    if %errorLevel% equ 0 (
+        echo    Regla del firewall agregada exitosamente.
+    ) else (
+        echo    ADVERTENCIA: No se pudo agregar la regla del firewall automaticamente.
+    )
+) else (
+    echo    Regla del firewall ya existe.
+)
+
+REM Agregar regla del firewall para push notifications (puerto 5002)
+netsh advfirewall firewall show rule name="CiberMonday Client Push Notifications" >nul 2>&1
+if %errorLevel% neq 0 (
+    netsh advfirewall firewall add rule name="CiberMonday Client Push Notifications" dir=in action=allow protocol=TCP localport=5002 enable=yes profile=any description="Permite que el cliente CiberMonday reciba push notifications de servidores" >nul 2>&1
+    if %errorLevel% equ 0 (
+        echo    Regla de push notifications agregada exitosamente.
+    ) else (
+        echo    ADVERTENCIA: No se pudo agregar regla de push notifications.
+    )
+) else (
+    echo    Regla de push notifications ya existe.
+)
+
+echo.
+echo [2/6] Instalando servicio de Windows...
 CiberMondayService.exe install
 
 if %errorLevel% neq 0 (
-    echo ERROR: No se pudo instalar el servicio
+    echo ERROR: No se pudo instalar el servicio.
+    echo Si el servicio ya existe, intenta: CiberMondayService.exe remove
     pause
     exit /b 1
 )
 
 echo.
-echo Iniciando servicio...
+echo [3/6] Configurando inicio automatico...
+sc config CiberMondayClient start= auto >nul 2>&1
+if %errorLevel% equ 0 (
+    echo    Servicio configurado para inicio automatico.
+) else (
+    echo    ADVERTENCIA: No se pudo configurar inicio automatico.
+)
+
+echo.
+echo [4/6] Configurando recuperacion automatica...
+REM Si el servicio falla, reiniciar automaticamente:
+REM   1ra falla: reiniciar en 5 segundos
+REM   2da falla: reiniciar en 5 segundos
+REM   Fallas subsiguientes: reiniciar en 5 segundos
+REM   Resetear contador de fallas despues de 60 segundos sin fallas
+sc failure CiberMondayClient reset= 60 actions= restart/5000/restart/5000/restart/5000 >nul 2>&1
+if %errorLevel% equ 0 (
+    echo    Recuperacion automatica configurada (reinicio en 5s tras falla).
+) else (
+    echo    ADVERTENCIA: No se pudo configurar recuperacion automatica.
+)
+
+echo.
+echo [5/6] Restringiendo permisos del servicio...
+REM Configurar Security Descriptor para restringir quien puede controlar el servicio:
+REM   SY (SYSTEM): Control total
+REM   BA (Built-in Administrators): Control total
+REM   IU (Interactive Users): Solo lectura (no pueden detener/pausar/eliminar)
+REM   SU (Service Users): Solo lectura
+sc sdset CiberMondayClient D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU) >nul 2>&1
+if %errorLevel% equ 0 (
+    echo    Permisos del servicio restringidos (solo admin puede detenerlo).
+) else (
+    echo    ADVERTENCIA: No se pudieron restringir los permisos del servicio.
+)
+
+echo.
+echo [6/6] Iniciando servicio...
 CiberMondayService.exe start
 
 if %errorLevel% neq 0 (
-    echo ERROR: No se pudo iniciar el servicio
-    pause
-    exit /b 1
+    echo ADVERTENCIA: No se pudo iniciar el servicio automaticamente.
+    echo Intenta iniciarlo manualmente: net start CiberMondayClient
 )
 
 echo.
@@ -56,13 +118,19 @@ echo ========================================
 echo Servicio instalado exitosamente!
 echo ========================================
 echo.
+echo Protecciones activas:
+echo   - Inicio automatico con Windows
+echo   - Reinicio automatico si el servicio falla (cada 5 segundos)
+echo   - Solo administradores pueden detener el servicio
+echo   - Proteccion DACL contra terminacion del proceso
+echo   - Watchdog interno reinicia el cliente si muere
+echo.
 echo El servicio se iniciara automaticamente al arrancar Windows.
 echo Puedes gestionarlo desde "Servicios" (services.msc)
 echo.
-echo Comandos utiles:
-echo   CiberMondayService.exe start    - Iniciar servicio
-echo   CiberMondayService.exe stop     - Detener servicio
-echo   CiberMondayService.exe restart  - Reiniciar servicio
-echo   CiberMondayService.exe remove   - Desinstalar servicio
+echo Comandos de administracion (requieren admin):
+echo   net start CiberMondayClient    - Iniciar servicio
+echo   net stop CiberMondayClient     - Detener servicio
+echo   CiberMondayService.exe remove  - Desinstalar servicio
 echo.
 pause
