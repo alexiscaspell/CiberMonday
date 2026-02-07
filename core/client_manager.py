@@ -92,6 +92,7 @@ class ClientManager:
             'id': client_id,
             'name': name,
             'registered_at': datetime.now().isoformat(),
+            'last_seen': datetime.now().isoformat(),
             'total_time_used': 0,
             'is_active': False
         }
@@ -160,6 +161,27 @@ class ClientManager:
             'known_servers': self.get_servers()
         }
     
+    # Segundos sin contacto para considerar un cliente desconectado
+    CLIENT_OFFLINE_TIMEOUT = 60
+    
+    def _touch_client(self, client_id):
+        """Actualiza last_seen del cliente. Llamar en cada interacción."""
+        if client_id in self.clients_db:
+            self.clients_db[client_id]['last_seen'] = datetime.now().isoformat()
+    
+    def _is_client_connected(self, client_id):
+        """Verifica si el cliente se ha reportado recientemente."""
+        if client_id not in self.clients_db:
+            return False
+        last_seen = self.clients_db[client_id].get('last_seen')
+        if not last_seen:
+            return False
+        try:
+            elapsed = (datetime.now() - datetime.fromisoformat(last_seen)).total_seconds()
+            return elapsed < self.CLIENT_OFFLINE_TIMEOUT
+        except Exception:
+            return False
+    
     def get_clients(self):
         """
         Obtiene la lista de todos los clientes con sus sesiones y configuración.
@@ -171,10 +193,18 @@ class ClientManager:
         for client_id, client_data in self.clients_db.items():
             client_info = client_data.copy()
             
+            # Detectar si el cliente está conectado basado en last_seen
+            connected = self._is_client_connected(client_id)
+            client_info['connected'] = connected
+            
             if client_id in self.client_sessions:
                 session = self.client_sessions[client_id]
                 end_time = datetime.fromisoformat(session['end_time'])
                 remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
+                
+                # Si la sesión expiró, limpiarla
+                if remaining_seconds == 0:
+                    self.clients_db[client_id]['is_active'] = False
                 
                 client_info['current_session'] = {
                     'time_limit': session['time_limit'],
@@ -193,6 +223,7 @@ class ClientManager:
     def get_client_status(self, client_id):
         """
         Obtiene el estado de un cliente específico.
+        También actualiza last_seen ya que el cliente está haciendo una consulta.
         
         Returns:
             dict con info del cliente o None si no existe
@@ -200,7 +231,11 @@ class ClientManager:
         if client_id not in self.clients_db:
             return None
         
+        # El cliente está consultando, actualizar last_seen
+        self._touch_client(client_id)
+        
         client_data = self.clients_db[client_id].copy()
+        client_data['connected'] = self._is_client_connected(client_id)
         
         if client_id in self.client_sessions:
             session = self.client_sessions[client_id]
@@ -483,6 +518,9 @@ class ClientManager:
         """
         if client_id not in self.clients_db:
             return {'success': False, 'message': 'Cliente no encontrado'}
+        
+        # El cliente está reportando, actualizar last_seen
+        self._touch_client(client_id)
         
         # Verificar si hay un cambio de admin pendiente
         if self._has_pending_admin_change(client_id):

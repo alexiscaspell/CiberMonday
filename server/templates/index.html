@@ -830,8 +830,8 @@
                 // Actualizar estado activo/inactivo
                 const statusEl = document.querySelector(`#card-${client.id} .status`);
                 if (statusEl) {
-                    statusEl.className = `status ${client.is_active ? 'active' : 'inactive'}`;
-                    statusEl.textContent = client.is_active ? 'ACTIVO' : 'INACTIVO';
+                    statusEl.className = `status ${client.connected ? 'active' : 'inactive'}`;
+                    statusEl.textContent = client.connected ? 'CONECTADO' : 'DESCONECTADO';
                 }
                 
                 // Actualizar tiempo restante si tiene sesión
@@ -917,8 +917,8 @@
                                 </div>
                                 <div class="client-id">ID: ${client.id.substring(0, 8)}...</div>
                             </div>
-                            <span class="status ${client.is_active ? 'active' : 'inactive'}">
-                                ${client.is_active ? 'ACTIVO' : 'INACTIVO'}
+                            <span class="status ${client.connected ? 'active' : 'inactive'}">
+                                ${client.connected ? 'CONECTADO' : 'DESCONECTADO'}
                             </span>
                         </div>
                         
