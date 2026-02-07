@@ -19,7 +19,8 @@ data class Client(
 
 data class ClientConfig(
     val syncInterval: Int,
-    val alertThresholds: List<Int>
+    val alertThresholds: List<Int>,
+    val maxServerTimeouts: Int = 10
 )
 
 data class SessionInfo(
@@ -34,7 +35,7 @@ class ClientAdapter(
     private val onStopSession: (clientId: String) -> Unit,
     private val onDeleteClient: (clientId: String) -> Unit,
     private val onEditName: (clientId: String, newName: String) -> Unit,
-    private val onSaveConfig: (clientId: String, syncInterval: Int, alertThresholds: List<Int>) -> Unit
+    private val onSaveConfig: (clientId: String, syncInterval: Int, alertThresholds: List<Int>, maxServerTimeouts: Int) -> Unit
 ) : RecyclerView.Adapter<ClientAdapter.ClientViewHolder>() {
 
     private var clients: List<Client> = emptyList()
@@ -76,6 +77,7 @@ class ClientAdapter(
         private val configPanel: View = itemView.findViewById(R.id.configPanel)
         private val etSyncInterval: EditText = itemView.findViewById(R.id.etSyncInterval)
         private val etAlertThresholds: EditText = itemView.findViewById(R.id.etAlertThresholds)
+        private val etMaxServerTimeouts: EditText = itemView.findViewById(R.id.etMaxServerTimeouts)
         private val btnSaveConfig: Button = itemView.findViewById(R.id.btnSaveConfig)
         private val tvConfigStatus: TextView = itemView.findViewById(R.id.tvConfigStatus)
 
@@ -169,15 +171,18 @@ class ClientAdapter(
                 // Convertir segundos a minutos para mostrar
                 val alertMinutes = config.alertThresholds.map { it / 60 }
                 etAlertThresholds.setText(alertMinutes.joinToString(", "))
+                etMaxServerTimeouts.setText(config.maxServerTimeouts.toString())
             } else {
                 // Valores por defecto
                 etSyncInterval.setText("30")
                 etAlertThresholds.setText("10, 5, 2, 1")
+                etMaxServerTimeouts.setText("10")
             }
 
             btnSaveConfig.setOnClickListener {
                 val syncInterval = etSyncInterval.text.toString().toIntOrNull() ?: 30
                 val alertsText = etAlertThresholds.text.toString()
+                val maxServerTimeouts = etMaxServerTimeouts.text.toString().toIntOrNull() ?: 10
                 
                 // Parsear alertas (en minutos) y convertir a segundos
                 val alertMinutes = alertsText.split(",")
@@ -199,10 +204,17 @@ class ClientAdapter(
                     return@setOnClickListener
                 }
                 
+                if (maxServerTimeouts < 1 || maxServerTimeouts > 100) {
+                    tvConfigStatus.text = "Error: reintentos entre 1 y 100"
+                    tvConfigStatus.setTextColor(0xFFF44336.toInt())
+                    tvConfigStatus.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+                
                 // Convertir minutos a segundos
                 val alertThresholds = alertMinutes.map { it * 60 }
                 
-                onSaveConfig(client.id, syncInterval, alertThresholds)
+                onSaveConfig(client.id, syncInterval, alertThresholds, maxServerTimeouts)
                 
                 tvConfigStatus.text = "✓ Guardado"
                 tvConfigStatus.setTextColor(0xFF4CAF50.toInt())
@@ -278,7 +290,8 @@ class ClientAdapter(
                         } else {
                             listOf(600, 300, 120, 60) // Valores por defecto
                         }
-                        ClientConfig(syncInterval, alertThresholds)
+                        val maxServerTimeouts = configObj.optInt("max_server_timeouts", 10)
+                        ClientConfig(syncInterval, alertThresholds, maxServerTimeouts)
                     } else null
 
                     clients.add(Client(

@@ -200,7 +200,7 @@ class MainActivity : AppCompatActivity() {
             onStopSession = { clientId -> stopClientSession(clientId) },
             onDeleteClient = { clientId -> confirmDeleteClient(clientId) },
             onEditName = { clientId, newName -> editClientName(clientId, newName) },
-            onSaveConfig = { clientId, syncInterval, alertThresholds -> saveClientConfig(clientId, syncInterval, alertThresholds) }
+            onSaveConfig = { clientId, syncInterval, alertThresholds, maxServerTimeouts -> saveClientConfig(clientId, syncInterval, alertThresholds, maxServerTimeouts) }
         )
 
         recyclerClients.apply {
@@ -627,7 +627,7 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun saveClientConfig(clientId: String, syncInterval: Int, alertThresholds: List<Int>) {
+    private fun saveClientConfig(clientId: String, syncInterval: Int, alertThresholds: List<Int>, maxServerTimeouts: Int) {
         Thread {
             try {
                 val py = Python.getInstance()
@@ -641,7 +641,8 @@ class MainActivity : AppCompatActivity() {
                 val resultJson = module.callAttr("set_client_config", 
                     clientId, 
                     syncInterval, 
-                    alertArray
+                    alertArray,
+                    maxServerTimeouts
                 ).toString()
                 
                 val result = JSONObject(resultJson)

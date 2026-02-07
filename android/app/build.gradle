@@ -45,10 +45,17 @@ android {
     // Configurar la ubicación del código Python
     sourceSets {
         main {
-            python.srcDir "src/main/python"
+            python.srcDirs = ["src/main/python", "$buildDir/generated/python"]
         }
     }
 }
+
+// Copiar módulo core/ compartido al directorio de build para que Chaquopy lo incluya
+task copyCoreModule(type: Copy) {
+    from '../../core'
+    into "$buildDir/generated/python/core"
+}
+preBuild.dependsOn copyCoreModule
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'

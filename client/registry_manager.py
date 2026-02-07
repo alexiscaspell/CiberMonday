@@ -235,6 +235,7 @@ def save_config_to_registry(config):
             - sync_interval: Intervalo de sincronización con el servidor
             - alert_thresholds: Lista de segundos para alertas [600, 300, 120, 60]
             - custom_name: Nombre personalizado del cliente (None = usar nombre del equipo)
+            - max_server_timeouts: Cantidad de timeouts antes de eliminar un servidor (default: 10)
     
     Returns:
         bool: True si se guardó correctamente
@@ -250,7 +251,8 @@ def save_config_to_registry(config):
             'check_interval': config.get('check_interval', 5),
             'sync_interval': config.get('sync_interval', 30),
             'alert_thresholds': config.get('alert_thresholds', [600, 300, 120, 60]),
-            'custom_name': config.get('custom_name', None)
+            'custom_name': config.get('custom_name', None),
+            'max_server_timeouts': config.get('max_server_timeouts', 10)
         }
         
         json_data = json.dumps(config_data)
@@ -286,6 +288,7 @@ def get_config_from_registry():
             config_data.setdefault('sync_interval', 30)
             config_data.setdefault('alert_thresholds', [600, 300, 120, 60])
             config_data.setdefault('custom_name', None)
+            config_data.setdefault('max_server_timeouts', 10)
             
             return config_data
         except FileNotFoundError:
@@ -315,8 +318,23 @@ def save_servers_to_registry(servers_list):
         print(f"Error al guardar servidores en registro: {e}")
         return False
 
+def get_max_server_timeouts():
+    """
+    Obtiene el valor configurado de max_server_timeouts desde el registro.
+    Retorna el valor configurado o 10 como default.
+    """
+    try:
+        config = get_config_from_registry()
+        if config and 'max_server_timeouts' in config:
+            value = config['max_server_timeouts']
+            if isinstance(value, int) and value > 0:
+                return value
+    except:
+        pass
+    return 10  # Valor por defecto
+
 def get_servers_from_registry():
-    """Obtiene la lista de servidores conocidos del registro y elimina los que tienen 10+ timeouts."""
+    """Obtiene la lista de servidores conocidos del registro y elimina los que superan max_server_timeouts."""
     try:
         key = get_registry_key(create=False)
         if key is None:
@@ -331,8 +349,9 @@ def get_servers_from_registry():
         if not isinstance(servers_list, list):
             return []
         
-        # Filtrar servidores con 10+ timeouts y asegurar que todos tengan timeout_count
-        MAX_TIMEOUTS = 10
+        # Obtener el límite de timeouts desde la configuración
+        MAX_TIMEOUTS = get_max_server_timeouts()
+        
         filtered_servers = []
         removed_servers = []
         
@@ -371,13 +390,15 @@ def get_servers_from_registry():
 def increment_server_timeouts(server_urls):
     """
     Incrementa el contador de timeouts para los servidores especificados.
-    Si un servidor alcanza 10 timeouts, se elimina de la lista.
+    Si un servidor alcanza max_server_timeouts, se elimina de la lista.
     
     Args:
         server_urls: Lista de URLs de servidores que fallaron
     """
     if not server_urls:
         return
+    
+    MAX_TIMEOUTS = get_max_server_timeouts()
     
     try:
         servers_list = get_servers_from_registry()
@@ -389,7 +410,7 @@ def increment_server_timeouts(server_urls):
                 timeout_count = server.get('timeout_count', 0)
                 server['timeout_count'] = timeout_count + 1
                 updated = True
-                print(f"[Servidores] ⚠️  Servidor {server_url} - Timeouts: {server['timeout_count']}/10")
+                print(f"[Servidores] ⚠️  Servidor {server_url} - Timeouts: {server['timeout_count']}/{MAX_TIMEOUTS}")
         
         if updated:
             save_servers_to_registry(servers_list)

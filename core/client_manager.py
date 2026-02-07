@@ -1,5 +1,5 @@
 """
-CiberMonday - Gestor de Clientes
+CiberMonday - Gestor de Clientes y Servidores
 Lógica de negocio pura, sin dependencias de Flask/HTTP.
 Reutilizable por el servidor web y la app Android.
 """
@@ -8,28 +8,43 @@ from datetime import datetime, timedelta
 import uuid
 import json
 import socket
+import hashlib
+import urllib.request
+import urllib.error
+from urllib.parse import urlparse
 
 
 class ClientManager:
-    """Gestiona los clientes del ciber y sus sesiones de tiempo."""
+    """
+    Gestiona los clientes del ciber, sus sesiones de tiempo,
+    configuración y la lista de servidores conocidos.
+    """
     
     DEFAULT_CONFIG = {
         'sync_interval': 30,
         'alert_thresholds': [600, 300, 120, 60],
         'custom_name': None,
+        'max_server_timeouts': 10,
     }
     
     def __init__(self):
         self.clients_db = {}
         self.client_sessions = {}
         self.client_configs = {}
+        self.servers_db = {}
+        self.server_config = {
+            'broadcast_interval': 1
+        }
+    
+    # ==================== CLIENT MANAGEMENT ====================
     
     def _generate_client_id(self):
         """Genera un ID único para cada cliente."""
         return str(uuid.uuid4())
     
     def register_client(self, name='Cliente Sin Nombre', client_id=None, 
-                        session_data=None, config=None):
+                        session_data=None, config=None, known_servers=None,
+                        client_ip=None, diagnostic_port=None):
         """
         Registra un nuevo cliente o re-registra uno existente.
         
@@ -38,15 +53,18 @@ class ClientManager:
             client_id: ID existente para re-registro (opcional)
             session_data: Datos de sesión activa para restaurar (opcional)
             config: Configuración del cliente (opcional)
+            known_servers: Lista de servidores conocidos por el cliente (opcional)
+            client_ip: IP del cliente para notificaciones push (opcional)
+            diagnostic_port: Puerto de diagnóstico del cliente (opcional)
             
         Returns:
-            dict con success, client_id, message, session_restored, config
+            dict con success, client_id, message, session_restored, config, known_servers
         """
         is_reregister = client_id is not None
         if not is_reregister:
             client_id = self._generate_client_id()
         
-        self.clients_db[client_id] = {
+        client_data = {
             'id': client_id,
             'name': name,
             'registered_at': datetime.now().isoformat(),
@@ -54,12 +72,21 @@ class ClientManager:
             'is_active': False
         }
         
+        # Guardar IP y puerto de diagnóstico si se proporcionan
+        if client_ip:
+            client_data['client_ip'] = client_ip
+        if diagnostic_port:
+            client_data['diagnostic_port'] = diagnostic_port
+        
+        self.clients_db[client_id] = client_data
+        
         # Configuración
         if config:
             self.client_configs[client_id] = {
                 'sync_interval': config.get('sync_interval', self.DEFAULT_CONFIG['sync_interval']),
                 'alert_thresholds': config.get('alert_thresholds', self.DEFAULT_CONFIG['alert_thresholds']),
                 'custom_name': config.get('custom_name'),
+                'max_server_timeouts': config.get('max_server_timeouts', self.DEFAULT_CONFIG['max_server_timeouts']),
             }
             if self.client_configs[client_id]['custom_name']:
                 self.clients_db[client_id]['name'] = self.client_configs[client_id]['custom_name']
@@ -84,12 +111,29 @@ class ClientManager:
                 self.clients_db[client_id]['is_active'] = True
                 session_restored = True
         
+        # Registrar servidores conocidos del cliente
+        if known_servers:
+            for server in known_servers:
+                server_url = server.get('url')
+                if server_url:
+                    self.register_server(server_url, server.get('ip'), server.get('port'))
+        
+        # Auto-registrar el servidor local
+        local_ip = self.get_local_ip()
+        if local_ip and local_ip != "127.0.0.1":
+            local_url = f"http://{local_ip}:5000"
+            self.register_server(local_url, local_ip, 5000)
+        
+        message = 'Cliente re-registrado' if is_reregister else 'Cliente registrado'
+        print(f"[Registro] {message}: {client_id[:8]}... nombre={name}")
+        
         return {
             'success': True,
             'client_id': client_id,
-            'message': 'Cliente re-registrado' if is_reregister else 'Cliente registrado',
+            'message': message,
             'session_restored': session_restored,
-            'config': self.client_configs.get(client_id, self.DEFAULT_CONFIG)
+            'config': self.client_configs.get(client_id, self.DEFAULT_CONFIG),
+            'known_servers': self.get_servers()
         }
     
     def get_clients(self):
@@ -234,13 +278,16 @@ class ClientManager:
         
         return {'success': True, 'message': 'Cliente eliminado'}
     
+    # ==================== CLIENT CONFIG ====================
+    
     def get_client_config(self, client_id):
         """Obtiene la configuración de un cliente."""
         if client_id not in self.clients_db:
             return None
         return self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
     
-    def set_client_config(self, client_id, sync_interval=None, alert_thresholds=None, custom_name=None):
+    def set_client_config(self, client_id, sync_interval=None, alert_thresholds=None,
+                          custom_name=None, max_server_timeouts=None):
         """
         Modifica la configuración de un cliente.
         
@@ -253,13 +300,16 @@ class ClientManager:
         current_config = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
         
         if sync_interval is not None:
+            sync_interval = int(sync_interval)
             if sync_interval < 5:
-                return {'success': False, 'message': 'El intervalo mínimo es 5 segundos'}
+                return {'success': False, 'message': 'El intervalo de sincronización mínimo es 5 segundos'}
             current_config['sync_interval'] = sync_interval
         
         if alert_thresholds is not None:
             if isinstance(alert_thresholds, list) and all(isinstance(t, int) and t > 0 for t in alert_thresholds):
                 current_config['alert_thresholds'] = sorted(alert_thresholds, reverse=True)
+            else:
+                return {'success': False, 'message': 'Los umbrales de alerta deben ser una lista de números positivos'}
         
         if custom_name is not None:
             if custom_name:
@@ -269,13 +319,25 @@ class ClientManager:
             else:
                 current_config['custom_name'] = None
         
+        if max_server_timeouts is not None:
+            max_server_timeouts = int(max_server_timeouts)
+            if max_server_timeouts < 1:
+                return {'success': False, 'message': 'Los reintentos antes de eliminar servidor deben ser al menos 1'}
+            if max_server_timeouts > 100:
+                return {'success': False, 'message': 'Los reintentos antes de eliminar servidor no deben ser mayor a 100'}
+            current_config['max_server_timeouts'] = max_server_timeouts
+        
         self.client_configs[client_id] = current_config
+        
+        print(f"[Config] Cliente {client_id[:8]}... configuración actualizada: {current_config}")
         
         return {
             'success': True,
             'message': 'Configuración actualizada',
             'config': current_config
         }
+    
+    # ==================== SESSION REPORTING ====================
     
     def report_session(self, client_id, remaining_seconds, time_limit_seconds=None):
         """
@@ -312,6 +374,157 @@ class ClientManager:
             }
         }
     
+    # ==================== SERVER MANAGEMENT ====================
+    
+    def register_server(self, server_url, server_ip=None, server_port=None):
+        """
+        Registra o actualiza un servidor conocido.
+        
+        Returns:
+            dict con success, server_id
+        """
+        server_id = hashlib.md5(server_url.encode()).hexdigest()[:16]
+        
+        # Parsear URL si no se proporcionan IP y puerto
+        if not server_ip or not server_port:
+            try:
+                parsed = urlparse(server_url)
+                server_ip = server_ip or parsed.hostname or "unknown"
+                server_port = server_port or parsed.port or 5000
+            except Exception:
+                server_ip = server_ip or "unknown"
+                server_port = server_port or 5000
+        
+        self.servers_db[server_id] = {
+            'id': server_id,
+            'url': server_url,
+            'ip': server_ip,
+            'port': server_port,
+            'last_seen': datetime.now().isoformat(),
+            'is_active': True
+        }
+        
+        return {'success': True, 'server_id': server_id}
+    
+    def get_servers(self):
+        """Obtiene la lista de servidores conocidos."""
+        servers_list = []
+        for server_id, server_data in self.servers_db.items():
+            servers_list.append(server_data.copy())
+        return servers_list
+    
+    def sync_servers(self, servers_list):
+        """
+        Sincroniza la lista de servidores con otros servidores.
+        
+        Args:
+            servers_list: Lista de servidores recibida de otro servidor/cliente
+            
+        Returns:
+            Lista combinada de servidores conocidos
+        """
+        for server_data in servers_list:
+            server_url = server_data.get('url')
+            if server_url:
+                self.register_server(
+                    server_url,
+                    server_data.get('ip'),
+                    server_data.get('port')
+                )
+        
+        self._sync_with_other_servers()
+        return self.get_servers()
+    
+    def sync_clients_from_remote(self, clients_list):
+        """
+        Registra clientes recibidos de otros servidores si no existen localmente.
+        
+        Args:
+            clients_list: Lista de clientes de otro servidor
+        """
+        for client_data in clients_list:
+            client_id = client_data.get('id')
+            if client_id and client_id not in self.clients_db:
+                self.clients_db[client_id] = {
+                    'id': client_id,
+                    'name': client_data.get('name', 'Cliente Remoto'),
+                    'registered_at': datetime.now().isoformat(),
+                    'total_time_used': 0,
+                    'is_active': False
+                }
+                if client_id not in self.client_configs:
+                    self.client_configs[client_id] = self.DEFAULT_CONFIG.copy()
+    
+    def _sync_with_other_servers(self):
+        """Sincroniza información con otros servidores conocidos."""
+        local_ip = self.get_local_ip()
+        if local_ip == "127.0.0.1" or not local_ip:
+            return
+        
+        local_server_url = f"http://{local_ip}:5000"
+        
+        sync_data = {
+            'servers': self.get_servers(),
+            'clients': self.get_clients()
+        }
+        
+        for server_id, server_data in list(self.servers_db.items()):
+            server_url = server_data.get('url')
+            if not server_url or server_url == local_server_url:
+                continue
+            
+            try:
+                req = urllib.request.Request(
+                    f"{server_url}/api/sync-servers",
+                    data=json.dumps(sync_data).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'}
+                )
+                
+                with urllib.request.urlopen(req, timeout=3) as response:
+                    if response.status == 200:
+                        response_data = json.loads(response.read().decode('utf-8'))
+                        if response_data.get('known_servers'):
+                            for other_server in response_data['known_servers']:
+                                if other_server.get('url') != local_server_url:
+                                    self.register_server(
+                                        other_server.get('url'),
+                                        other_server.get('ip'),
+                                        other_server.get('port')
+                                    )
+            except Exception:
+                pass
+    
+    # ==================== SERVER CONFIG ====================
+    
+    def get_server_config(self):
+        """Obtiene la configuración del servidor."""
+        return self.server_config.copy()
+    
+    def set_server_config(self, broadcast_interval=None):
+        """
+        Actualiza la configuración del servidor.
+        
+        Returns:
+            dict con success, config, message
+        """
+        if broadcast_interval is not None:
+            broadcast_interval = int(broadcast_interval)
+            if broadcast_interval < 1:
+                return {
+                    'success': False,
+                    'message': 'El intervalo de broadcast debe ser al menos 1 segundo'
+                }
+            self.server_config['broadcast_interval'] = broadcast_interval
+            print(f"[Config] Intervalo de broadcast actualizado a {broadcast_interval} segundos")
+        
+        return {
+            'success': True,
+            'config': self.server_config.copy(),
+            'message': 'Configuración actualizada correctamente'
+        }
+    
+    # ==================== UTILITIES ====================
+    
     def get_stats(self):
         """Obtiene estadísticas generales."""
         return {
@@ -331,13 +544,29 @@ class ClientManager:
         except Exception:
             return "127.0.0.1"
     
-    # Métodos para serialización (útil para persistencia)
+    @staticmethod
+    def get_broadcast_address():
+        """Obtiene la dirección de broadcast de la red local."""
+        try:
+            local_ip = ClientManager.get_local_ip()
+            if local_ip == "127.0.0.1":
+                return "255.255.255.255"
+            parts = local_ip.split('.')
+            parts[3] = '255'
+            return '.'.join(parts)
+        except Exception:
+            return "255.255.255.255"
+    
+    # ==================== SERIALIZATION ====================
+    
     def to_json(self):
         """Serializa el estado a JSON."""
         return json.dumps({
             'clients_db': self.clients_db,
             'client_sessions': self.client_sessions,
-            'client_configs': self.client_configs
+            'client_configs': self.client_configs,
+            'servers_db': self.servers_db,
+            'server_config': self.server_config
         })
     
     def from_json(self, json_str):
@@ -346,3 +575,5 @@ class ClientManager:
         self.clients_db = data.get('clients_db', {})
         self.client_sessions = data.get('client_sessions', {})
         self.client_configs = data.get('client_configs', {})
+        self.servers_db = data.get('servers_db', {})
+        self.server_config = data.get('server_config', {'broadcast_interval': 1})

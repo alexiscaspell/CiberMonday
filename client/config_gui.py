@@ -32,7 +32,7 @@ def show_config_window():
     # Crear ventana principal
     root = tk.Tk()
     root.title("CiberMonday - Configuración del Cliente")
-    root.geometry("550x450")
+    root.geometry("550x530")
     root.resizable(False, False)
     
     # Centrar ventana
@@ -161,6 +161,31 @@ def show_config_window():
     )
     alerts_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
     
+    # Frame para max server timeouts
+    timeouts_frame = ttk.Frame(main_frame)
+    timeouts_frame.pack(fill=tk.X, pady=10)
+    
+    # Etiqueta para timeouts
+    timeouts_label = ttk.Label(timeouts_frame, text="Reintentos antes de eliminar servidor:")
+    timeouts_label.pack(anchor=tk.W, pady=(0, 5))
+    
+    # Campo de entrada para timeouts
+    timeouts_var = tk.StringVar()
+    current_timeouts = current_config.get('max_server_timeouts', 10) if current_config else 10
+    timeouts_var.set(str(current_timeouts))
+    
+    timeouts_entry = ttk.Entry(timeouts_frame, textvariable=timeouts_var, width=10, font=("Arial", 10))
+    timeouts_entry.pack(side=tk.LEFT, pady=(0, 5))
+    
+    # Descripción de timeouts
+    timeouts_desc = tk.Label(
+        timeouts_frame,
+        text="(Cantidad de fallos consecutivos antes de descartar un servidor. Recomendado: 10)",
+        font=("Arial", 8),
+        fg="gray"
+    )
+    timeouts_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
+    
     # Frame para botones
     button_frame = ttk.Frame(main_frame)
     button_frame.pack(fill=tk.X, pady=(20, 0))
@@ -207,12 +232,26 @@ def show_config_window():
             messagebox.showerror("Error", "Los umbrales de alerta deben ser números separados por comas (ej: 10, 5, 2, 1)")
             return
         
+        # Validar max server timeouts
+        try:
+            max_server_timeouts = int(timeouts_var.get().strip())
+            if max_server_timeouts < 1:
+                messagebox.showerror("Error", "Los reintentos antes de eliminar servidor deben ser al menos 1")
+                return
+            if max_server_timeouts > 100:
+                messagebox.showerror("Error", "Los reintentos antes de eliminar servidor no deben ser mayor a 100")
+                return
+        except ValueError:
+            messagebox.showerror("Error", "Los reintentos antes de eliminar servidor deben ser un número válido")
+            return
+        
         # Guardar configuración
         config = {
             'server_url': server_url,
             'check_interval': 5,  # Mantener para compatibilidad
             'sync_interval': sync_interval,
-            'alert_thresholds': alert_thresholds
+            'alert_thresholds': alert_thresholds,
+            'max_server_timeouts': max_server_timeouts
         }
         
         if REGISTRY_AVAILABLE:

@@ -412,7 +412,11 @@ def lock_workstation_alternative():
 
 
 def get_client_id():
-    """Obtiene el ID del cliente desde registro, archivo o lo genera si no existe"""
+    """
+    Obtiene el ID del cliente desde registro, archivo, servidor o lo genera localmente.
+    NUNCA retorna None - si no puede registrarse con un servidor, genera un ID local
+    y lo intentará registrar más adelante durante la sincronización.
+    """
     # Intentar obtener del registro primero
     if REGISTRY_AVAILABLE:
         client_id = get_client_id_from_registry()
@@ -430,8 +434,30 @@ def get_client_id():
                     save_client_id_to_registry(client_id)
                 return client_id
     
-    # Si no existe, registrar nuevo cliente
-    return register_new_client()
+    # Intentar registrar con el servidor
+    client_id = register_new_client()
+    if client_id:
+        return client_id
+    
+    # Si no se pudo registrar con ningún servidor, generar un ID local
+    # El cliente se registrará con un servidor cuando uno esté disponible
+    import uuid
+    client_id = str(uuid.uuid4())
+    print(f"[Inicio] No se pudo contactar ningún servidor. Generando ID local: {client_id}")
+    print(f"[Inicio] El cliente se registrará con un servidor cuando uno esté disponible.")
+    
+    # Guardar el ID local
+    try:
+        client_id_file_path = os.path.join(BASE_PATH, os.path.basename(CLIENT_ID_FILE))
+        with open(client_id_file_path, 'w') as f:
+            f.write(client_id)
+    except Exception as e:
+        print(f"[Inicio] Advertencia: No se pudo guardar ID en archivo: {e}")
+    
+    if REGISTRY_AVAILABLE:
+        save_client_id_to_registry(client_id)
+    
+    return client_id
 
 def get_available_servers():
     """
@@ -594,7 +620,7 @@ def register_new_client(existing_client_id=None):
         available_server = find_available_server(servers_list)
         
         if not available_server:
-            print("Error: No hay servidores disponibles")
+            print("[Registro] No hay servidores disponibles para registrar el cliente")
             return None
         
         response = requests.post(
@@ -681,6 +707,14 @@ def apply_server_config(server_config):
                 else:
                     print(f"[Config] Nombre personalizado eliminado (se usará nombre del equipo)")
                 current_config['custom_name'] = new_name
+        
+        if 'max_server_timeouts' in server_config:
+            new_max = server_config['max_server_timeouts']
+            if isinstance(new_max, int) and new_max > 0:
+                old_max = current_config.get('max_server_timeouts', 10)
+                if new_max != old_max:
+                    print(f"[Config] Reintentos máx. antes de eliminar servidor: {old_max} -> {new_max}")
+                    current_config['max_server_timeouts'] = new_max
         
         # Guardar configuración actualizada en el registro
         # Preservar server_url del registro local
@@ -788,7 +822,7 @@ def sync_with_all_servers(client_id):
     servers_list = get_available_servers()
     
     if not servers_list:
-        print("[Sincronización] No hay servidores disponibles")
+        print("[Sincronización] No hay servidores conocidos. Esperando descubrimiento por broadcast...")
         return False
     
     print(f"[Sincronización] Sincronizando con {len(servers_list)} servidor(es) conocido(s)...")
@@ -964,179 +998,334 @@ def sync_with_all_servers(client_id):
 def sync_with_server(client_id):
     """
     Sincroniza con TODOS los servidores conocidos.
-    Mantiene compatibilidad con código existente.
+    Mantiene compatibilidad con código existente (usado por sync_with_all_servers).
+    NOTA: El SyncManager usa su propia lógica de sincronización con UN solo servidor.
     """
     return sync_with_all_servers(client_id)
+
+class SyncManager:
+    """
+    Gestor de sincronización que corre en un hilo dedicado.
+    Cada N segundos (sync_interval), busca UN servidor disponible y sincroniza con él.
     
-    try:
-        response = requests.get(
-            f"{available_server}/api/client/{client_id}/status",
-            timeout=10
-        )
+    Responsabilidades:
+    - Encontrar un servidor disponible
+    - Obtener el estado del cliente desde el servidor
+    - Actualizar el registro local con la sesión del servidor
+    - Registrar/re-registrar el cliente si es necesario
+    - Sincronizar lista de servidores conocidos
+    - Aplicar configuración del servidor
+    - Manejar fallos sin romper el cliente
+    """
+    
+    def __init__(self, client_id, sync_interval):
+        self._client_id = client_id
+        self._sync_interval = sync_interval
+        self._client_registered = False
+        self._consecutive_failures = 0
+        self._last_successful_server = None
+        self._running = True
+        self._thread = None
+        self._lock = threading.Lock()
+    
+    @property
+    def client_id(self):
+        """Client ID (thread-safe read)."""
+        with self._lock:
+            return self._client_id
+    
+    @client_id.setter
+    def client_id(self, value):
+        """Update client ID (thread-safe write)."""
+        with self._lock:
+            self._client_id = value
+    
+    @property
+    def client_registered(self):
+        with self._lock:
+            return self._client_registered
+    
+    @property
+    def consecutive_failures(self):
+        with self._lock:
+            return self._consecutive_failures
+    
+    @property
+    def last_successful_server(self):
+        with self._lock:
+            return self._last_successful_server
+    
+    def start(self):
+        """Inicia el hilo de sincronización."""
+        self._thread = threading.Thread(target=self._sync_loop, daemon=True)
+        self._thread.start()
+        print(f"[SyncManager] Hilo de sincronización iniciado (intervalo: {self._sync_interval}s)")
+    
+    def stop(self):
+        """Señala al hilo de sincronización que se detenga."""
+        self._running = False
+    
+    def _sync_loop(self):
+        """Loop principal del hilo de sincronización."""
+        # Primera sincronización inmediata al arrancar
+        self._do_sync()
         
-        if response.status_code == 404:
-            # Cliente no encontrado - intentar re-registrarse CON EL MISMO ID
-            # Esto permite que el servidor recupere la sesión del cliente
-            print(f"\n[Re-registro] Cliente no encontrado en {available_server}. Intentando re-registrarse con ID existente...")
-            new_client_id = register_new_client(existing_client_id=client_id)
-            if new_client_id:
-                print(f"[Re-registro] Cliente re-registrado exitosamente. ID: {new_client_id}")
-                # Retornar el ID (debería ser el mismo) para que se use en el loop principal
-                return new_client_id
+        while self._running:
+            # Dormir en intervalos cortos para poder responder al stop rápido
+            for _ in range(int(self._sync_interval)):
+                if not self._running:
+                    return
+                time.sleep(1)
+            
+            self._do_sync()
+    
+    def _do_sync(self):
+        """Realiza un ciclo de sincronización con UN servidor disponible."""
+        try:
+            client_id = self.client_id
+            
+            # Obtener lista de servidores conocidos
+            servers_list = get_available_servers()
+            
+            if not servers_list:
+                with self._lock:
+                    self._consecutive_failures += 1
+                if self._consecutive_failures == 1:
+                    print("[SyncManager] No hay servidores conocidos. Esperando descubrimiento por broadcast...")
+                elif self._consecutive_failures % 5 == 0:
+                    print(f"[SyncManager] {self._consecutive_failures} ciclos sin servidores. Seguirá reintentando...")
+                return
+            
+            # Encontrar UN servidor disponible
+            server_url = find_available_server(servers_list)
+            
+            if not server_url:
+                with self._lock:
+                    self._consecutive_failures += 1
+                if self._consecutive_failures == 1:
+                    print(f"[SyncManager] Ningún servidor respondió. Reintentando en {self._sync_interval}s...")
+                elif self._consecutive_failures % 5 == 0:
+                    print(f"[SyncManager] {self._consecutive_failures} intentos fallidos consecutivos.")
+                
+                # Si el cliente no se ha registrado aún, intentar registrarlo
+                if not self._client_registered:
+                    self._try_register(client_id)
+                return
+            
+            # Sincronizar con ese servidor
+            success = self._sync_with_server(client_id, server_url)
+            
+            if success:
+                with self._lock:
+                    self._consecutive_failures = 0
+                    self._last_successful_server = server_url
+                    self._client_registered = True
             else:
-                print("[Re-registro] Error: No se pudo re-registrar el cliente")
-                return False
+                with self._lock:
+                    self._consecutive_failures += 1
         
-        if response.status_code != 200:
-            print(f"Error al obtener estado desde {available_server}: {response.status_code}")
-            # Intentar con otro servidor si hay más disponibles
-            other_servers = [s for s in servers_list if s.get('url') != available_server]
-            if other_servers:
-                print(f"[Reintento] Intentando con otro servidor...")
-                return sync_with_server(client_id)  # Recursión con otro servidor
-            return False
+        except Exception as e:
+            with self._lock:
+                self._consecutive_failures += 1
+            print(f"[SyncManager] Error durante sincronización: {e}")
+            if self._consecutive_failures % 5 == 0:
+                print(f"[SyncManager] {self._consecutive_failures} intentos fallidos. El cliente sigue funcionando offline.")
+    
+    def _try_register(self, client_id):
+        """Intenta registrar el cliente con algún servidor disponible."""
+        try:
+            print(f"[SyncManager] Cliente aún no registrado. Intentando registrar...")
+            new_id = register_new_client(existing_client_id=client_id)
+            if new_id:
+                self.client_id = new_id
+                with self._lock:
+                    self._client_registered = True
+                    self._consecutive_failures = 0
+                print(f"[SyncManager] ✅ Cliente registrado exitosamente: {new_id}")
+        except Exception as e:
+            print(f"[SyncManager] Error al intentar registrar: {e}")
+    
+    def _sync_with_server(self, client_id, server_url):
+        """
+        Sincroniza con UN servidor específico.
+        Retorna True si la sincronización fue exitosa.
+        """
+        global last_known_remaining
         
-        data = response.json()
-        client_data = data.get('client', {})
-        
-        # Aplicar configuración del servidor si está disponible
-        server_config = client_data.get('config')
-        if server_config and REGISTRY_AVAILABLE:
-            apply_server_config(server_config)
-        
-        session = client_data.get('session')
-        
-        if session is None:
-            # El servidor no tiene sesión para este cliente
-            # Verificar si el cliente tiene una sesión válida localmente
-            if REGISTRY_AVAILABLE:
-                local_session = get_session_info()
-                if local_session and not local_session['is_expired'] and local_session['remaining_seconds'] > 0:
-                    # El cliente tiene una sesión válida - reportarla al servidor
-                    print(f"\n[Sincronización] Servidor {available_server} sin sesión, pero cliente tiene {local_session['remaining_seconds']}s restantes")
-                    print(f"[Sincronización] Reportando sesión al servidor...")
-                    if report_session_to_server(client_id, server_url=available_server):
-                        # Sesión reportada exitosamente, no borrar registro local
-                        return True
-                    else:
-                        # No se pudo reportar, pero NO borrar la sesión local
-                        # El cliente debe seguir funcionando con su tiempo local
-                        print(f"[Sincronización] No se pudo reportar al servidor, manteniendo sesión local")
-                        return False
+        try:
+            print(f"[SyncManager] Sincronizando con {server_url}...")
+            
+            # Obtener estado del cliente desde el servidor
+            response = requests.get(
+                f"{server_url}/api/client/{client_id}/status",
+                timeout=10
+            )
+            
+            if response.status_code == 404:
+                # Cliente no encontrado - re-registrar con el mismo ID
+                print(f"[SyncManager] Cliente no encontrado en {server_url}. Re-registrando...")
+                new_id = register_new_client(existing_client_id=client_id)
+                if new_id:
+                    self.client_id = new_id
+                    print(f"[SyncManager] ✅ Re-registrado en {server_url}")
+                    if REGISTRY_AVAILABLE:
+                        reset_server_timeout_count(server_url)
+                    return True
                 else:
-                    # No hay sesión válida localmente, limpiar registro
-                    clear_session_from_registry()
-            return False
+                    print(f"[SyncManager] ❌ Error al re-registrar en {server_url}")
+                    return False
+            
+            if response.status_code != 200:
+                print(f"[SyncManager] ⚠️  Error al obtener estado desde {server_url}: {response.status_code}")
+                if REGISTRY_AVAILABLE:
+                    increment_server_timeouts([server_url])
+                return False
+            
+            # Resetear contador de timeouts al tener éxito
+            if REGISTRY_AVAILABLE:
+                reset_server_timeout_count(server_url)
+            
+            data = response.json()
+            client_data = data.get('client', {})
+            
+            # Actualizar lista de servidores conocidos si el servidor la envía
+            if 'known_servers' in data and REGISTRY_AVAILABLE:
+                self._update_servers_from_response(data, server_url)
+            
+            # Aplicar configuración del servidor si está disponible
+            server_config = client_data.get('config')
+            if server_config and REGISTRY_AVAILABLE:
+                apply_server_config(server_config)
+            
+            # Procesar datos de sesión
+            session = client_data.get('session')
+            if session:
+                self._update_session_from_server(session, server_url)
+            else:
+                # Servidor no tiene sesión - verificar si el cliente tiene una localmente
+                self._handle_no_server_session(client_id, server_url)
+            
+            # Enviar lista de servidores conocidos al servidor
+            if REGISTRY_AVAILABLE:
+                known_servers = get_servers_from_registry()
+                if known_servers:
+                    self._send_servers_to_server(known_servers, server_url)
+            
+            print(f"[SyncManager] ✅ Sincronización exitosa con {server_url}")
+            return True
         
-        # Verificar que los datos de sesión sean válidos
+        except requests.exceptions.RequestException as e:
+            print(f"[SyncManager] ❌ Error de conexión con {server_url}: {e}")
+            if REGISTRY_AVAILABLE:
+                increment_server_timeouts([server_url])
+            return False
+        except Exception as e:
+            print(f"[SyncManager] ❌ Error inesperado con {server_url}: {e}")
+            return False
+    
+    def _update_servers_from_response(self, data, server_url):
+        """Actualiza la lista de servidores conocidos desde la respuesta del servidor."""
+        try:
+            received_servers = data.get('known_servers', [])
+            if not received_servers:
+                return
+            
+            current_servers = get_servers_from_registry()
+            current_urls = {s.get('url') for s in current_servers}
+            
+            for server in received_servers:
+                server_url_received = server.get('url')
+                if not server_url_received:
+                    continue
+                
+                if server_url_received in current_urls:
+                    # Actualizar last_seen y resetear timeout_count
+                    for s in current_servers:
+                        if s.get('url') == server_url_received:
+                            s['last_seen'] = datetime.now().isoformat()
+                            s['timeout_count'] = 0
+                            break
+                else:
+                    # Agregar nuevo servidor
+                    current_servers.append({
+                        'url': server_url_received,
+                        'ip': server.get('ip'),
+                        'port': server.get('port', 5000),
+                        'last_seen': datetime.now().isoformat(),
+                        'timeout_count': 0
+                    })
+            
+            save_servers_to_registry(current_servers)
+            print(f"[SyncManager] ✅ Lista de servidores actualizada desde {server_url}")
+        except Exception as e:
+            print(f"[SyncManager] ⚠️  Error al actualizar servidores: {e}")
+    
+    def _update_session_from_server(self, session, server_url):
+        """Actualiza la sesión local desde los datos del servidor."""
+        global last_known_remaining
+        
         time_limit = session.get('time_limit_seconds', 0)
         start_time = session.get('start_time')
         end_time = session.get('end_time')
-        
-        if not all([time_limit, start_time, end_time]):
-            print("Advertencia: Datos de sesión incompletos del servidor")
-            return False
-        
-        # CÁLCULO SIMPLE: El cliente guarda su propia hora local
-        # Cuando el servidor dice "tienes X segundos restantes", el cliente guarda:
-        # end_time_local = hora_actual_cliente + X_segundos
-        # Así, el cálculo siempre será correcto: end_time_local - hora_actual_cliente = X_segundos
-        from datetime import datetime, timedelta
-        now_local = datetime.now()
         remaining_from_server = session.get('remaining_seconds', 0)
         
-        # Calcular end_time usando la hora local del cliente
-        end_time_local = now_local + timedelta(seconds=remaining_from_server)
+        if not all([time_limit, start_time, end_time]):
+            print(f"[SyncManager] ⚠️  Datos de sesión incompletos desde {server_url}")
+            return
         
-        # Calcular start_time local para referencia (no es crítico para el cálculo)
+        now_local = datetime.now()
+        end_time_local = now_local + timedelta(seconds=remaining_from_server)
         elapsed_seconds = time_limit - remaining_from_server
         start_time_local = now_local - timedelta(seconds=elapsed_seconds)
         
-        print(f"\n[Sincronización] Guardando en registro local:")
-        print(f"  - Tiempo establecido: {time_limit}s ({time_limit//60} min)")
-        print(f"  - Tiempo restante (servidor): {remaining_from_server}s")
-        print(f"  - Hora actual (cliente): {now_local.isoformat()}")
-        print(f"  - End time (local, guardado): {end_time_local.isoformat()}")
-        print(f"  - El cliente bloqueará cuando llegue a: {end_time_local.isoformat()}")
-        
-        # Usar los valores calculados localmente
-        end_time = end_time_local.isoformat()
-        start_time = start_time_local.isoformat()
-        
-        # Detectar si es una nueva sesión o cambio drástico de tiempo
-        # para resetear las alertas apropiadamente
-        if last_known_remaining is None or abs(last_known_remaining - remaining_from_server) > 120:
-            # Nueva sesión o cambio drástico - resetear alertas
-            reset_alerts_for_new_session(remaining_from_server)
-            print(f"[Alertas] Reset de alertas. Tiempo restante: {remaining_from_server}s")
-        
-        # Actualizar registro local con información del servidor
         if REGISTRY_AVAILABLE:
-            # IMPORTANTE: Limpiar completamente la sesión anterior antes de guardar nueva
-            # Esto asegura que no queden datos antiguos corruptos
-            clear_session_from_registry()
-            
-            # Pequeña pausa para asegurar que el registro se limpió
-            import time as time_module
-            time_module.sleep(0.1)
-            
-            # Guardar nueva sesión con valores corregidos (start_time y end_time locales)
-            success = save_session_to_registry(
-                time_limit,
-                start_time,  # start_time corregido local
-                end_time     # end_time corregido local
+            save_session_to_registry(
+                time_limit_seconds=time_limit,
+                start_time=start_time_local.isoformat(),
+                end_time=end_time_local.isoformat()
             )
             
-            if success:
-                # Verificar que se guardó correctamente leyendo del registro
-                import time as time_module
-                time_module.sleep(0.1)  # Pequeña pausa para asegurar que se escribió
-                
-                saved_session = get_session_from_registry()
-                if saved_session:
-                    saved_end_time = saved_session.get('end_time')
-                    saved_start_time = saved_session.get('start_time')
-                    saved_time_limit = saved_session.get('time_limit_seconds')
-                    
-                    # Calcular tiempo restante desde el registro guardado
-                    if saved_end_time:
-                        try:
-                            from datetime import datetime, timedelta
-                            end_time_dt = datetime.fromisoformat(saved_end_time)
-                            now = datetime.now()
-                            remaining_from_registry = int((end_time_dt - now).total_seconds())
-                            
-                            # Verificar que los valores guardados sean correctos
-                            remaining = session.get('remaining_seconds', 0)
-                            print(f"\n[Verificación] Registro guardado correctamente:")
-                            print(f"  - time_limit_seconds: {saved_time_limit}")
-                            print(f"  - start_time guardado: {saved_start_time}")
-                            print(f"  - end_time guardado: {saved_end_time}")
-                            print(f"  - Tiempo restante calculado: {remaining_from_registry}s ({remaining_from_registry//60} min)")
-                            print(f"  - Tiempo restante esperado (servidor): {remaining}s ({remaining//60} min)")
-                            
-                            # Si hay discrepancia, mostrar advertencia
-                            if abs(remaining_from_registry - remaining) > 5:
-                                print(f"[ADVERTENCIA] Discrepancia: {abs(remaining_from_registry - remaining)}s")
-                        except Exception as e:
-                            print(f"[Error] Al verificar registro guardado: {e}")
-                            import traceback
-                            traceback.print_exc()
-                    else:
-                        print("[ADVERTENCIA] No se encontró end_time en el registro guardado")
-                else:
-                    print("[ADVERTENCIA] No se pudo leer el registro después de guardar")
-            else:
-                print("[ERROR] No se pudo guardar la sesión en el registro")
-        return True
-    except requests.exceptions.RequestException as e:
-        print(f"Error de conexión al sincronizar: {e}")
-        return False
-    except Exception as e:
-        print(f"Error al sincronizar con servidor: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+            # Detectar nueva sesión o cambio drástico para resetear alertas
+            if last_known_remaining is None or abs(last_known_remaining - remaining_from_server) > 120:
+                reset_alerts_for_new_session(remaining_from_server)
+            
+            last_known_remaining = remaining_from_server
+            print(f"[SyncManager] ✅ Sesión actualizada desde {server_url}: {remaining_from_server}s restantes")
+    
+    def _handle_no_server_session(self, client_id, server_url):
+        """Maneja el caso donde el servidor no tiene sesión para este cliente."""
+        if not REGISTRY_AVAILABLE:
+            return
+        
+        local_session = get_session_info()
+        if local_session and not local_session['is_expired'] and local_session['remaining_seconds'] > 0:
+            # El cliente tiene sesión válida - reportarla al servidor
+            print(f"[SyncManager] Servidor sin sesión, reportando sesión local ({local_session['remaining_seconds']}s)...")
+            report_session_to_server(client_id, server_url=server_url)
+        else:
+            # No hay sesión válida en ningún lado
+            clear_session_from_registry()
+    
+    def _send_servers_to_server(self, known_servers, server_url):
+        """Envía la lista de servidores conocidos al servidor para sincronización."""
+        try:
+            sync_response = requests.post(
+                f"{server_url}/api/sync-servers",
+                json={
+                    'servers': known_servers,
+                    'clients': []
+                },
+                timeout=5
+            )
+            if sync_response.status_code == 200:
+                sync_data = sync_response.json()
+                updated_servers = sync_data.get('known_servers', [])
+                if updated_servers and REGISTRY_AVAILABLE:
+                    save_servers_to_registry(updated_servers)
+                    print(f"[SyncManager] ✅ Servidores sincronizados con {server_url}")
+        except Exception as e:
+            print(f"[SyncManager] ⚠️  Error al sincronizar servidores con {server_url}: {e}")
+
 
 def start_server_discovery_listener():
     """
@@ -1720,7 +1909,8 @@ def update_discovery_stats(broadcast_count=None, last_broadcast_time=None, last_
 def monitor_time(client_id):
     """
     Monitorea el tiempo restante leyendo del registro local.
-    Sincroniza con el servidor periódicamente pero funciona principalmente del registro.
+    La sincronización con el servidor corre en un hilo dedicado (SyncManager).
+    Este loop principal solo lee del registro local y maneja el tiempo/bloqueo.
     """
     global alerts_shown  # Declarar al inicio de la función
     
@@ -1728,9 +1918,9 @@ def monitor_time(client_id):
     print("Cliente CiberMonday iniciado")
     print("=" * 50)
     print(f"ID del cliente: {client_id}")
-    print(f"Servidor: {SERVER_URL}")
+    print(f"Servidor configurado: {SERVER_URL}")
     if REGISTRY_AVAILABLE:
-        print("Modo: Registro local (funciona sin conexión continua)")
+        print("Modo: Registro local + sincronización en hilo dedicado")
     else:
         print("Modo: Consulta directa al servidor")
     print("Esperando asignación de tiempo...")
@@ -1779,72 +1969,42 @@ def monitor_time(client_id):
     # Iniciar servidor de diagnóstico
     start_diagnostic_server(port=5002)
     
-    last_remaining = None
-    last_sync_time = 0
-    # Usar intervalo de sincronización desde configuración (o 30 por defecto)
+    # Intervalo de sincronización desde configuración (o 30 por defecto)
     try:
         SYNC_INTERVAL = SYNC_INTERVAL_CONFIG
     except NameError:
-        # Si no está definido, usar valor por defecto
         SYNC_INTERVAL = 30
+    
     LOCAL_CHECK_INTERVAL = 1  # Verificar registro local cada segundo
+    
+    # Iniciar hilo de sincronización con SyncManager
+    # El SyncManager se encarga de toda la comunicación con servidores
+    sync_manager = SyncManager(client_id, SYNC_INTERVAL)
+    sync_manager.start()
+    
+    last_remaining = None
     
     print(f"Intervalo de sincronización: {SYNC_INTERVAL} segundos")
     
     while True:
         try:
-            current_time = time.time()
+            # Leer el client_id más reciente del SyncManager
+            # (puede cambiar si hubo re-registro)
+            client_id = sync_manager.client_id
             
-            # Sincronizar con servidor periódicamente
-            if current_time - last_sync_time >= SYNC_INTERVAL:
-                sync_result = sync_with_server(client_id)
-                # Si sync_with_server retorna un nuevo client_id (re-registro), actualizarlo
-                if sync_result and isinstance(sync_result, str):
-                    print(f"[Actualización] Usando nuevo Client ID: {sync_result}")
-                    client_id = sync_result
-                last_sync_time = current_time
-                # Forzar re-lectura del registro después de sincronizar
-                # para asegurar que usamos los datos más recientes
-                if REGISTRY_AVAILABLE:
-                    session_info = get_session_info()
-                    if session_info:
-                        # Resetear last_remaining para forzar actualización de display
-                        last_remaining = None
-            
-            # Leer del registro local (o del servidor si no hay registro)
+            # Leer del registro local
             if REGISTRY_AVAILABLE:
                 session_info = get_session_info()
                 
-                # Debug: mostrar qué se está leyendo del registro
-                if session_info and last_remaining != session_info.get('remaining_seconds'):
-                    session_data = get_session_from_registry()
-                    if session_data:
-                        print(f"\n[Debug] Leyendo del registro:")
-                        print(f"  - time_limit_seconds: {session_data.get('time_limit_seconds')}")
-                        print(f"  - end_time: {session_data.get('end_time')}")
-                        print(f"  - remaining_seconds calculado: {session_info.get('remaining_seconds')}")
-                
                 if session_info is None:
-                    # No hay sesión en registro, sincronizar más frecuentemente para detectar nuevos tiempos
-                    if current_time - last_sync_time >= 2:  # Sincronizar cada 2 segundos si no hay sesión
-                        sync_result = sync_with_server(client_id)
-                        # Si sync_with_server retorna un nuevo client_id (re-registro), actualizarlo
-                        if sync_result and isinstance(sync_result, str):
-                            print(f"[Actualización] Usando nuevo Client ID: {sync_result}")
-                            client_id = sync_result
-                        last_sync_time = current_time
-                        session_info = get_session_info()
-                        # Resetear last_remaining para forzar actualización de display
-                        if session_info:
-                            last_remaining = None
-                    
-                    if session_info is None:
-                        if last_remaining is not None:
-                            print("\rEsperando asignación de tiempo...", end='', flush=True)
-                            # Si antes había sesión y ahora no, resetear alertas para próxima sesión
-                            alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
-                        time.sleep(LOCAL_CHECK_INTERVAL)
-                        continue
+                    # No hay sesión en registro - esperando a que el servidor asigne tiempo
+                    if last_remaining is not None:
+                        print("\rEsperando asignación de tiempo...", end='', flush=True)
+                        # Si antes había sesión y ahora no, resetear alertas para próxima sesión
+                        alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
+                        last_remaining = None
+                    time.sleep(LOCAL_CHECK_INTERVAL)
+                    continue
                 
                 remaining_seconds = session_info['remaining_seconds']
                 is_expired = session_info['is_expired']
@@ -1853,10 +2013,9 @@ def monitor_time(client_id):
                 if last_remaining is None:
                     reset_alerts_for_new_session(remaining_seconds)
             else:
-                # Fallback: consultar servidor directamente
+                # Fallback: consultar servidor directamente (sin registro disponible)
                 client_data = check_server_status(client_id)
                 if client_data is None:
-                    print("No se pudo conectar al servidor. Reintentando...")
                     time.sleep(CHECK_INTERVAL)
                     continue
                 
@@ -1864,8 +2023,8 @@ def monitor_time(client_id):
                 if session is None:
                     if last_remaining is not None:
                         print("\rEsperando asignación de tiempo...", end='', flush=True)
-                        # Si antes había sesión y ahora no, resetear alertas
                         alerts_shown = {threshold: False for threshold in ALERT_THRESHOLDS}
+                        last_remaining = None
                     time.sleep(CHECK_INTERVAL)
                     continue
                 
@@ -1887,6 +2046,7 @@ def monitor_time(client_id):
                 
                 # Bloquear la estación de trabajo
                 lock_workstation()
+                last_remaining = remaining_seconds
                 
                 # Verificar periódicamente si se asignó nuevo tiempo
                 time.sleep(2)
@@ -1905,6 +2065,7 @@ def monitor_time(client_id):
             
         except KeyboardInterrupt:
             print("\n\nCliente detenido por el usuario.")
+            sync_manager.stop()
             break
         except Exception as e:
             print(f"\nError inesperado: {e}")
@@ -1941,17 +2102,19 @@ def main():
         pass
     
     # Obtener o registrar cliente
+    # get_client_id() NUNCA retorna None - genera un ID local si no puede contactar servidores
     client_id = get_client_id()
     
-    if client_id is None:
-        print("No se pudo registrar el cliente. Saliendo...")
-        sys.exit(1)
+    print(f"[Inicio] Cliente ID: {client_id}")
     
-    # Iniciar monitoreo
+    # Iniciar monitoreo - el cliente siempre inicia aunque no haya servidores disponibles
+    # Los servidores se descubrirán por broadcast o se reintentará la conexión periódicamente
     try:
         monitor_time(client_id)
     except Exception as e:
         print(f"Error fatal: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == '__main__':

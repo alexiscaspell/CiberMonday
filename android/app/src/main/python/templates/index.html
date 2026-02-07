@@ -737,6 +737,13 @@
                                 <div class="config-help">Minutos en que aparecen alertas (ej: 10, 5, 2, 1)</div>
                                 
                                 <div class="config-row" style="margin-top: 15px;">
+                                    <label class="config-label">Reintentos serv.:</label>
+                                    <input type="number" class="config-input" id="config-timeouts-${client.id}" 
+                                           value="${client.config?.max_server_timeouts || 10}" min="1" max="100">
+                                </div>
+                                <div class="config-help">Fallos consecutivos antes de eliminar un servidor de la lista (1-100)</div>
+                                
+                                <div class="config-row" style="margin-top: 15px;">
                                     <button class="btn-config" onclick="saveConfig('${client.id}')">
                                         💾 Guardar configuración
                                     </button>
@@ -765,9 +772,11 @@
         async function saveConfig(clientId) {
             const syncInput = document.getElementById(`config-sync-${clientId}`);
             const alertsInput = document.getElementById(`config-alerts-${clientId}`);
+            const timeoutsInput = document.getElementById(`config-timeouts-${clientId}`);
             const statusEl = document.getElementById(`config-status-${clientId}`);
             
             const syncInterval = parseInt(syncInput.value);
+            const maxServerTimeouts = parseInt(timeoutsInput.value);
             
             // Parsear umbrales de alerta (en minutos) y convertir a segundos
             const alertsStr = alertsInput.value;
@@ -788,6 +797,11 @@
                 return;
             }
             
+            if (isNaN(maxServerTimeouts) || maxServerTimeouts < 1 || maxServerTimeouts > 100) {
+                alert('Los reintentos antes de eliminar servidor deben estar entre 1 y 100');
+                return;
+            }
+            
             try {
                 const response = await fetch(`${API_URL}/client/${clientId}/config`, {
                     method: 'POST',
@@ -796,7 +810,8 @@
                     },
                     body: JSON.stringify({
                         sync_interval: syncInterval,
-                        alert_thresholds: alertThresholds
+                        alert_thresholds: alertThresholds,
+                        max_server_timeouts: maxServerTimeouts
                     })
                 });
                 
@@ -809,6 +824,11 @@
                     // Actualizar el input de alertas con los valores ordenados del servidor (convertir a minutos)
                     if (data.config?.alert_thresholds) {
                         alertsInput.value = data.config.alert_thresholds.map(s => s / 60).join(', ');
+                    }
+                    
+                    // Actualizar el input de timeouts con el valor del servidor
+                    if (data.config?.max_server_timeouts) {
+                        timeoutsInput.value = data.config.max_server_timeouts;
                     }
                     
                     setTimeout(() => {

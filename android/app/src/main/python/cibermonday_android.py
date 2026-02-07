@@ -1,463 +1,121 @@
 """
 CiberMonday para Android - Módulo unificado
 Provee tanto la API HTTP (para clientes remotos) como acceso directo (para UI nativa).
+Usa ClientManager de core/ para la lógica de negocio compartida con el servidor web.
 """
 
-from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import uuid
 import json
 import socket
 import threading
 import re
 import time
 
-
-class ClientManager:
-    """
-    Gestor de clientes del ciber y sus sesiones de tiempo.
-    Singleton compartido entre Flask y la UI nativa.
-    """
-    
-    DEFAULT_CONFIG = {
-        'sync_interval': 30,
-        'alert_thresholds': [600, 300, 120, 60],
-        'custom_name': None,
-    }
-    
-    _instance = None
-    _lock = threading.Lock()
-    
-    def __new__(cls):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance.clients_db = {}
-                    cls._instance.client_sessions = {}
-                    cls._instance.client_configs = {}
-                    cls._instance.servers_db = {}  # Servidores conocidos
-        return cls._instance
-    
-    def _generate_client_id(self):
-        return str(uuid.uuid4())
-    
-    def register_client(self, name='Cliente Sin Nombre', client_id=None, 
-                        session_data=None, config=None, known_servers=None):
-        """
-        Registra un cliente. Si se proporciona known_servers, sincroniza esos servidores.
-        """
-        is_reregister = client_id is not None
-        if not is_reregister:
-            client_id = self._generate_client_id()
-        
-        self.clients_db[client_id] = {
-            'id': client_id,
-            'name': name,
-            'registered_at': datetime.now().isoformat(),
-            'total_time_used': 0,
-            'is_active': False
-        }
-        
-        if config:
-            self.client_configs[client_id] = {
-                'sync_interval': config.get('sync_interval', self.DEFAULT_CONFIG['sync_interval']),
-                'alert_thresholds': config.get('alert_thresholds', self.DEFAULT_CONFIG['alert_thresholds']),
-                'custom_name': config.get('custom_name'),
-            }
-            if self.client_configs[client_id]['custom_name']:
-                self.clients_db[client_id]['name'] = self.client_configs[client_id]['custom_name']
-        elif client_id not in self.client_configs:
-            self.client_configs[client_id] = self.DEFAULT_CONFIG.copy()
-        
-        session_restored = False
-        if session_data:
-            remaining_seconds = session_data.get('remaining_seconds', 0)
-            time_limit = session_data.get('time_limit_seconds', remaining_seconds)
-            
-            if remaining_seconds > 0:
-                end_time = datetime.now() + timedelta(seconds=remaining_seconds)
-                start_time = end_time - timedelta(seconds=time_limit)
-                
-                self.client_sessions[client_id] = {
-                    'time_limit': time_limit,
-                    'start_time': start_time.isoformat(),
-                    'end_time': end_time.isoformat()
-                }
-                self.clients_db[client_id]['is_active'] = True
-                session_restored = True
-        
-        # Si el cliente envía lista de servidores conocidos, sincronizarlos
-        if known_servers:
-            self.sync_servers(known_servers)
-        
-        # Auto-registrar este servidor en su propia lista si no está registrado
-        local_ip = self.get_local_ip()
-        if local_ip and local_ip != "No conectado":
-            local_server_url = f"http://{local_ip}:5000"
-            self.register_server(local_server_url, local_ip, 5000)
-        
-        return {
-            'success': True,
-            'client_id': client_id,
-            'message': 'Cliente re-registrado' if is_reregister else 'Cliente registrado',
-            'session_restored': session_restored,
-            'config': self.client_configs.get(client_id, self.DEFAULT_CONFIG),
-            'known_servers': self.get_servers()
-        }
-    
-    def get_clients(self):
-        clients_list = []
-        for client_id, client_data in self.clients_db.items():
-            client_info = client_data.copy()
-            
-            if client_id in self.client_sessions:
-                session = self.client_sessions[client_id]
-                end_time = datetime.fromisoformat(session['end_time'])
-                remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
-                
-                client_info['current_session'] = {
-                    'time_limit': session['time_limit'],
-                    'start_time': session['start_time'],
-                    'end_time': session['end_time'],
-                    'remaining_seconds': remaining_seconds
-                }
-            else:
-                client_info['current_session'] = None
-            
-            client_info['config'] = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
-            clients_list.append(client_info)
-        
-        return clients_list
-    
-    def set_client_time(self, client_id, time_value, time_unit='minutes'):
-        if client_id not in self.clients_db:
-            return {'success': False, 'message': 'Cliente no encontrado'}
-        
-        if time_unit == 'hours':
-            total_seconds = time_value * 3600
-        else:
-            total_seconds = time_value * 60
-        
-        if total_seconds <= 0:
-            return {'success': False, 'message': 'El tiempo debe ser mayor a 0'}
-        
-        start_time = datetime.now()
-        end_time = start_time + timedelta(seconds=total_seconds)
-        
-        self.client_sessions[client_id] = {
-            'time_limit': total_seconds,
-            'start_time': start_time.isoformat(),
-            'end_time': end_time.isoformat()
-        }
-        self.clients_db[client_id]['is_active'] = True
-        
-        return {
-            'success': True,
-            'message': f'Tiempo establecido: {time_value} {time_unit}'
-        }
-    
-    def stop_client_session(self, client_id):
-        if client_id not in self.clients_db:
-            return {'success': False, 'message': 'Cliente no encontrado'}
-        
-        if client_id in self.client_sessions:
-            session = self.client_sessions[client_id]
-            start_time = datetime.fromisoformat(session['start_time'])
-            time_used = int((datetime.now() - start_time).total_seconds())
-            
-            self.clients_db[client_id]['total_time_used'] += time_used
-            del self.client_sessions[client_id]
-            self.clients_db[client_id]['is_active'] = False
-        
-        return {'success': True, 'message': 'Sesión detenida'}
-    
-    def delete_client(self, client_id):
-        if client_id not in self.clients_db:
-            return {'success': False, 'message': 'Cliente no encontrado'}
-        
-        if client_id in self.client_sessions:
-            del self.client_sessions[client_id]
-        if client_id in self.client_configs:
-            del self.client_configs[client_id]
-        del self.clients_db[client_id]
-        
-        return {'success': True, 'message': 'Cliente eliminado'}
-    
-    def get_client_status(self, client_id):
-        if client_id not in self.clients_db:
-            return None
-        
-        client_data = self.clients_db[client_id].copy()
-        
-        if client_id in self.client_sessions:
-            session = self.client_sessions[client_id]
-            end_time = datetime.fromisoformat(session['end_time'])
-            remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
-            
-            client_data['session'] = {
-                'time_limit_seconds': session['time_limit'],
-                'start_time': session['start_time'],
-                'end_time': session['end_time'],
-                'remaining_seconds': remaining_seconds,
-                'is_expired': remaining_seconds == 0
-            }
-        else:
-            client_data['session'] = None
-        
-        client_data['config'] = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
-        return client_data
-    
-    def set_client_config(self, client_id, sync_interval=None, alert_thresholds=None, custom_name=None):
-        if client_id not in self.clients_db:
-            return {'success': False, 'message': 'Cliente no encontrado'}
-        
-        current_config = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
-        
-        if sync_interval is not None:
-            if sync_interval < 5:
-                return {'success': False, 'message': 'El intervalo mínimo es 5 segundos'}
-            current_config['sync_interval'] = sync_interval
-        
-        if alert_thresholds is not None:
-            if isinstance(alert_thresholds, list):
-                current_config['alert_thresholds'] = sorted(alert_thresholds, reverse=True)
-        
-        if custom_name is not None:
-            if custom_name:
-                custom_name = str(custom_name).strip()[:50]
-                current_config['custom_name'] = custom_name
-                self.clients_db[client_id]['name'] = custom_name
-            else:
-                current_config['custom_name'] = None
-        
-        self.client_configs[client_id] = current_config
-        
-        return {'success': True, 'message': 'Configuración actualizada', 'config': current_config}
-    
-    def report_session(self, client_id, remaining_seconds, time_limit_seconds=None):
-        if client_id not in self.clients_db:
-            return {'success': False, 'message': 'Cliente no encontrado'}
-        
-        if remaining_seconds <= 0:
-            return {'success': False, 'message': 'El tiempo debe ser mayor a 0'}
-        
-        time_limit = time_limit_seconds or remaining_seconds
-        end_time = datetime.now() + timedelta(seconds=remaining_seconds)
-        start_time = end_time - timedelta(seconds=time_limit)
-        
-        self.client_sessions[client_id] = {
-            'time_limit': time_limit,
-            'start_time': start_time.isoformat(),
-            'end_time': end_time.isoformat()
-        }
-        self.clients_db[client_id]['is_active'] = True
-        
-        return {'success': True, 'message': f'Sesión reportada'}
-    
-    def register_server(self, server_url, server_ip=None, server_port=None):
-        """Registra o actualiza un servidor conocido."""
-        # Generar ID único basado en URL
-        import hashlib
-        server_id = hashlib.md5(server_url.encode()).hexdigest()[:16]
-        
-        # Parsear URL si no se proporcionan IP y puerto
-        if not server_ip or not server_port:
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(server_url)
-                server_ip = server_ip or parsed.hostname or "unknown"
-                server_port = server_port or parsed.port or 5000
-            except:
-                server_ip = server_ip or "unknown"
-                server_port = server_port or 5000
-        
-        self.servers_db[server_id] = {
-            'id': server_id,
-            'url': server_url,
-            'ip': server_ip,
-            'port': server_port,
-            'last_seen': datetime.now().isoformat(),
-            'is_active': True
-        }
-        
-        return {'success': True, 'server_id': server_id}
-    
-    def get_servers(self):
-        """Obtiene la lista de servidores conocidos."""
-        servers_list = []
-        for server_id, server_data in self.servers_db.items():
-            servers_list.append(server_data.copy())
-        return servers_list
-    
-    def sync_servers(self, servers_list):
-        """Sincroniza la lista de servidores con otros servidores."""
-        # Agregar/actualizar servidores recibidos
-        for server_data in servers_list:
-            server_url = server_data.get('url')
-            if server_url:
-                self.register_server(
-                    server_url,
-                    server_data.get('ip'),
-                    server_data.get('port')
-                )
-        
-        # Intentar sincronizar con otros servidores (anycast/discovery)
-        # Enviar nuestra lista de clientes y servidores a otros servidores conocidos
-        self._sync_with_other_servers()
-        
-        # Retornar lista combinada (local + recibidos)
-        return self.get_servers()
-    
-    def _sync_with_other_servers(self):
-        """Sincroniza información con otros servidores conocidos."""
-        import urllib.request
-        import urllib.error
-        
-        local_ip = self.get_local_ip()
-        if local_ip == "No conectado":
-            return
-        
-        local_server_url = f"http://{local_ip}:5000"
-        
-        # Preparar datos para enviar
-        sync_data = {
-            'servers': self.get_servers(),
-            'clients': self.get_clients()
-        }
-        
-        # Intentar sincronizar con cada servidor conocido (excepto nosotros mismos)
-        for server_id, server_data in list(self.servers_db.items()):
-            server_url = server_data.get('url')
-            if not server_url or server_url == local_server_url:
-                continue
-            
-            try:
-                import json
-                req = urllib.request.Request(
-                    f"{server_url}/api/sync-servers",
-                    data=json.dumps(sync_data).encode('utf-8'),
-                    headers={'Content-Type': 'application/json'}
-                )
-                
-                with urllib.request.urlopen(req, timeout=3) as response:
-                    if response.status == 200:
-                        response_data = json.loads(response.read().decode('utf-8'))
-                        # Actualizar con servidores recibidos del otro servidor
-                        if response_data.get('known_servers'):
-                            for other_server in response_data['known_servers']:
-                                if other_server.get('url') != local_server_url:
-                                    self.register_server(
-                                        other_server.get('url'),
-                                        other_server.get('ip'),
-                                        other_server.get('port')
-                                    )
-            except:
-                # Servidor no disponible, continuar con el siguiente
-                pass
-    
-    @staticmethod
-    def get_local_ip():
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-            return local_ip
-        except Exception:
-            return "No conectado"
+from core import ClientManager
 
 
-# ============== FUNCIONES PARA LA UI NATIVA (Kotlin) ==============
+# ============== SINGLETON DEL MANAGER ==============
+
+_manager_instance = None
+_manager_lock = threading.Lock()
+
 
 def get_manager():
     """Obtiene la instancia singleton del ClientManager."""
-    return ClientManager()
+    global _manager_instance
+    if _manager_instance is None:
+        with _manager_lock:
+            if _manager_instance is None:
+                _manager_instance = ClientManager()
+    return _manager_instance
+
+
+# ============== FUNCIONES PARA LA UI NATIVA (Kotlin) ==============
 
 def get_clients_json():
     """Obtiene los clientes como JSON string."""
     return json.dumps(get_manager().get_clients())
 
+
 def set_client_time(client_id, time_value, time_unit='minutes'):
     """Establece el tiempo de un cliente."""
     return json.dumps(get_manager().set_client_time(client_id, time_value, time_unit))
+
 
 def stop_client_session(client_id):
     """Detiene la sesión de un cliente."""
     return json.dumps(get_manager().stop_client_session(client_id))
 
+
 def delete_client(client_id):
     """Elimina un cliente."""
     return json.dumps(get_manager().delete_client(client_id))
+
 
 def set_client_name(client_id, new_name):
     """Cambia el nombre de un cliente."""
     result = get_manager().set_client_config(client_id, custom_name=new_name)
     return json.dumps(result)
 
+
 def get_servers_json():
     """Obtiene los servidores conocidos como JSON string."""
-    manager = get_manager()
-    servers_list = []
-    for server_id, server_data in manager.servers_db.items():
-        servers_list.append(server_data.copy())
-    return json.dumps(servers_list)
+    return json.dumps(get_manager().get_servers())
 
-def set_client_config(client_id, sync_interval=None, alert_thresholds=None):
+
+def set_client_config(client_id, sync_interval=None, alert_thresholds=None, max_server_timeouts=None):
     """Actualiza la configuración de un cliente."""
-    # Convertir alert_thresholds si viene como lista de Python
     if alert_thresholds is not None:
         if isinstance(alert_thresholds, (list, tuple)):
             alert_thresholds = list(alert_thresholds)
         else:
-            # Si viene como string o otro tipo, intentar convertir
             alert_thresholds = None
     
+    if max_server_timeouts is not None:
+        try:
+            max_server_timeouts = int(max_server_timeouts)
+        except (ValueError, TypeError):
+            max_server_timeouts = None
+    
     result = get_manager().set_client_config(
-        client_id, 
-        sync_interval=sync_interval, 
-        alert_thresholds=alert_thresholds
+        client_id,
+        sync_interval=sync_interval,
+        alert_thresholds=alert_thresholds,
+        max_server_timeouts=max_server_timeouts
     )
     return json.dumps(result)
+
 
 def get_local_ip():
     """Obtiene la IP local."""
     return ClientManager.get_local_ip()
 
+
 def get_client_count():
     """Obtiene el número de clientes."""
     return len(get_manager().clients_db)
+
 
 def get_server_config_json():
     """Obtiene la configuración del servidor como JSON string."""
     return json.dumps({
         'success': True,
-        'config': _server_config.copy()
+        'config': get_manager().get_server_config()
     })
+
 
 def set_server_config(broadcast_interval):
     """Actualiza la configuración del servidor."""
-    global _server_config
-    if broadcast_interval < 1:
-        return json.dumps({
-            'success': False,
-            'message': 'El intervalo de broadcast debe ser al menos 1 segundo'
-        })
-    _server_config['broadcast_interval'] = broadcast_interval
-    print(f"[Config] Intervalo de broadcast actualizado a {broadcast_interval} segundos")
-    return json.dumps({
-        'success': True,
-        'config': _server_config.copy(),
-        'message': 'Configuración actualizada correctamente'
-    })
+    result = get_manager().set_server_config(broadcast_interval=broadcast_interval)
+    return json.dumps(result)
+
 
 def register_server_manual(server_url, server_ip=None, server_port=None):
     """Registra un servidor manualmente desde la UI."""
-    manager = get_manager()
-    result = manager.register_server(server_url, server_ip, server_port)
+    mgr = get_manager()
+    result = mgr.register_server(server_url, server_ip, server_port)
     
-    # Si se agregó exitosamente y hay clientes conectados, sincronizar
-    if result.get('success') and len(manager.clients_db) > 0:
+    if result.get('success') and len(mgr.clients_db) > 0:
         print(f"[Servidor] Nuevo servidor {server_url} agregado manualmente. Los clientes lo recibirán en su próxima sincronización.")
     
     return json.dumps(result)
@@ -502,8 +160,7 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         path = self.path.split('?')[0]
         
         if path == '/' or path == '/status':
-            # Página HTML con estado del servidor
-            ip = ClientManager.get_local_ip()
+            ip = self.manager.get_local_ip()
             clients = self.manager.get_clients()
             active = len([c for c in clients if c.get('is_active')])
             
@@ -593,10 +250,11 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
             self.wfile.write(html.encode('utf-8'))
         
         elif path == '/api/health':
+            stats = self.manager.get_stats()
             self._send_json({
                 'status': 'ok',
-                'active_clients': len(self.manager.client_sessions),
-                'total_clients': len(self.manager.clients_db)
+                'active_clients': stats['active_clients'],
+                'total_clients': stats['total_clients']
             })
         
         elif path == '/api/clients':
@@ -606,55 +264,43 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
             })
         
         elif path == '/api/server-info':
-            ip = ClientManager.get_local_ip()
+            ip = self.manager.get_local_ip()
+            config = self.manager.get_server_config()
             self._send_json({
                 'success': True,
                 'ip': ip,
                 'port': 5000,
-                'url': f"http://{ip}:5000"
+                'url': f"http://{ip}:5000",
+                'broadcast_interval': config['broadcast_interval']
             })
         
         elif path == '/api/servers':
-            # Obtener lista de servidores conocidos
             self._send_json({
                 'success': True,
                 'servers': self.manager.get_servers()
             })
         
-        elif path == '/api/server-info':
-            # Obtener información del servidor
-            local_ip = ClientManager.get_local_ip()
-            self._send_json({
-                'success': True,
-                'ip': local_ip,
-                'port': 5000,
-                'url': f"http://{local_ip}:5000",
-                'broadcast_interval': _server_config['broadcast_interval']
-            })
-        
         elif path == '/api/server-config':
-            # Obtener configuración del servidor
             self._send_json({
                 'success': True,
-                'config': _server_config.copy()
+                'config': self.manager.get_server_config()
             })
         
         elif path.startswith('/api/client/') and path.endswith('/status'):
             client_id = path.split('/')[3]
             client = self.manager.get_client_status(client_id)
             if client:
-                # Incluir lista de servidores conocidos para que el cliente los sincronice
                 self._send_json({
                     'success': True,
                     'client': client,
-                    'known_servers': self.manager.get_servers()  # Incluir servidores conocidos
+                    'known_servers': self.manager.get_servers()
                 })
             else:
                 self._send_json({'success': False, 'message': 'Cliente no encontrado'}, 404)
         
         elif path.startswith('/api/client/') and path.endswith('/config'):
             client_id = path.split('/')[3]
-            config = self.manager.client_configs.get(client_id)
+            config = self.manager.get_client_config(client_id)
             if config:
                 self._send_json({'success': True, 'config': config})
             else:
@@ -669,7 +315,6 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         data = self._read_body()
         
         if path == '/api/register':
-            # Registrar cliente (incluye sincronización de servidores si se proporcionan)
             result = self.manager.register_client(
                 name=data.get('name', 'Cliente Sin Nombre'),
                 client_id=data.get('client_id'),
@@ -677,9 +322,6 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 config=data.get('config'),
                 known_servers=data.get('known_servers', [])
             )
-            
-            # Incluir lista de servidores conocidos en la respuesta
-            result['known_servers'] = self.manager.get_servers()
             self._send_json(result, 201)
         
         elif path.startswith('/api/client/') and path.endswith('/set-time'):
@@ -697,7 +339,8 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 client_id,
                 sync_interval=data.get('sync_interval'),
                 alert_thresholds=data.get('alert_thresholds'),
-                custom_name=data.get('custom_name')
+                custom_name=data.get('custom_name'),
+                max_server_timeouts=data.get('max_server_timeouts')
             )
             self._send_json(result, 200 if result['success'] else 400)
         
@@ -716,7 +359,6 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
             self._send_json(result)
         
         elif path == '/api/register-server':
-            # Registrar un nuevo servidor (llamado por clientes u otros servidores)
             server_url = data.get('url')
             if not server_url:
                 self._send_json({'success': False, 'message': 'URL del servidor requerida'}, 400)
@@ -726,29 +368,17 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                     data.get('ip'),
                     data.get('port')
                 )
-                # Retornar lista completa de servidores conocidos
                 result['known_servers'] = self.manager.get_servers()
                 self._send_json(result, 201)
         
         elif path == '/api/sync-servers':
-            # Sincronizar servidores entre servidores (anycast/discovery)
             servers_list = data.get('servers', [])
             clients_list = data.get('clients', [])
             
-            # Sincronizar servidores
             known_servers = self.manager.sync_servers(servers_list)
             
-            # Sincronizar clientes (registrar clientes de otros servidores si no existen localmente)
-            # Esto permite que los clientes sean visibles desde cualquier servidor
             if clients_list:
-                for client_data in clients_list:
-                    client_id = client_data.get('id')
-                    if client_id and client_id not in self.manager.clients_db:
-                        # Registrar cliente de otro servidor (sin sesión activa)
-                        self.manager.register_client(
-                            name=client_data.get('name', 'Cliente Remoto'),
-                            client_id=client_id
-                        )
+                self.manager.sync_clients_from_remote(clients_list)
             
             self._send_json({
                 'success': True,
@@ -757,26 +387,10 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
             }, 200)
         
         elif path == '/api/server-config':
-            # Actualizar configuración del servidor
-            global _server_config
-            broadcast_interval = data.get('broadcast_interval')
-            
-            if broadcast_interval is not None:
-                broadcast_interval = int(broadcast_interval)
-                if broadcast_interval < 1:
-                    self._send_json({
-                        'success': False,
-                        'message': 'El intervalo de broadcast debe ser al menos 1 segundo'
-                    }, 400)
-                    return
-                _server_config['broadcast_interval'] = broadcast_interval
-                print(f"[Config] Intervalo de broadcast actualizado a {broadcast_interval} segundos")
-            
-            self._send_json({
-                'success': True,
-                'config': _server_config.copy(),
-                'message': 'Configuración actualizada correctamente'
-            }, 200)
+            result = self.manager.set_server_config(
+                broadcast_interval=data.get('broadcast_interval')
+            )
+            self._send_json(result, 200 if result['success'] else 400)
         
         else:
             self._send_json({'error': 'Not found'}, 404)
@@ -785,7 +399,6 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         """Handle DELETE requests."""
         path = self.path.split('?')[0]
         
-        # DELETE /api/client/<client_id>
         match = re.match(r'^/api/client/([^/]+)$', path)
         if match:
             client_id = match.group(1)
@@ -814,30 +427,12 @@ class ThreadedHTTPServer(HTTPServer):
             self.shutdown_request(request)
 
 
-# Variable global para el servidor
+# ============== SERVIDOR Y BROADCAST ==============
+
 _server = None
 _server_running = False
 _server_error = None
 
-# Configuración del servidor
-_server_config = {
-    'broadcast_interval': 1  # Intervalo de broadcast en segundos (por defecto 1 segundo)
-}
-
-def get_broadcast_address(ip_address):
-    """
-    Calcula la dirección de broadcast basándose en la IP.
-    Para IPs como 192.168.68.101, asume máscara /24 (255.255.255.0)
-    y retorna 192.168.68.255
-    """
-    try:
-        parts = ip_address.split('.')
-        if len(parts) == 4:
-            # Asumir máscara /24 (255.255.255.0)
-            return f"{parts[0]}.{parts[1]}.{parts[2]}.255"
-    except:
-        pass
-    return "255.255.255.255"  # Fallback
 
 def broadcast_server_presence():
     """
@@ -846,41 +441,34 @@ def broadcast_server_presence():
     """
     def broadcast_thread():
         DISCOVERY_PORT = 5001
-        global _server_config
+        mgr = get_manager()
         
         try:
-            local_ip = ClientManager.get_local_ip()
-            if local_ip == "No conectado" or local_ip == "127.0.0.1":
+            local_ip = mgr.get_local_ip()
+            if local_ip == "127.0.0.1" or not local_ip:
                 print(f"[Broadcast] IP no válida para broadcast: {local_ip}")
                 return
             
             server_url = f"http://{local_ip}:5000"
-            server_info = {
+            server_info_data = {
                 'url': server_url,
                 'ip': local_ip,
                 'port': 5000
             }
             
-            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:5000")
+            broadcast_addr = mgr.get_broadcast_address()
             
-            # Calcular dirección de broadcast
-            broadcast_addr = get_broadcast_address(local_ip)
-            print(f"[Broadcast] Dirección de broadcast calculada: {broadcast_addr}:{DISCOVERY_PORT}")
-            
-            # Crear socket UDP para broadcast
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            print(f"[Broadcast] Socket UDP creado")
-            
-            # En Android, es mejor no hacer bind a una IP específica para broadcasts
             try:
-                sock.bind(('', 0))  # Bind a todas las interfaces, puerto 0 = sistema elige
-                print(f"[Broadcast] Socket vinculado correctamente")
+                sock.bind(('', 0))
             except Exception as bind_error:
                 print(f"[Broadcast] Advertencia al hacer bind: {bind_error}")
-                # Continuar de todas formas, algunos sistemas permiten enviar sin bind
             
-            print(f"[Broadcast] Enviando broadcasts UDP cada {_server_config['broadcast_interval']} segundos")
+            config = mgr.get_server_config()
+            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:5000")
+            print(f"[Broadcast] Dirección de broadcast: {broadcast_addr}:{DISCOVERY_PORT}")
+            print(f"[Broadcast] Enviando broadcasts UDP cada {config['broadcast_interval']} segundos")
             print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
             
             last_client_count = 0
@@ -888,48 +476,41 @@ def broadcast_server_presence():
             
             while _server_running:
                 try:
-                    # Verificar si hay clientes conectados
-                    manager = get_manager()
-                    num_clients = len(manager.clients_db)
+                    config = mgr.get_server_config()
+                    num_clients = len(mgr.clients_db)
                     
                     if num_clients > 0:
-                        # Hay clientes conectados, no enviar broadcast pero seguir verificando
                         if not broadcasts_paused:
-                            # Primera vez que detectamos clientes - pausar broadcasts
                             print(f"[Broadcast] ⏸️  Hay {num_clients} cliente(s) conectado(s). Broadcasts pausados.")
                             broadcasts_paused = True
                         elif num_clients != last_client_count:
-                            # El número de clientes cambió, actualizar log
                             print(f"[Broadcast] ⏸️  {num_clients} cliente(s) conectado(s). Broadcasts siguen pausados.")
                         last_client_count = num_clients
-                        time.sleep(_server_config['broadcast_interval'])
+                        time.sleep(config['broadcast_interval'])
                         continue
                     else:
-                        # No hay clientes
                         if broadcasts_paused:
-                            # Se desconectaron todos los clientes - reanudar broadcasts
                             print(f"[Broadcast] ▶️  No hay clientes conectados. Reanudando broadcasts UDP.")
                             broadcasts_paused = False
                         last_client_count = 0
                     
-                    # No hay clientes, enviar broadcast
-                    message = json.dumps(server_info).encode('utf-8')
+                    message = json.dumps(server_info_data).encode('utf-8')
                     sock.sendto(message, (broadcast_addr, DISCOVERY_PORT))
                     print(f"[Broadcast] 📡 Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
-                    time.sleep(_server_config['broadcast_interval'])
+                    time.sleep(config['broadcast_interval'])
                 except Exception as e:
                     print(f"[Broadcast] Error al enviar broadcast: {e}")
                     import traceback
                     traceback.print_exc()
-                    time.sleep(BROADCAST_INTERVAL)
+                    time.sleep(config.get('broadcast_interval', 1))
         except Exception as e:
             print(f"[Broadcast] Error en thread de broadcast: {e}")
             import traceback
             traceback.print_exc()
     
-    # Iniciar thread de broadcast en background
     thread = threading.Thread(target=broadcast_thread, daemon=True)
     thread.start()
+
 
 def start_server(host='0.0.0.0', port=5000, data_dir=None):
     """Inicia el servidor HTTP."""
@@ -940,18 +521,14 @@ def start_server(host='0.0.0.0', port=5000, data_dir=None):
     try:
         print(f"[CiberMonday] Iniciando servidor HTTP en {host}:{port}")
         
-        # Configurar el handler con el manager
         CiberMondayHandler.manager = get_manager()
         
-        # Crear el servidor
         _server = ThreadedHTTPServer((host, port), CiberMondayHandler)
         
         print(f"[CiberMonday] Servidor escuchando en {host}:{port}")
         
-        # Iniciar broadcast de presencia del servidor
         broadcast_server_presence()
         
-        # Ejecutar el servidor
         _server.serve_forever()
         
     except Exception as e:
@@ -962,6 +539,7 @@ def start_server(host='0.0.0.0', port=5000, data_dir=None):
         traceback.print_exc()
         raise e
 
+
 def stop_server():
     """Detiene el servidor HTTP."""
     global _server, _server_running
@@ -971,13 +549,16 @@ def stop_server():
         _server = None
     print("[CiberMonday] Servidor detenido")
 
+
 def is_server_running():
     """Verifica si el servidor está corriendo."""
     return _server_running
 
+
 def get_server_error():
     """Obtiene el último error del servidor."""
     return _server_error or ""
+
 
 def test_server_connection():
     """Prueba si el servidor está respondiendo localmente."""
