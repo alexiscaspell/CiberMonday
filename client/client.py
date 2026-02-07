@@ -1080,7 +1080,7 @@ class SyncManager:
             self._do_sync()
     
     def _do_sync(self):
-        """Realiza un ciclo de sincronización con UN servidor disponible."""
+        """Realiza un ciclo de sincronización con TODOS los servidores disponibles."""
         try:
             client_id = self.client_id
             
@@ -1096,10 +1096,36 @@ class SyncManager:
                     print(f"[SyncManager] {self._consecutive_failures} ciclos sin servidores. Seguirá reintentando...")
                 return
             
-            # Encontrar UN servidor disponible
-            server_url = find_available_server(servers_list)
+            # Intentar sincronizar con TODOS los servidores disponibles
+            any_success = False
+            all_failed = True
             
-            if not server_url:
+            for server_info in servers_list:
+                server_url = server_info.get('url')
+                if not server_url:
+                    continue
+                
+                # Verificar si el servidor está disponible
+                try:
+                    health_response = requests.get(f"{server_url}/api/health", timeout=3)
+                    if health_response.status_code != 200:
+                        continue
+                except requests.exceptions.RequestException:
+                    continue
+                
+                all_failed = False
+                
+                # Sincronizar con este servidor
+                success = self._sync_with_server(client_id, server_url)
+                if success:
+                    any_success = True
+                    if REGISTRY_AVAILABLE:
+                        reset_server_timeout_count(server_url)
+                else:
+                    if REGISTRY_AVAILABLE:
+                        increment_server_timeouts([server_url])
+            
+            if all_failed:
                 with self._lock:
                     self._consecutive_failures += 1
                 if self._consecutive_failures == 1:
@@ -1112,8 +1138,7 @@ class SyncManager:
                     self._try_register(client_id)
                 return
             
-            # Sincronizar con ese servidor
-            success = self._sync_with_server(client_id, server_url)
+            success = any_success
             
             if success:
                 with self._lock:

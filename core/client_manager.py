@@ -568,16 +568,23 @@ class ClientManager:
     def get_broadcast_address(ip_address=None):
         """
         Obtiene la dirección de broadcast de la red local.
+        Intenta obtener la máscara de subred real del sistema para calcular
+        correctamente (ej: /22 → 192.168.71.255, no 192.168.68.255).
         Si se proporciona ip_address, calcula el broadcast basado en esa IP.
         Si no, usa get_local_ip() para determinarlo automáticamente.
-        Esto es importante en Docker donde get_local_ip() retorna la IP del container,
-        pero queremos calcular el broadcast basado en la IP del host (HOST_IP).
         """
         try:
             if ip_address is None:
                 ip_address = ClientManager.get_local_ip()
             if ip_address == "127.0.0.1":
                 return "255.255.255.255"
+            
+            # Intentar obtener la máscara de subred real desde las interfaces de red
+            broadcast_addr = ClientManager._get_broadcast_from_interfaces(ip_address)
+            if broadcast_addr:
+                return broadcast_addr
+            
+            # Fallback: asumir /24 si no pudimos obtener la máscara real
             parts = ip_address.split('.')
             if len(parts) == 4:
                 parts[3] = '255'
@@ -585,6 +592,104 @@ class ClientManager:
         except Exception:
             pass
         return "255.255.255.255"
+    
+    @staticmethod
+    def _get_broadcast_from_interfaces(ip_address):
+        """
+        Obtiene la dirección de broadcast real consultando las interfaces de red del sistema.
+        Funciona en Linux, macOS y Android.
+        """
+        import struct
+        
+        # Método 1: usar netifaces si está disponible
+        try:
+            import netifaces
+            for iface in netifaces.interfaces():
+                addrs = netifaces.ifaddresses(iface)
+                if netifaces.AF_INET in addrs:
+                    for addr_info in addrs[netifaces.AF_INET]:
+                        if addr_info.get('addr') == ip_address:
+                            broadcast = addr_info.get('broadcast')
+                            if broadcast:
+                                return broadcast
+        except ImportError:
+            pass
+        
+        # Método 2: usar fcntl/ioctl en Linux/Android
+        try:
+            import fcntl
+            import array
+            
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Obtener lista de interfaces
+            max_interfaces = 32
+            buf_size = max_interfaces * 40  # struct ifreq size
+            buf = array.array('B', b'\0' * buf_size)
+            
+            # SIOCGIFCONF
+            result = fcntl.ioctl(s.fileno(), 0x8912, struct.pack('iL', buf_size, buf.buffer_info()[0]))
+            result_size = struct.unpack('iL', result)[0]
+            
+            for i in range(0, result_size, 40):
+                iface_name = buf[i:i+16].tobytes().split(b'\0', 1)[0].decode('utf-8', errors='ignore')
+                iface_ip = socket.inet_ntoa(buf[i+20:i+24].tobytes())
+                
+                if iface_ip == ip_address:
+                    # Obtener netmask con SIOCGIFNETMASK
+                    try:
+                        netmask_result = fcntl.ioctl(
+                            s.fileno(),
+                            0x891b,  # SIOCGIFNETMASK
+                            struct.pack('256s', iface_name.encode('utf-8'))
+                        )
+                        netmask = socket.inet_ntoa(netmask_result[20:24])
+                        
+                        # Calcular broadcast: IP | ~netmask
+                        ip_int = struct.unpack('!I', socket.inet_aton(ip_address))[0]
+                        mask_int = struct.unpack('!I', socket.inet_aton(netmask))[0]
+                        broadcast_int = ip_int | (~mask_int & 0xFFFFFFFF)
+                        broadcast = socket.inet_ntoa(struct.pack('!I', broadcast_int))
+                        s.close()
+                        return broadcast
+                    except Exception:
+                        pass
+            s.close()
+        except (ImportError, OSError):
+            pass
+        
+        # Método 3: parsear ifconfig/ip addr (macOS y Linux)
+        try:
+            import subprocess
+            import platform
+            
+            if platform.system() == 'Darwin':
+                # macOS: ifconfig
+                output = subprocess.check_output(['ifconfig'], timeout=3).decode('utf-8', errors='ignore')
+                current_broadcast = None
+                found_ip = False
+                for line in output.split('\n'):
+                    line = line.strip()
+                    if 'inet ' in line and ip_address in line:
+                        # Buscar broadcast en la misma línea
+                        parts = line.split()
+                        for j, part in enumerate(parts):
+                            if part == 'broadcast' and j + 1 < len(parts):
+                                return parts[j + 1]
+            else:
+                # Linux: ip addr
+                output = subprocess.check_output(['ip', 'addr'], timeout=3).decode('utf-8', errors='ignore')
+                for line in output.split('\n'):
+                    line = line.strip()
+                    if f'inet {ip_address}/' in line:
+                        # Formato: inet 192.168.68.100/22 brd 192.168.71.255
+                        parts = line.split()
+                        for j, part in enumerate(parts):
+                            if part == 'brd' and j + 1 < len(parts):
+                                return parts[j + 1]
+        except Exception:
+            pass
+        
+        return None
     
     # ==================== SERIALIZATION ====================
     
