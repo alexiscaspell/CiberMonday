@@ -211,6 +211,16 @@
             transform: scale(1.1);
         }
         
+        .refresh-btn:disabled {
+            opacity: 0.7;
+            cursor: wait;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
         .no-clients {
             text-align: center;
             padding: 40px;
@@ -509,13 +519,32 @@
         </div>
     </div>
     
-    <button class="refresh-btn" onclick="loadClients()" title="Actualizar">🔄</button>
+    <button class="refresh-btn" onclick="forceRefresh()" title="Sincronizar con otros servidores">🔄</button>
     
     <script>
         // Usar la URL actual del navegador como base para la API
         const API_URL = `${window.location.protocol}//${window.location.host}/api`;
         let serverUrl = '';
         let currentClients = {};  // Cache de clientes para detectar cambios estructurales
+        
+        async function forceRefresh() {
+            const btn = document.querySelector('.refresh-btn');
+            btn.style.animation = 'spin 1s linear infinite';
+            btn.disabled = true;
+            
+            try {
+                // Forzar sincronización con otros servidores
+                await fetch(`${API_URL}/force-sync`, { method: 'POST' });
+            } catch (e) {
+                console.error('Error en force-sync:', e);
+            }
+            
+            // Recargar toda la data
+            await Promise.all([loadClients(), loadServers(), loadServerConfig()]);
+            
+            btn.style.animation = '';
+            btn.disabled = false;
+        }
         
         async function loadServerInfo() {
             try {

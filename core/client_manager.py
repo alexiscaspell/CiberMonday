@@ -9,6 +9,7 @@ import uuid
 import json
 import socket
 import hashlib
+import threading
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
@@ -245,14 +246,20 @@ class ClientManager:
         }
         self.clients_db[client_id]['is_active'] = True
         
+        session_info = {
+            'time_limit_seconds': total_seconds,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'remaining_seconds': total_seconds
+        }
+        
+        # Notificar al cliente del cambio de sesión
+        self._notify_client(client_id, 'session', session_info)
+        
         return {
             'success': True,
             'message': f'Tiempo establecido: {time_value} {time_unit}',
-            'session': {
-                'time_limit_seconds': total_seconds,
-                'start_time': start_time.isoformat(),
-                'end_time': end_time.isoformat()
-            }
+            'session': session_info
         }
     
     def stop_client_session(self, client_id):
@@ -273,6 +280,9 @@ class ClientManager:
             self.clients_db[client_id]['total_time_used'] += time_used
             del self.client_sessions[client_id]
             self.clients_db[client_id]['is_active'] = False
+        
+        # Notificar al cliente que su sesión fue detenida
+        self._notify_client(client_id, 'stop', {'message': 'Sesión detenida por el administrador'})
         
         return {'success': True, 'message': 'Sesión detenida'}
     
@@ -303,9 +313,14 @@ class ClientManager:
         return self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
     
     def set_client_config(self, client_id, sync_interval=None, alert_thresholds=None,
-                          custom_name=None, max_server_timeouts=None):
+                          custom_name=None, max_server_timeouts=None, 
+                          notify_client=True):
         """
         Modifica la configuración de un cliente.
+        
+        Args:
+            notify_client: Si True, envía push al cliente (acción de admin).
+                          Si False, es un reporte del propio cliente, no notificar.
         
         Returns:
             dict con success, message, config
@@ -347,17 +362,67 @@ class ClientManager:
         
         print(f"[Config] Cliente {client_id[:8]}... configuración actualizada: {current_config}")
         
+        # Solo notificar al cliente si es acción del admin (no si el cliente reportó)
+        if notify_client:
+            self._notify_client(client_id, 'config', current_config)
+        
         return {
             'success': True,
             'message': 'Configuración actualizada',
             'config': current_config
         }
     
+    # ==================== CLIENT PUSH NOTIFICATIONS ====================
+    
+    def _notify_client(self, client_id, event_type, event_data):
+        """
+        Envía una notificación HTTP push al cliente cuando el admin hace un cambio.
+        El cliente es la fuente de verdad y propagará el cambio a los demás servers.
+        
+        Args:
+            client_id: ID del cliente
+            event_type: Tipo de evento ('session', 'config', 'stop')
+            event_data: Datos del evento a enviar
+        """
+        if client_id not in self.clients_db:
+            return
+        
+        client = self.clients_db[client_id]
+        client_ip = client.get('client_ip')
+        diagnostic_port = client.get('diagnostic_port', 5002)
+        
+        if not client_ip:
+            print(f"[Push] Cliente {client_id[:8]}... no tiene IP registrada, no se puede notificar")
+            return
+        
+        def _do_notify():
+            try:
+                url = f"http://{client_ip}:{diagnostic_port}/api/push/{event_type}"
+                payload = json.dumps(event_data).encode('utf-8')
+                
+                req = urllib.request.Request(
+                    url,
+                    data=payload,
+                    headers={'Content-Type': 'application/json'}
+                )
+                
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    if response.status == 200:
+                        print(f"[Push] Notificación '{event_type}' enviada a cliente {client_id[:8]}... ({client_ip}:{diagnostic_port})")
+                    else:
+                        print(f"[Push] Cliente {client_id[:8]}... respondió {response.status}")
+            except Exception as e:
+                print(f"[Push] Error al notificar a cliente {client_id[:8]}... ({client_ip}:{diagnostic_port}): {e}")
+        
+        # Enviar en un thread para no bloquear la respuesta al admin
+        threading.Thread(target=_do_notify, daemon=True).start()
+    
     # ==================== SESSION REPORTING ====================
     
     def report_session(self, client_id, remaining_seconds, time_limit_seconds=None):
         """
         Permite a un cliente reportar su sesión activa.
+        Si remaining_seconds <= 0, limpia la sesión (el cliente informa que no tiene sesión).
         
         Returns:
             dict con success, message, session
@@ -365,8 +430,20 @@ class ClientManager:
         if client_id not in self.clients_db:
             return {'success': False, 'message': 'Cliente no encontrado'}
         
+        # remaining_seconds <= 0 significa que el cliente no tiene sesión activa
         if remaining_seconds <= 0:
-            return {'success': False, 'message': 'El tiempo debe ser mayor a 0'}
+            if client_id in self.client_sessions:
+                session = self.client_sessions[client_id]
+                start_time = datetime.fromisoformat(session['start_time'])
+                time_used = int((datetime.now() - start_time).total_seconds())
+                self.clients_db[client_id]['total_time_used'] += time_used
+                del self.client_sessions[client_id]
+            self.clients_db[client_id]['is_active'] = False
+            return {
+                'success': True,
+                'message': 'Sesión limpiada por reporte del cliente',
+                'session': None
+            }
         
         time_limit = time_limit_seconds or remaining_seconds
         end_time = datetime.now() + timedelta(seconds=remaining_seconds)
@@ -475,14 +552,17 @@ class ClientManager:
                     self.client_configs[client_id] = self.DEFAULT_CONFIG.copy()
     
     def _sync_with_other_servers(self):
-        """Sincroniza información con otros servidores conocidos."""
+        """
+        Sincroniza la lista de servidores conocidos con otros servidores.
+        Solo sincroniza SERVIDORES, no clientes. Los clientes son la fuente
+        de verdad de su propia sesión y la propagan a cada server al sincronizar.
+        """
         my_url = self.local_server_url
         if not my_url:
             return
         
         sync_data = {
-            'servers': self.get_servers(),
-            'clients': self.get_clients()
+            'servers': self.get_servers()
         }
         
         for server_id, server_data in list(self.servers_db.items()):
@@ -508,9 +588,6 @@ class ClientManager:
                                         other_server.get('ip'),
                                         other_server.get('port')
                                     )
-                        # También incorporar clientes del otro servidor
-                        if response_data.get('known_clients'):
-                            self.sync_clients_from_remote(response_data['known_clients'])
             except Exception:
                 pass
     

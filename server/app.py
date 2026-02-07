@@ -106,12 +106,16 @@ def set_client_config(client_id):
     """Modifica la configuración de un cliente."""
     data = request.json
     
+    # Si from_client=True, es el cliente reportando su config, no notificar de vuelta
+    from_client = data.get('from_client', False)
+    
     result = manager.set_client_config(
         client_id,
         sync_interval=data.get('sync_interval'),
         alert_thresholds=data.get('alert_thresholds'),
         custom_name=data.get('custom_name'),
-        max_server_timeouts=data.get('max_server_timeouts')
+        max_server_timeouts=data.get('max_server_timeouts'),
+        notify_client=not from_client
     )
     
     status = 200 if result['success'] else (404 if 'no encontrado' in result['message'] else 400)
@@ -234,21 +238,38 @@ def get_servers_endpoint():
 
 @app.route('/api/sync-servers', methods=['POST'])
 def sync_servers_endpoint():
-    """Sincroniza servidores y clientes entre servidores (anycast/discovery)."""
+    """
+    Sincroniza la lista de servidores entre servidores o con el cliente.
+    Solo sincroniza SERVIDORES. Los clientes son su propia fuente de verdad
+    y propagan su estado directamente a cada server.
+    """
     data = request.json
     servers_list = data.get('servers', [])
-    clients_list = data.get('clients', [])
     
     known_servers = manager.sync_servers(servers_list)
     
-    if clients_list:
-        manager.sync_clients_from_remote(clients_list)
-    
     return jsonify({
         'success': True,
-        'known_servers': known_servers,
-        'known_clients': manager.get_clients()
+        'known_servers': known_servers
     }), 200
+
+
+@app.route('/api/force-sync', methods=['POST'])
+def force_sync_endpoint():
+    """Fuerza una sincronización completa con todos los servidores conocidos."""
+    try:
+        manager._sync_with_other_servers()
+        return jsonify({
+            'success': True,
+            'message': 'Sincronización forzada completada',
+            'known_servers': manager.get_servers(),
+            'known_clients': manager.get_clients()
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'Error durante sincronización: {str(e)}'
+        }), 500
 
 
 # ==================== WEB UI ====================

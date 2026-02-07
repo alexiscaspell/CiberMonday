@@ -351,12 +351,14 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         
         elif path.startswith('/api/client/') and path.endswith('/config'):
             client_id = path.split('/')[3]
+            from_client = data.get('from_client', False)
             result = self.manager.set_client_config(
                 client_id,
                 sync_interval=data.get('sync_interval'),
                 alert_thresholds=data.get('alert_thresholds'),
                 custom_name=data.get('custom_name'),
-                max_server_timeouts=data.get('max_server_timeouts')
+                max_server_timeouts=data.get('max_server_timeouts'),
+                notify_client=not from_client
             )
             self._send_json(result, 200 if result['success'] else 400)
         
@@ -402,18 +404,28 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         
         elif path == '/api/sync-servers':
             servers_list = data.get('servers', [])
-            clients_list = data.get('clients', [])
             
             known_servers = self.manager.sync_servers(servers_list)
             
-            if clients_list:
-                self.manager.sync_clients_from_remote(clients_list)
-            
             self._send_json({
                 'success': True,
-                'known_servers': known_servers,
-                'known_clients': self.manager.get_clients()
+                'known_servers': known_servers
             }, 200)
+        
+        elif path == '/api/force-sync':
+            try:
+                self.manager._sync_with_other_servers()
+                self._send_json({
+                    'success': True,
+                    'message': 'Sincronización forzada completada',
+                    'known_servers': self.manager.get_servers(),
+                    'known_clients': self.manager.get_clients()
+                }, 200)
+            except Exception as e:
+                self._send_json({
+                    'success': False,
+                    'message': f'Error durante sincronización: {str(e)}'
+                }, 500)
         
         elif path == '/api/server-config':
             result = self.manager.set_server_config(

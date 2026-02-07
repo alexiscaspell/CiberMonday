@@ -1173,14 +1173,14 @@ class SyncManager:
     def _sync_with_server(self, client_id, server_url):
         """
         Sincroniza con UN servidor específico.
+        El cliente es la fuente de verdad: REPORTA su sesión al server.
+        Los servers son pasivos y solo almacenan lo que el cliente les informa.
         Retorna True si la sincronización fue exitosa.
         """
-        global last_known_remaining
-        
         try:
             print(f"[SyncManager] Sincronizando con {server_url}...")
             
-            # Obtener estado del cliente desde el servidor
+            # Primero verificar si el cliente existe en este servidor
             response = requests.get(
                 f"{server_url}/api/client/{client_id}/status",
                 timeout=10
@@ -1191,16 +1191,16 @@ class SyncManager:
                 print(f"[SyncManager] Cliente no encontrado en {server_url}. Registrando directamente...")
                 registered = self._register_on_server(client_id, server_url)
                 if registered:
-                    print(f"[SyncManager] ✅ Registrado en {server_url}")
+                    print(f"[SyncManager] Registrado en {server_url}")
                     if REGISTRY_AVAILABLE:
                         reset_server_timeout_count(server_url)
                     return True
                 else:
-                    print(f"[SyncManager] ❌ Error al registrar en {server_url}")
+                    print(f"[SyncManager] Error al registrar en {server_url}")
                     return False
             
             if response.status_code != 200:
-                print(f"[SyncManager] ⚠️  Error al obtener estado desde {server_url}: {response.status_code}")
+                print(f"[SyncManager] Error al obtener estado desde {server_url}: {response.status_code}")
                 if REGISTRY_AVAILABLE:
                     increment_server_timeouts([server_url])
                 return False
@@ -1210,24 +1210,13 @@ class SyncManager:
                 reset_server_timeout_count(server_url)
             
             data = response.json()
-            client_data = data.get('client', {})
             
             # Actualizar lista de servidores conocidos si el servidor la envía
             if 'known_servers' in data and REGISTRY_AVAILABLE:
                 self._update_servers_from_response(data, server_url)
             
-            # Aplicar configuración del servidor si está disponible
-            server_config = client_data.get('config')
-            if server_config and REGISTRY_AVAILABLE:
-                apply_server_config(server_config)
-            
-            # Procesar datos de sesión
-            session = client_data.get('session')
-            if session:
-                self._update_session_from_server(session, server_url)
-            else:
-                # Servidor no tiene sesión - verificar si el cliente tiene una localmente
-                self._handle_no_server_session(client_id, server_url)
+            # REPORTAR el estado local al servidor (el cliente es la fuente de verdad)
+            self._report_state_to_server(client_id, server_url)
             
             # Enviar lista de servidores conocidos al servidor
             if REGISTRY_AVAILABLE:
@@ -1235,17 +1224,65 @@ class SyncManager:
                 if known_servers:
                     self._send_servers_to_server(known_servers, server_url)
             
-            print(f"[SyncManager] ✅ Sincronización exitosa con {server_url}")
+            print(f"[SyncManager] Sync OK con {server_url}")
             return True
         
         except requests.exceptions.RequestException as e:
-            print(f"[SyncManager] ❌ Error de conexión con {server_url}: {e}")
+            print(f"[SyncManager] Error de conexión con {server_url}: {e}")
             if REGISTRY_AVAILABLE:
                 increment_server_timeouts([server_url])
             return False
         except Exception as e:
-            print(f"[SyncManager] ❌ Error inesperado con {server_url}: {e}")
+            print(f"[SyncManager] Error inesperado con {server_url}: {e}")
             return False
+    
+    def _report_state_to_server(self, client_id, server_url):
+        """
+        Reporta el estado actual del cliente al servidor.
+        Incluye sesión, configuración y nombre.
+        El cliente es la fuente de verdad.
+        """
+        if not REGISTRY_AVAILABLE:
+            return
+        
+        # Reportar sesión actual (o limpiarla si no hay sesión activa)
+        session_info = get_session_info()
+        if session_info and not session_info['is_expired'] and session_info['remaining_seconds'] > 0:
+            report_session_to_server(client_id, server_url=server_url)
+        else:
+            # Informar al server que no hay sesión activa
+            try:
+                requests.post(
+                    f"{server_url}/api/client/{client_id}/report-session",
+                    json={'remaining_seconds': 0, 'time_limit_seconds': 0},
+                    timeout=5
+                )
+            except:
+                pass
+        
+        # Reportar configuración y nombre
+        try:
+            config_data = get_config_from_registry()
+            if config_data:
+                config_payload = {}
+                if config_data.get('custom_name'):
+                    config_payload['custom_name'] = config_data['custom_name']
+                if config_data.get('sync_interval'):
+                    config_payload['sync_interval'] = config_data['sync_interval']
+                if config_data.get('alert_thresholds'):
+                    config_payload['alert_thresholds'] = config_data['alert_thresholds']
+                if config_data.get('max_server_timeouts'):
+                    config_payload['max_server_timeouts'] = config_data['max_server_timeouts']
+                
+                if config_payload:
+                    config_payload['from_client'] = True
+                    requests.post(
+                        f"{server_url}/api/client/{client_id}/config",
+                        json=config_payload,
+                        timeout=5
+                    )
+        except Exception as e:
+            print(f"[SyncManager] Error al reportar config a {server_url}: {e}")
     
     def _register_on_server(self, client_id, server_url):
         """
@@ -1312,13 +1349,10 @@ class SyncManager:
             if response.status_code == 201:
                 data = response.json()
                 known_servers_resp = data.get('known_servers', [])
-                server_config = data.get('config')
                 
                 if REGISTRY_AVAILABLE:
                     if known_servers_resp:
                         save_servers_to_registry(known_servers_resp)
-                    if server_config:
-                        apply_server_config(server_config)
                 
                 print(f"[SyncManager] Cliente registrado en {server_url}")
                 return True
@@ -1422,8 +1456,7 @@ class SyncManager:
             sync_response = requests.post(
                 f"{server_url}/api/sync-servers",
                 json={
-                    'servers': known_servers,
-                    'clients': []
+                    'servers': known_servers
                 },
                 timeout=5
             )
@@ -1657,8 +1690,179 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
         
         if path == '/api/add-server':
             self._handle_add_server()
+        elif path == '/api/push/session':
+            self._handle_push_session()
+        elif path == '/api/push/config':
+            self._handle_push_config()
+        elif path == '/api/push/stop':
+            self._handle_push_stop()
         else:
             self._send_json({'error': 'Not found'}, 404)
+    
+    def _read_post_data(self):
+        """Lee y parsea el body JSON de un POST request."""
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length == 0:
+            return None
+        post_data = self.rfile.read(content_length)
+        return json.loads(post_data.decode('utf-8'))
+    
+    def _handle_push_session(self):
+        """
+        Recibe una notificación push del server cuando el admin cambia el tiempo.
+        El cliente actualiza su sesión local y luego propaga a todos los servers.
+        """
+        global last_known_remaining
+        
+        try:
+            data = self._read_post_data()
+            if not data:
+                self._send_json({'success': False, 'message': 'No data'}, 400)
+                return
+            
+            time_limit = data.get('time_limit_seconds', 0)
+            remaining = data.get('remaining_seconds', 0)
+            start_time_iso = data.get('start_time')
+            end_time_iso = data.get('end_time')
+            
+            if not all([time_limit, remaining]):
+                self._send_json({'success': False, 'message': 'Datos incompletos'}, 400)
+                return
+            
+            # Calcular tiempos locales basados en remaining
+            now_local = datetime.now()
+            end_time_local = now_local + timedelta(seconds=remaining)
+            elapsed_seconds = time_limit - remaining
+            start_time_local = now_local - timedelta(seconds=elapsed_seconds)
+            
+            if REGISTRY_AVAILABLE:
+                save_session_to_registry(
+                    time_limit_seconds=time_limit,
+                    start_time_iso=start_time_local.isoformat(),
+                    end_time_iso=end_time_local.isoformat()
+                )
+                
+                # Resetear alertas para la nueva sesión
+                reset_alerts_for_new_session(remaining)
+                last_known_remaining = remaining
+            
+            print(f"[Push] Sesión recibida del servidor: {remaining}s restantes ({time_limit}s total)")
+            
+            # Propagar a todos los servers en background
+            self._trigger_propagation()
+            
+            self._send_json({'success': True, 'message': f'Sesión actualizada: {remaining}s restantes'})
+            
+        except json.JSONDecodeError:
+            self._send_json({'success': False, 'message': 'Invalid JSON'}, 400)
+        except Exception as e:
+            print(f"[Push] Error al procesar push de sesión: {e}")
+            import traceback
+            traceback.print_exc()
+            self._send_json({'success': False, 'message': str(e)}, 500)
+    
+    def _handle_push_config(self):
+        """
+        Recibe una notificación push del server cuando el admin cambia la configuración.
+        """
+        try:
+            data = self._read_post_data()
+            if not data:
+                self._send_json({'success': False, 'message': 'No data'}, 400)
+                return
+            
+            if REGISTRY_AVAILABLE:
+                apply_server_config(data)
+            
+            print(f"[Push] Configuración recibida del servidor: {data}")
+            
+            # Propagar a todos los servers en background
+            self._trigger_propagation()
+            
+            self._send_json({'success': True, 'message': 'Configuración actualizada'})
+            
+        except json.JSONDecodeError:
+            self._send_json({'success': False, 'message': 'Invalid JSON'}, 400)
+        except Exception as e:
+            print(f"[Push] Error al procesar push de config: {e}")
+            self._send_json({'success': False, 'message': str(e)}, 500)
+    
+    def _handle_push_stop(self):
+        """
+        Recibe una notificación push del server cuando el admin detiene la sesión.
+        """
+        try:
+            if REGISTRY_AVAILABLE:
+                clear_session_from_registry()
+            
+            print(f"[Push] Sesión detenida por el servidor")
+            
+            # Propagar a todos los servers en background
+            self._trigger_propagation()
+            
+            self._send_json({'success': True, 'message': 'Sesión detenida'})
+            
+        except Exception as e:
+            print(f"[Push] Error al procesar push de stop: {e}")
+            self._send_json({'success': False, 'message': str(e)}, 500)
+    
+    def _trigger_propagation(self):
+        """
+        Lanza en background la propagación del estado actual del cliente a todos los servers.
+        Esto se ejecuta después de recibir un push del server, para que todos los demás
+        servers se enteren del cambio.
+        """
+        import threading
+        
+        def _propagate():
+            try:
+                if not REGISTRY_AVAILABLE:
+                    return
+                
+                client_id = get_client_id()
+                if not client_id:
+                    return
+                
+                servers_list = get_available_servers()
+                if not servers_list:
+                    return
+                
+                session_info = get_session_info()
+                
+                for server_info in servers_list:
+                    server_url = server_info.get('url')
+                    if not server_url:
+                        continue
+                    
+                    try:
+                        # Verificar que el server está vivo
+                        health = requests.get(f"{server_url}/api/health", timeout=3)
+                        if health.status_code != 200:
+                            continue
+                        
+                        if session_info and not session_info['is_expired'] and session_info['remaining_seconds'] > 0:
+                            # Reportar sesión activa
+                            report_session_to_server(client_id, server_url=server_url)
+                        else:
+                            # Reportar que la sesión fue detenida
+                            # Usar report-session con remaining=0 para limpiar en el server
+                            # sin disparar el flujo de admin (stop) que volvería a notificar
+                            try:
+                                requests.post(
+                                    f"{server_url}/api/client/{client_id}/report-session",
+                                    json={'remaining_seconds': 0, 'time_limit_seconds': 0},
+                                    timeout=5
+                                )
+                            except:
+                                pass
+                        
+                        print(f"[Push] Estado propagado a {server_url}")
+                    except Exception as e:
+                        print(f"[Push] Error al propagar a {server_url}: {e}")
+            except Exception as e:
+                print(f"[Push] Error en propagación: {e}")
+        
+        threading.Thread(target=_propagate, daemon=True).start()
     
     def _handle_add_server(self):
         """Maneja la notificación de un nuevo servidor desde el servidor principal"""
@@ -1987,11 +2191,14 @@ def start_diagnostic_server(port=5002):
             print(f"[Diagnóstico] Servidor de diagnóstico iniciado en http://{local_ip}:{port}")
             print(f"[Diagnóstico] Dashboard disponible en http://{local_ip}:{port}/")
             print(f"[Diagnóstico] Endpoints disponibles:")
-            print(f"[Diagnóstico]   GET /api/diagnostic - Información completa")
-            print(f"[Diagnóstico]   GET /api/status - Estado del cliente")
-            print(f"[Diagnóstico]   GET /api/discovery - Estado del descubrimiento")
-            print(f"[Diagnóstico]   GET /api/servers - Servidores conocidos")
+            print(f"[Diagnóstico]   GET  /api/diagnostic - Información completa")
+            print(f"[Diagnóstico]   GET  /api/status - Estado del cliente")
+            print(f"[Diagnóstico]   GET  /api/discovery - Estado del descubrimiento")
+            print(f"[Diagnóstico]   GET  /api/servers - Servidores conocidos")
             print(f"[Diagnóstico]   POST /api/add-server - Agregar servidor (notificación)")
+            print(f"[Diagnóstico]   POST /api/push/session - Push de sesión desde server")
+            print(f"[Diagnóstico]   POST /api/push/config - Push de config desde server")
+            print(f"[Diagnóstico]   POST /api/push/stop - Push de stop desde server")
             server.serve_forever()
         except OSError as e:
             if e.errno == 10048 or "Address already in use" in str(e):
