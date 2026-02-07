@@ -44,6 +44,7 @@ jobs:
           --hidden-import "win32service" `
           --hidden-import "win32event" `
           --hidden-import "servicemanager" `
+          --hidden-import "win32timezone" `
           --hidden-import "protection" `
           --hidden-import "registry_manager" `
           --hidden-import "config_gui" `
@@ -65,6 +66,7 @@ jobs:
           --hidden-import "win32service" `
           --hidden-import "win32event" `
           --hidden-import "servicemanager" `
+          --hidden-import "win32timezone" `
           --hidden-import "protection" `
           --hidden-import "firewall_manager" `
           --hidden-import "ctypes" `

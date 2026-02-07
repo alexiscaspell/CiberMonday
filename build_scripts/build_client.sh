@@ -62,6 +62,7 @@ $PYTHON_CMD -m PyInstaller --onefile \
     --hidden-import "win32service" \
     --hidden-import "win32event" \
     --hidden-import "servicemanager" \
+    --hidden-import "win32timezone" \
     --hidden-import "protection" \
     --hidden-import "registry_manager" \
     --hidden-import "requests" \
@@ -88,9 +89,9 @@ $PYTHON_CMD -m PyInstaller --onefile \
     --hidden-import "win32service" \
     --hidden-import "win32event" \
     --hidden-import "servicemanager" \
+    --hidden-import "win32timezone" \
     --hidden-import "protection" \
-    --hidden-import "registry_manager" \
-    --hidden-import "requests" \
+    --hidden-import "firewall_manager" \
     --hidden-import "ctypes" \
     --hidden-import "ctypes.wintypes" \
     service.py
