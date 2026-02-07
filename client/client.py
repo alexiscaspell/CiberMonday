@@ -471,9 +471,7 @@ def get_available_servers():
     # Primero agregar servidores descubiertos (más recientes primero)
     if REGISTRY_AVAILABLE:
         known_servers = get_servers_from_registry()
-        print(f"[Servidores] Servidores conocidos en registro: {len(known_servers)}")
         
-        # Ordenar por last_seen (más recientes primero)
         known_servers_sorted = sorted(
             known_servers,
             key=lambda s: s.get('last_seen', ''),
@@ -485,23 +483,20 @@ def get_available_servers():
             if server_url:
                 servers.append({
                     'url': server_url,
-                    'priority': 0,  # Misma prioridad que el principal
+                    'priority': 0,
                     'last_seen': server.get('last_seen', ''),
                     'source': 'discovered'
                 })
                 seen_urls.add(server_url)
-                print(f"[Servidores] Agregado servidor descubierto: {server_url} (visto: {server.get('last_seen', 'N/A')})")
     
     # Luego agregar servidor principal si no está ya en la lista
     if SERVER_URL and SERVER_URL not in seen_urls:
         servers.append({
             'url': SERVER_URL,
-            'priority': 0,  # Misma prioridad que los descubiertos
+            'priority': 0,
             'source': 'configured'
         })
-        print(f"[Servidores] Agregado servidor principal: {SERVER_URL}")
     
-    print(f"[Servidores] Total de servidores disponibles para probar: {len(servers)}")
     return servers
 
 def find_available_server(servers_list=None):
@@ -513,44 +508,29 @@ def find_available_server(servers_list=None):
     if servers_list is None:
         servers_list = get_available_servers()
     
-    # Ordenar por prioridad (todos tienen 0 ahora, pero mantenemos el orden por last_seen)
     servers_list.sort(key=lambda x: (x.get('priority', 1), x.get('last_seen', ''), ''), reverse=True)
-    
-    print(f"[Servidores] Buscando servidor disponible de {len(servers_list)} servidores conocidos...")
     
     failed_servers = []
     
-    for idx, server in enumerate(servers_list, 1):
+    for server in servers_list:
         server_url = server.get('url')
         if not server_url:
             continue
         
-        source = server.get('source', 'unknown')
-        last_seen = server.get('last_seen', 'N/A')
-        timeout_count = server.get('timeout_count', 0)
-        print(f"[Servidores] [{idx}/{len(servers_list)}] Probando servidor: {server_url} (origen: {source}, visto: {last_seen}, timeouts: {timeout_count})")
-        
         try:
-            # Intentar conectar al servidor
             response = requests.get(f"{server_url}/api/health", timeout=3)
             if response.status_code == 200:
-                print(f"[Servidores] ✅ Servidor disponible encontrado: {server_url} (origen: {source})")
-                # Resetear contador de timeouts al tener éxito
                 if REGISTRY_AVAILABLE:
                     reset_server_timeout_count(server_url)
                 return server_url
             else:
-                print(f"[Servidores] ⚠️  Servidor {server_url} respondió con código {response.status_code}")
                 failed_servers.append(server_url)
-        except Exception as e:
-            print(f"[Servidores] ❌ Servidor {server_url} no disponible: {e}")
+        except Exception:
             failed_servers.append(server_url)
     
-    # Incrementar contadores de timeouts para servidores que fallaron
     if REGISTRY_AVAILABLE and failed_servers:
         increment_server_timeouts(failed_servers)
     
-    print(f"[Servidores] ❌ No se encontró ningún servidor disponible")
     return None
 
 def register_new_client(existing_client_id=None):
@@ -600,7 +580,7 @@ def register_new_client(existing_client_id=None):
                         'remaining_seconds': session_info['remaining_seconds'],
                         'time_limit_seconds': session_data.get('time_limit_seconds', session_info['remaining_seconds'])
                     }
-                    print(f"[Re-registro] Enviando sesión activa: {session_info['remaining_seconds']}s restantes")
+                    pass  # Sesión activa incluida en registro
             
             # Incluir configuración actual del cliente (incluyendo nombre personalizado)
             if config_data:
@@ -639,7 +619,6 @@ def register_new_client(existing_client_id=None):
             # Guardar lista de servidores conocidos
             if REGISTRY_AVAILABLE and known_servers:
                 save_servers_to_registry(known_servers)
-                print(f"[Servidores] Actualizada lista de {len(known_servers)} servidores conocidos")
             
             # Guardar el ID del cliente
             client_id_file_path = os.path.join(BASE_PATH, os.path.basename(CLIENT_ID_FILE))
@@ -654,12 +633,7 @@ def register_new_client(existing_client_id=None):
                 if server_config:
                     apply_server_config(server_config)
             
-            if existing_client_id:
-                print(f"Cliente re-registrado exitosamente. ID: {client_id}")
-                if session_restored:
-                    print(f"[Re-registro] Sesión restaurada en el servidor")
-            else:
-                print(f"Cliente registrado exitosamente. ID: {client_id}")
+            print(f"[Registro] Cliente {'re-' if existing_client_id else ''}registrado: {client_id[:8]}...")
             
             return client_id
         else:
@@ -759,13 +733,10 @@ def report_session_to_server(client_id, server_url=None):
         )
         
         if response.status_code == 200:
-            print(f"[Reporte] Sesión reportada al servidor: {session_info['remaining_seconds']}s restantes")
             return True
         else:
-            print(f"[Reporte] Error al reportar sesión: {response.status_code}")
             return False
-    except requests.exceptions.RequestException as e:
-        print(f"[Reporte] Error de conexión: {e}")
+    except requests.exceptions.RequestException:
         return False
 
 def check_server_status(client_id):
@@ -822,10 +793,7 @@ def sync_with_all_servers(client_id):
     servers_list = get_available_servers()
     
     if not servers_list:
-        print("[Sincronización] No hay servidores conocidos. Esperando descubrimiento por broadcast...")
         return False
-    
-    print(f"[Sincronización] Sincronizando con {len(servers_list)} servidor(es) conocido(s)...")
     
     # Obtener lista de servidores conocidos para enviar a cada servidor
     known_servers = []
@@ -846,13 +814,9 @@ def sync_with_all_servers(client_id):
         if not server_url:
             continue
         
-        print(f"[Sincronización] Sincronizando con servidor: {server_url}")
-        
         try:
-            # Verificar si el servidor está disponible
             health_response = requests.get(f"{server_url}/api/health", timeout=3)
             if health_response.status_code != 200:
-                print(f"[Sincronización] ⚠️  Servidor {server_url} no disponible (código {health_response.status_code})")
                 failed_servers.append(server_url)
                 continue
             
@@ -863,23 +827,17 @@ def sync_with_all_servers(client_id):
             )
             
             if response.status_code == 404:
-                # Cliente no encontrado - intentar re-registrarse CON EL MISMO ID
-                print(f"[Sincronización] Cliente no encontrado en {server_url}. Re-registrando...")
                 new_client_id = register_new_client(existing_client_id=client_id)
                 if new_client_id:
                     client_id = new_client_id
-                    print(f"[Sincronización] ✅ Re-registrado en {server_url}")
                     success_count += 1
-                    # Resetear contador de timeouts al tener éxito
                     if REGISTRY_AVAILABLE:
                         reset_server_timeout_count(server_url)
                 else:
-                    print(f"[Sincronización] ❌ Error al re-registrar en {server_url}")
                     failed_servers.append(server_url)
                 continue
             
             if response.status_code != 200:
-                print(f"[Sincronización] ⚠️  Error al obtener estado desde {server_url}: {response.status_code}")
                 failed_servers.append(server_url)
                 continue
             
@@ -923,9 +881,8 @@ def sync_with_all_servers(client_id):
                                     })
                         
                         save_servers_to_registry(current_servers)
-                        print(f"[Sincronización] ✅ Lista de servidores actualizada desde {server_url}")
-                except Exception as e:
-                    print(f"[Sincronización] ⚠️  Error al actualizar servidores: {e}")
+                except Exception:
+                    pass
             
             # Aplicar configuración del servidor si está disponible
             server_config = client_data.get('config')
@@ -956,7 +913,6 @@ def sync_with_all_servers(client_id):
                                 end_time_iso=end_time_local.isoformat()
                             )
                             last_known_remaining = remaining_from_server
-                            print(f"[Sincronización] ✅ Sesión actualizada desde {server_url}: {remaining_from_server}s restantes")
             
             # Enviar lista de servidores conocidos a este servidor para sincronización
             if known_servers:
@@ -971,27 +927,18 @@ def sync_with_all_servers(client_id):
                     )
                     if sync_response.status_code == 200:
                         sync_data = sync_response.json()
-                        # Actualizar lista de servidores conocidos con la respuesta del servidor
                         updated_servers = sync_data.get('known_servers', [])
                         if updated_servers and REGISTRY_AVAILABLE:
                             save_servers_to_registry(updated_servers)
-                            print(f"[Sincronización] ✅ Servidores sincronizados con {server_url}")
-                except Exception as e:
-                    print(f"[Sincronización] ⚠️  Error al sincronizar servidores con {server_url}: {e}")
+                except Exception:
+                    pass
             
             success_count += 1
-            print(f"[Sincronización] ✅ Sincronización exitosa con {server_url}")
             
-        except requests.exceptions.RequestException as e:
-            print(f"[Sincronización] ❌ Error de conexión con {server_url}: {e}")
+        except requests.exceptions.RequestException:
             failed_servers.append(server_url)
-        except Exception as e:
-            print(f"[Sincronización] ❌ Error inesperado con {server_url}: {e}")
+        except Exception:
             failed_servers.append(server_url)
-    
-    print(f"[Sincronización] Completada: {success_count} exitosa(s), {len(failed_servers)} fallida(s)")
-    if failed_servers:
-        print(f"[Sincronización] Servidores con errores: {', '.join(failed_servers)}")
     
     return client_id if success_count > 0 else False
 
@@ -1178,17 +1125,15 @@ class SyncManager:
         Retorna True si la sincronización fue exitosa.
         """
         try:
-            print(f"[SyncManager] Sincronizando con {server_url}...")
-            
-            # Primero verificar si el cliente existe en este servidor
+            # Verificar si el cliente existe en este servidor
             response = requests.get(
                 f"{server_url}/api/client/{client_id}/status",
                 timeout=10
             )
             
             if response.status_code == 404:
-                # Cliente no encontrado en ESTE servidor - registrar directamente en él
-                print(f"[SyncManager] Cliente no encontrado en {server_url}. Registrando directamente...")
+                # Cliente no encontrado en ESTE servidor - registrar directamente
+                print(f"[SyncManager] Registrando en {server_url}...")
                 registered = self._register_on_server(client_id, server_url)
                 if registered:
                     print(f"[SyncManager] Registrado en {server_url}")
@@ -1200,12 +1145,11 @@ class SyncManager:
                     return False
             
             if response.status_code != 200:
-                print(f"[SyncManager] Error al obtener estado desde {server_url}: {response.status_code}")
+                print(f"[SyncManager] Error {response.status_code} desde {server_url}")
                 if REGISTRY_AVAILABLE:
                     increment_server_timeouts([server_url])
                 return False
             
-            # Resetear contador de timeouts al tener éxito
             if REGISTRY_AVAILABLE:
                 reset_server_timeout_count(server_url)
             
@@ -1224,7 +1168,6 @@ class SyncManager:
                 if known_servers:
                     self._send_servers_to_server(known_servers, server_url)
             
-            print(f"[SyncManager] Sync OK con {server_url}")
             return True
         
         except requests.exceptions.RequestException as e:
@@ -1281,8 +1224,8 @@ class SyncManager:
                         json=config_payload,
                         timeout=5
                     )
-        except Exception as e:
-            print(f"[SyncManager] Error al reportar config a {server_url}: {e}")
+        except Exception:
+            pass
     
     def _register_on_server(self, client_id, server_url):
         """
@@ -1465,9 +1408,8 @@ class SyncManager:
                 updated_servers = sync_data.get('known_servers', [])
                 if updated_servers and REGISTRY_AVAILABLE:
                     save_servers_to_registry(updated_servers)
-                    print(f"[SyncManager] ✅ Servidores sincronizados con {server_url}")
-        except Exception as e:
-            print(f"[SyncManager] ⚠️  Error al sincronizar servidores con {server_url}: {e}")
+        except Exception:
+            pass
 
 
 def start_server_discovery_listener():
@@ -1520,15 +1462,16 @@ def start_server_discovery_listener():
             # Log cada 30 segundos si no se reciben broadcasts
             last_status_log = time.time()
             
+            known_server_urls = set()  # Para trackear qué servers ya conocemos
+            
             while True:
                 try:
                     data, addr = sock.recvfrom(1024)
                     broadcast_count += 1
                     last_broadcast_time = time.time()
                     current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    print(f"[Discovery] 📡 Broadcast #{broadcast_count} recibido desde {addr[0]}:{addr[1]} ({len(data)} bytes)")
                     
-                    # Actualizar estadísticas globales
+                    # Actualizar estadísticas globales (silencioso)
                     update_discovery_stats(
                         broadcast_count=broadcast_count,
                         last_broadcast_time=current_time_str,
@@ -1537,44 +1480,36 @@ def start_server_discovery_listener():
                     
                     try:
                         server_info = json.loads(data.decode('utf-8'))
-                    except json.JSONDecodeError as e:
-                        print(f"[Discovery] Error al decodificar JSON del broadcast desde {addr[0]}: {e}")
-                        print(f"[Discovery] Datos recibidos (primeros 100 bytes): {data[:100]}")
+                    except json.JSONDecodeError:
                         continue
                     
                     server_url = server_info.get('url')
                     server_ip = server_info.get('ip', addr[0])
                     server_port = server_info.get('port', 5000)
                     
-                    # Actualizar estadísticas
                     if server_url:
                         update_discovery_stats(server_url=server_url)
                     
                     if server_url:
-                        print(f"[Discovery] Nuevo servidor detectado: {server_url} desde {addr[0]}")
+                        is_new = server_url not in known_server_urls
                         
                         # Registrar el servidor en nuestra lista
                         if REGISTRY_AVAILABLE:
                             known_servers = get_servers_from_registry()
-                            print(f"[Discovery] Servidores conocidos actualmente: {len(known_servers)}")
                             
-                            # Verificar si ya existe
                             server_exists = False
                             for server in known_servers:
                                 if server.get('url') == server_url:
-                                    # Actualizar last_seen y datos del servidor existente
                                     server['last_seen'] = datetime.now().isoformat()
                                     if server_ip:
                                         server['ip'] = server_ip
                                     if server_port:
                                         server['port'] = server_port
                                     save_servers_to_registry(known_servers)
-                                    print(f"[Discovery] ✅ Servidor {server_url} actualizado (last_seen actualizado)")
                                     server_exists = True
                                     break
                             
                             if not server_exists:
-                                # Agregar nuevo servidor
                                 known_servers.append({
                                     'url': server_url,
                                     'ip': server_ip,
@@ -1582,46 +1517,32 @@ def start_server_discovery_listener():
                                     'last_seen': datetime.now().isoformat()
                                 })
                                 save_servers_to_registry(known_servers)
-                                print(f"[Discovery] ✅ Servidor {server_url} registrado exitosamente")
-                        else:
-                            print(f"[Discovery] ⚠️  Registry no disponible, no se puede guardar el servidor")
+                                print(f"[Discovery] Nuevo servidor registrado: {server_url}")
                         
-                        # También registrar directamente en el servidor usando el endpoint
-                        try:
-                            response = requests.post(
-                                f"{server_url}/api/register-server",
-                                json={
-                                    'url': server_url,
-                                    'ip': server_ip,
-                                    'port': server_port
-                                },
-                                timeout=2
-                            )
-                            if response.status_code == 201:
-                                print(f"[Discovery] ✅ Servidor {server_url} confirmado en el servidor")
-                            else:
-                                print(f"[Discovery] ⚠️  Respuesta del servidor {server_url}: {response.status_code}")
-                        except Exception as e:
-                            print(f"[Discovery] ⚠️  Error al confirmar servidor {server_url}: {e}")
+                        # Solo loguear la primera vez que vemos este server
+                        if is_new:
+                            known_server_urls.add(server_url)
+                            print(f"[Discovery] Servidor detectado: {server_url} ({server_ip}:{server_port})")
                             
+                            # Confirmar con el servidor
+                            try:
+                                requests.post(
+                                    f"{server_url}/api/register-server",
+                                    json={'url': server_url, 'ip': server_ip, 'port': server_port},
+                                    timeout=2
+                                )
+                            except Exception:
+                                pass
+                        
                 except socket.timeout:
-                    # Timeout normal, continuar escuchando
-                    # Log cada 30 segundos si no se reciben broadcasts
                     current_time = time.time()
-                    if current_time - last_status_log >= 30:
+                    if current_time - last_status_log >= 60:
                         if broadcast_count == 0:
-                            print(f"[Discovery] ⚠️  Aún no se han recibido broadcasts después de {int(current_time - (last_status_log - 30))} segundos")
-                            print(f"[Discovery] Verifica que el servidor esté enviando broadcasts y que no haya firewall bloqueando UDP")
-                        else:
-                            time_since_last = int(current_time - last_broadcast_time) if last_broadcast_time else 0
-                            print(f"[Discovery] 📊 Estado: {broadcast_count} broadcast(s) recibido(s) hasta ahora. Último hace {time_since_last}s")
+                            print(f"[Discovery] Sin broadcasts recibidos aún")
                         last_status_log = current_time
                     continue
                 except Exception as e:
-                    # Error al procesar, continuar escuchando
-                    print(f"[Discovery] ❌ Error al procesar broadcast: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"[Discovery] Error: {e}")
                     continue
                     
         except OSError as e:
@@ -1856,11 +1777,10 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
                             except:
                                 pass
                         
-                        print(f"[Push] Estado propagado a {server_url}")
-                    except Exception as e:
-                        print(f"[Push] Error al propagar a {server_url}: {e}")
-            except Exception as e:
-                print(f"[Push] Error en propagación: {e}")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         
         threading.Thread(target=_propagate, daemon=True).start()
     
@@ -1902,10 +1822,10 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
                             'timeout_count': 0
                         })
                         save_servers_to_registry(known_servers)
-                        print(f"[Notificación] ✅ Nuevo servidor agregado desde notificación: {server_url}")
+                        print(f"[Notificación] Nuevo servidor agregado: {server_url}")
                         self._send_json({'success': True, 'message': f'Servidor {server_url} agregado exitosamente'})
                     else:
-                        # Actualizar servidor existente
+                        # Actualizar servidor existente (silencioso)
                         for s in known_servers:
                             if s.get('url') == server_url:
                                 s['last_seen'] = datetime.now().isoformat()
@@ -1916,7 +1836,6 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
                                     s['port'] = server_port
                                 break
                         save_servers_to_registry(known_servers)
-                        print(f"[Notificación] ✅ Servidor actualizado desde notificación: {server_url}")
                         self._send_json({'success': True, 'message': f'Servidor {server_url} actualizado'})
                 except Exception as e:
                     print(f"[Notificación] ❌ Error al agregar servidor: {e}")

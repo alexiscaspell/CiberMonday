@@ -28,6 +28,10 @@ class ClientManager:
         'max_server_timeouts': 10,
     }
     
+    # Segundos durante los cuales un reporte del cliente es ignorado
+    # después de un cambio de admin (para dar tiempo al push de llegar)
+    ADMIN_CHANGE_GRACE_SECONDS = 15
+    
     def __init__(self, server_port=5000):
         self.clients_db = {}
         self.client_sessions = {}
@@ -38,6 +42,9 @@ class ClientManager:
         }
         self.server_port = server_port
         self._local_server_url = None
+        # Trackea cambios de admin pendientes para evitar que el sync del
+        # cliente sobreescriba antes de que el push llegue
+        self._pending_admin_changes = {}  # client_id -> datetime
     
     @property
     def local_server_url(self):
@@ -328,6 +335,11 @@ class ClientManager:
         if client_id not in self.clients_db:
             return {'success': False, 'message': 'Cliente no encontrado'}
         
+        # Si es reporte del cliente y hay un cambio de admin pendiente, ignorar
+        if not notify_client and self._has_pending_admin_change(client_id):
+            current_config = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
+            return {'success': True, 'message': 'Cambio de admin pendiente', 'config': current_config}
+        
         current_config = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
         
         if sync_interval is not None:
@@ -379,6 +391,9 @@ class ClientManager:
         Envía una notificación HTTP push al cliente cuando el admin hace un cambio.
         El cliente es la fuente de verdad y propagará el cambio a los demás servers.
         
+        Incluye reintentos automáticos y marca un grace period para que el sync
+        del cliente no sobreescriba el cambio antes de que el push llegue.
+        
         Args:
             client_id: ID del cliente
             event_type: Tipo de evento ('session', 'config', 'stop')
@@ -395,40 +410,87 @@ class ClientManager:
             print(f"[Push] Cliente {client_id[:8]}... no tiene IP registrada, no se puede notificar")
             return
         
+        # Marcar que hay un cambio de admin pendiente (grace period)
+        self._pending_admin_changes[client_id] = datetime.now()
+        
+        import time as _time
+        
         def _do_notify():
-            try:
-                url = f"http://{client_ip}:{diagnostic_port}/api/push/{event_type}"
-                payload = json.dumps(event_data).encode('utf-8')
+            url = f"http://{client_ip}:{diagnostic_port}/api/push/{event_type}"
+            payload = json.dumps(event_data).encode('utf-8')
+            
+            max_retries = 5
+            retry_delays = [0, 2, 3, 5, 5]  # segundos entre reintentos
+            
+            for attempt in range(max_retries):
+                if attempt > 0:
+                    _time.sleep(retry_delays[attempt])
                 
-                req = urllib.request.Request(
-                    url,
-                    data=payload,
-                    headers={'Content-Type': 'application/json'}
-                )
-                
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    if response.status == 200:
-                        print(f"[Push] Notificación '{event_type}' enviada a cliente {client_id[:8]}... ({client_ip}:{diagnostic_port})")
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        data=payload,
+                        headers={'Content-Type': 'application/json'}
+                    )
+                    
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        if response.status == 200:
+                            print(f"[Push] '{event_type}' enviado a cliente {client_id[:8]}..." + 
+                                  (f" (intento {attempt + 1})" if attempt > 0 else ""))
+                            # Push exitoso, limpiar pending
+                            self._pending_admin_changes.pop(client_id, None)
+                            return
+                        else:
+                            print(f"[Push] Cliente respondió {response.status} (intento {attempt + 1}/{max_retries})")
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        print(f"[Push] Reintentando '{event_type}' a {client_id[:8]}... ({attempt + 1}/{max_retries}): {e}")
                     else:
-                        print(f"[Push] Cliente {client_id[:8]}... respondió {response.status}")
-            except Exception as e:
-                print(f"[Push] Error al notificar a cliente {client_id[:8]}... ({client_ip}:{diagnostic_port}): {e}")
+                        print(f"[Push] Falló '{event_type}' a {client_id[:8]}... después de {max_retries} intentos: {e}")
+                        # No limpiar pending - se limpiará por timeout en report_session
         
         # Enviar en un thread para no bloquear la respuesta al admin
         threading.Thread(target=_do_notify, daemon=True).start()
     
     # ==================== SESSION REPORTING ====================
     
+    def _has_pending_admin_change(self, client_id):
+        """
+        Verifica si hay un cambio de admin pendiente para este cliente.
+        Si el grace period expiró, lo limpia automáticamente.
+        """
+        if client_id not in self._pending_admin_changes:
+            return False
+        
+        elapsed = (datetime.now() - self._pending_admin_changes[client_id]).total_seconds()
+        if elapsed > self.ADMIN_CHANGE_GRACE_SECONDS:
+            # Grace period expirado, limpiar
+            del self._pending_admin_changes[client_id]
+            return False
+        
+        return True
+    
     def report_session(self, client_id, remaining_seconds, time_limit_seconds=None):
         """
         Permite a un cliente reportar su sesión activa.
         Si remaining_seconds <= 0, limpia la sesión (el cliente informa que no tiene sesión).
+        
+        Si hay un cambio de admin pendiente (grace period), el reporte se ignora
+        para evitar que el sync del cliente sobreescriba el cambio del admin.
         
         Returns:
             dict con success, message, session
         """
         if client_id not in self.clients_db:
             return {'success': False, 'message': 'Cliente no encontrado'}
+        
+        # Verificar si hay un cambio de admin pendiente
+        if self._has_pending_admin_change(client_id):
+            return {
+                'success': True,
+                'message': 'Cambio de admin pendiente, reporte ignorado',
+                'session': None
+            }
         
         # remaining_seconds <= 0 significa que el cliente no tiene sesión activa
         if remaining_seconds <= 0:
