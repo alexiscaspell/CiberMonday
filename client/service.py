@@ -202,10 +202,35 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
 def main():
     """Función principal para manejar comandos del servicio"""
     if len(sys.argv) == 1:
-        # Sin argumentos = ejecutado por el SCM (Service Control Manager)
-        servicemanager.Initialize()
-        servicemanager.PrepareToHostSingle(CiberMondayService)
-        servicemanager.StartServiceCtrlDispatcher()
+        # Sin argumentos: podría ser el SCM (Service Control Manager) o el usuario
+        # haciendo doble clic. Intentamos conectar al SCM; si falla, mostramos ayuda.
+        try:
+            servicemanager.Initialize()
+            servicemanager.PrepareToHostSingle(CiberMondayService)
+            servicemanager.StartServiceCtrlDispatcher()
+        except Exception as e:
+            # Si falla es porque el usuario ejecutó el EXE directamente,
+            # no a través del SCM de Windows
+            print("=" * 55)
+            print("  CiberMonday Service - Servicio de Windows")
+            print("=" * 55)
+            print()
+            print("  Este ejecutable es un servicio de Windows.")
+            print("  No se puede ejecutar directamente con doble clic.")
+            print()
+            print("  Usa el instalador para configurar todo:")
+            print("    install_exe_service.bat   (como Administrador)")
+            print()
+            print("  O usa estos comandos (como Administrador):")
+            print("    CiberMondayService.exe install  - Instalar servicio")
+            print("    CiberMondayService.exe start    - Iniciar servicio")
+            print("    CiberMondayService.exe stop     - Detener servicio")
+            print("    CiberMondayService.exe remove   - Desinstalar servicio")
+            print()
+            print("  Para desinstalar completamente:")
+            print("    uninstall_exe_service.bat   (como Administrador)")
+            print()
+            input("  Presiona Enter para cerrar...")
     else:
         # Manejar comandos: install, remove, start, stop, restart
         command = sys.argv[1].lower() if len(sys.argv) > 1 else ''

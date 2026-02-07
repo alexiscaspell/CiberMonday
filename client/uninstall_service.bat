@@ -1,4 +1,7 @@
 @echo off
+REM Cambiar al directorio donde esta el .bat (importante cuando se ejecuta como admin)
+cd /d "%~dp0"
+
 echo ========================================
 echo Desinstalador del Servicio CiberMonday
 echo (Version Python)
