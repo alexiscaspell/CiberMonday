@@ -54,6 +54,9 @@ WORKDIR /app
 # Copiar el proyecto Android
 COPY android/ ./
 
+# Copiar módulo core/ compartido al directorio de fuentes Python
+COPY core/ ./app/src/main/python/core/
+
 # Copiar templates del servidor al proyecto Android
 COPY server/templates/index.html ./app/src/main/python/templates/
 

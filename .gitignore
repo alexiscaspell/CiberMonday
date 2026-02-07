@@ -34,6 +34,9 @@ client/*.spec
 # Servidor
 server/__pycache__/
 
+# Android - módulo core/ copiado por Gradle desde la raíz del repo
+android/app/src/main/python/core/
+
 # IDE
 .vscode/
 .idea/

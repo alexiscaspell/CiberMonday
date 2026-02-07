@@ -45,17 +45,27 @@ android {
     // Configurar la ubicación del código Python
     sourceSets {
         main {
-            python.srcDirs = ["src/main/python", "$buildDir/generated/python"]
+            python.srcDir "src/main/python"
         }
     }
 }
 
-// Copiar módulo core/ compartido al directorio de build para que Chaquopy lo incluya
+// Copiar módulo core/ compartido directamente al directorio de fuentes Python.
+// En desarrollo local, core/ está en ../../core (raíz del repo).
+// En Docker, core/ ya se copia al directorio de fuentes via COPY en el Dockerfile,
+// por lo que esta tarea se omite si el directorio fuente no existe.
 task copyCoreModule(type: Copy) {
     from '../../core'
-    into "$buildDir/generated/python/core"
+    into 'src/main/python/core'
+    onlyIf { file('../../core').exists() }
 }
-preBuild.dependsOn copyCoreModule
+
+// Asegurar que copyCoreModule se ejecuta antes de cualquier tarea de Python de Chaquopy
+tasks.configureEach { task ->
+    if (task.name.contains('PythonSources') || task.name.contains('pythonSources')) {
+        task.dependsOn copyCoreModule
+    }
+}
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
