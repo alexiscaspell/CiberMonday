@@ -103,6 +103,7 @@ jobs:
           client/dist/CiberMondayWatchdog.exe
           client/install_exe_service.bat
           client/uninstall_exe_service.bat
+          client/show_logs.bat
         tag_name: v${{ github.event.inputs.version }}
         name: CiberMonday Client v${{ github.event.inputs.version }}
         prerelease: ${{ github.event.inputs.prerelease }}
@@ -118,6 +119,7 @@ jobs:
           - **CiberMondayWatchdog.exe** - Watchdog independiente
           - **install_exe_service.bat** - Instalador del servicio
           - **uninstall_exe_service.bat** - Desinstalador del servicio
+          - **show_logs.bat** - Visor de logs del cliente en tiempo real
           
           ## 🚀 Instrucciones de instalación
           
@@ -134,7 +136,8 @@ jobs:
           ├── CiberMondayService.exe
           ├── CiberMondayWatchdog.exe
           ├── install_exe_service.bat
-          └── uninstall_exe_service.bat
+          ├── uninstall_exe_service.bat
+          └── show_logs.bat
           ```
           
           **Nota**: La configuración se guarda en el registro de Windows y se muestra una ventana GUI la primera vez.

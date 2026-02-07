@@ -27,6 +27,36 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 WATCHDOG_CHECK_INTERVAL = 3
 # Espera antes de reiniciar tras un error del watchdog
 WATCHDOG_ERROR_WAIT = 10
+# Nombre del archivo de log del cliente
+CLIENT_LOG_FILENAME = "CiberMondayClient.log"
+# Tamaño máximo del log en bytes antes de rotar (5 MB)
+CLIENT_LOG_MAX_SIZE = 5 * 1024 * 1024
+
+
+def _get_service_dir():
+    """Obtiene el directorio donde está el servicio (EXE o script)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    else:
+        return os.path.dirname(os.path.abspath(__file__))
+
+
+def _get_log_path():
+    """Obtiene la ruta completa del archivo de log del cliente."""
+    return os.path.join(_get_service_dir(), CLIENT_LOG_FILENAME)
+
+
+def _rotate_log_if_needed(log_path):
+    """Rota el archivo de log si excede el tamaño máximo."""
+    try:
+        if os.path.exists(log_path) and os.path.getsize(log_path) > CLIENT_LOG_MAX_SIZE:
+            backup_path = log_path + '.old'
+            # Eliminar backup anterior si existe
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            os.rename(log_path, backup_path)
+    except Exception:
+        pass  # No es crítico
 
 
 def _get_client_command():
@@ -43,7 +73,7 @@ def _get_client_command():
     """
     if getattr(sys, 'frozen', False):
         # Entorno congelado (PyInstaller) - buscar el EXE del cliente
-        exe_dir = os.path.dirname(sys.executable)
+        exe_dir = _get_service_dir()
         client_exe = os.path.join(exe_dir, 'CiberMondayClient.exe')
         if not os.path.exists(client_exe):
             raise FileNotFoundError(
@@ -53,10 +83,10 @@ def _get_client_command():
         return [client_exe]
     else:
         # Entorno Python normal - ejecutar script directamente
-        client_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'client.py')
+        client_script = os.path.join(_get_service_dir(), 'client.py')
         if not os.path.exists(client_script):
             raise FileNotFoundError(
-                f"No se encontró client.py en {os.path.dirname(os.path.abspath(__file__))}"
+                f"No se encontró client.py en {_get_service_dir()}"
             )
         return [sys.executable, client_script]
 
@@ -147,6 +177,7 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
         Watchdog que mantiene el cliente corriendo y lo reinicia si falla.
         
         - Detecta entorno congelado (PyInstaller) vs Python para lanzar el comando correcto
+        - Redirige stdout/stderr del cliente a un archivo de log
         - Aplica protección DACL al proceso hijo después de lanzarlo
         - Reinicia el cliente en WATCHDOG_CHECK_INTERVAL segundos si muere
         """
@@ -156,11 +187,15 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
             servicemanager.LogErrorMsg(f"Error fatal en watchdog: {e}")
             return
         
+        log_path = _get_log_path()
+        
         servicemanager.LogMsg(
             servicemanager.EVENTLOG_INFORMATION_TYPE,
             servicemanager.PYS_SERVICE_STARTED,
-            (self._svc_name_, f'Watchdog iniciado. Comando: {" ".join(client_cmd)}')
+            (self._svc_name_, f'Watchdog iniciado. Comando: {" ".join(client_cmd)}. Log: {log_path}')
         )
+        
+        log_file = None
         
         while self.running:
             try:
@@ -180,11 +215,33 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
                             (self._svc_name_, 'Iniciando cliente...')
                         )
                     
-                    # Iniciar el proceso del cliente
+                    # Cerrar log file anterior si existe
+                    if log_file and not log_file.closed:
+                        try:
+                            log_file.close()
+                        except Exception:
+                            pass
+                    
+                    # Rotar log si es muy grande
+                    _rotate_log_if_needed(log_path)
+                    
+                    # Abrir archivo de log (append mode)
+                    try:
+                        log_file = open(log_path, 'a', encoding='utf-8', buffering=1)
+                        log_file.write(f"\n{'='*60}\n")
+                        log_file.write(f"[Service] Cliente iniciado: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        log_file.write(f"[Service] Comando: {' '.join(client_cmd)}\n")
+                        log_file.write(f"{'='*60}\n")
+                        log_file.flush()
+                    except Exception as e:
+                        servicemanager.LogErrorMsg(f"No se pudo abrir log file {log_path}: {e}")
+                        log_file = None
+                    
+                    # Iniciar el proceso del cliente con logs redirigidos
                     self.process = subprocess.Popen(
                         client_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                        stdout=log_file if log_file else subprocess.DEVNULL,
+                        stderr=subprocess.STDOUT if log_file else subprocess.DEVNULL,
                         creationflags=subprocess.CREATE_NO_WINDOW
                     )
                     
@@ -197,6 +254,14 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
             except Exception as e:
                 servicemanager.LogErrorMsg(f"Error en watchdog: {e}")
                 time.sleep(WATCHDOG_ERROR_WAIT)
+        
+        # Cerrar log file al terminar
+        if log_file and not log_file.closed:
+            try:
+                log_file.write(f"\n[Service] Servicio detenido: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                log_file.close()
+            except Exception:
+                pass
 
 
 def main():

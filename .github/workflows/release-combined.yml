@@ -150,6 +150,7 @@ jobs:
           copy client\dist\CiberMondayWatchdog.exe release-windows\
           copy client\install_exe_service.bat release-windows\
           copy client\uninstall_exe_service.bat release-windows\
+          copy client\show_logs.bat release-windows\
           dir release-windows\
       
       - name: Verificar archivos copiados
@@ -160,6 +161,7 @@ jobs:
           if not exist release-windows\CiberMondayWatchdog.exe exit /b 1
           if not exist release-windows\install_exe_service.bat exit /b 1
           if not exist release-windows\uninstall_exe_service.bat exit /b 1
+          if not exist release-windows\show_logs.bat exit /b 1
           echo "Todos los archivos verificados correctamente"
       
       - name: Upload Windows executables artifact
@@ -224,6 +226,7 @@ jobs:
             - **CiberMondayWatchdog.exe** - Watchdog independiente
             - **install_exe_service.bat** - Instalador del servicio
             - **uninstall_exe_service.bat** - Desinstalador del servicio
+            - **show_logs.bat** - Visor de logs del cliente en tiempo real
             
             ---
             
@@ -264,7 +267,8 @@ jobs:
             ├── CiberMondayService.exe
             ├── CiberMondayWatchdog.exe
             ├── install_exe_service.bat
-            └── uninstall_exe_service.bat
+            ├── uninstall_exe_service.bat
+            └── show_logs.bat
             ```
             
             ### Protecciones del servicio
