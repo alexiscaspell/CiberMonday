@@ -32,7 +32,21 @@ if not exist "CiberMondayClient.exe" (
     exit /b 1
 )
 
-echo [1/6] Configurando firewall de Windows...
+echo [1/7] Configuracion del cliente...
+echo    Se abrira una ventana para configurar la conexion al servidor.
+echo    Completa los datos y presiona "Guardar y Continuar".
+echo.
+CiberMondayClient.exe --configure
+
+if %errorLevel% neq 0 (
+    echo ERROR: La configuracion fue cancelada. No se puede instalar sin configurar.
+    pause
+    exit /b 1
+)
+echo    Configuracion guardada exitosamente.
+
+echo.
+echo [2/7] Configurando firewall de Windows...
 REM Agregar regla del firewall para descubrimiento UDP
 netsh advfirewall firewall show rule name="CiberMonday Client UDP Discovery" >nul 2>&1
 if %errorLevel% neq 0 (
@@ -60,7 +74,7 @@ if %errorLevel% neq 0 (
 )
 
 echo.
-echo [2/6] Instalando servicio de Windows...
+echo [3/7] Instalando servicio de Windows...
 CiberMondayService.exe install
 
 if %errorLevel% neq 0 (
@@ -71,7 +85,7 @@ if %errorLevel% neq 0 (
 )
 
 echo.
-echo [3/6] Configurando inicio automatico...
+echo [4/7] Configurando inicio automatico...
 sc config CiberMondayClient start= auto >nul 2>&1
 if %errorLevel% equ 0 (
     echo    Servicio configurado para inicio automatico.
@@ -80,7 +94,7 @@ if %errorLevel% equ 0 (
 )
 
 echo.
-echo [4/6] Configurando recuperacion automatica...
+echo [5/7] Configurando recuperacion automatica...
 REM Si el servicio falla, reiniciar automaticamente:
 REM   1ra falla: reiniciar en 5 segundos
 REM   2da falla: reiniciar en 5 segundos
@@ -94,7 +108,7 @@ if %errorLevel% equ 0 (
 )
 
 echo.
-echo [5/6] Restringiendo permisos del servicio...
+echo [6/7] Restringiendo permisos del servicio...
 REM Configurar Security Descriptor para restringir quien puede controlar el servicio:
 REM   SY (SYSTEM): Control total
 REM   BA (Built-in Administrators): Control total
@@ -108,7 +122,7 @@ if %errorLevel% equ 0 (
 )
 
 echo.
-echo [6/6] Iniciando servicio...
+echo [7/7] Iniciando servicio...
 CiberMondayService.exe start
 
 if %errorLevel% neq 0 (

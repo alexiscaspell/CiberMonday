@@ -114,6 +114,12 @@ except:
     # Si hay algún error, asumir que no es servicio (podemos mostrar GUI)
     IS_SERVICE = False
 
+# Modo configuración: si se pasa --configure, solo muestra la GUI y sale
+# Usado por el instalador del servicio para configurar antes de instalar
+CONFIGURE_ONLY = '--configure' in sys.argv
+if CONFIGURE_ONLY:
+    IS_SERVICE = False  # Forzar mostrar GUI
+
 try:
     from registry_manager import get_config_from_registry
     
@@ -2313,6 +2319,12 @@ def main():
     if sys.platform != 'win32':
         print("ERROR: Este cliente solo funciona en Windows.")
         sys.exit(1)
+    
+    # Si solo se pidió configurar (--configure), la GUI ya se mostró al cargar el módulo
+    # Solo salimos exitosamente
+    if CONFIGURE_ONLY:
+        print("[Config] Configuración completada. Saliendo...")
+        sys.exit(0)
     
     # La configuración ya se obtuvo al inicio del script (puede mostrar GUI)
     # Si llegamos aquí, la configuración está lista

@@ -26,7 +26,21 @@ if %errorLevel% neq 0 (
 )
 
 echo.
-echo [1/7] Instalando dependencias...
+echo [1/8] Configuracion del cliente...
+echo    Se abrira una ventana para configurar la conexion al servidor.
+echo    Completa los datos y presiona "Guardar y Continuar".
+echo.
+python client.py --configure
+
+if %errorLevel% neq 0 (
+    echo ERROR: La configuracion fue cancelada. No se puede instalar sin configurar.
+    pause
+    exit /b 1
+)
+echo    Configuracion guardada exitosamente.
+
+echo.
+echo [2/8] Instalando dependencias...
 pip install pywin32 >nul 2>&1
 if %errorLevel% equ 0 (
     echo    Dependencias instaladas.
@@ -35,7 +49,7 @@ if %errorLevel% equ 0 (
 )
 
 echo.
-echo [2/7] Configurando firewall de Windows...
+echo [3/8] Configurando firewall de Windows...
 python firewall_manager.py add
 if %errorLevel% neq 0 (
     echo    ADVERTENCIA: No se pudo agregar la regla del firewall automaticamente.
@@ -57,7 +71,7 @@ if %errorLevel% neq 0 (
 )
 
 echo.
-echo [3/7] Instalando servicio de Windows...
+echo [4/8] Instalando servicio de Windows...
 python service.py install
 
 if %errorLevel% neq 0 (
@@ -68,7 +82,7 @@ if %errorLevel% neq 0 (
 )
 
 echo.
-echo [4/7] Configurando inicio automatico...
+echo [5/8] Configurando inicio automatico...
 sc config CiberMondayClient start= auto >nul 2>&1
 if %errorLevel% equ 0 (
     echo    Servicio configurado para inicio automatico.
@@ -77,7 +91,7 @@ if %errorLevel% equ 0 (
 )
 
 echo.
-echo [5/7] Configurando recuperacion automatica...
+echo [6/8] Configurando recuperacion automatica...
 REM Si el servicio falla, reiniciar automaticamente:
 REM   1ra falla: reiniciar en 5 segundos
 REM   2da falla: reiniciar en 5 segundos
@@ -91,7 +105,7 @@ if %errorLevel% equ 0 (
 )
 
 echo.
-echo [6/7] Restringiendo permisos del servicio...
+echo [7/8] Restringiendo permisos del servicio...
 REM Configurar Security Descriptor para restringir quien puede controlar el servicio:
 REM   SY (SYSTEM): Control total
 REM   BA (Built-in Administrators): Control total
@@ -105,7 +119,7 @@ if %errorLevel% equ 0 (
 )
 
 echo.
-echo [7/7] Iniciando servicio...
+echo [8/8] Iniciando servicio...
 python service.py start
 
 if %errorLevel% neq 0 (
