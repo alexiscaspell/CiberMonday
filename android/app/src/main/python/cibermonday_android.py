@@ -161,6 +161,7 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         
         if path == '/' or path == '/status':
             ip = self.manager.get_local_ip()
+            port = self.manager.server_port
             clients = self.manager.get_clients()
             active = len([c for c in clients if c.get('is_active')])
             
@@ -210,7 +211,7 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 <div class="status-dot"></div>
                 <div>
                     <h1>CiberMonday Server</h1>
-                    <p class="subtitle">Servidor activo en {ip}:5000</p>
+                    <p class="subtitle">Servidor activo en {ip}:{port}</p>
                 </div>
             </div>
             <div class="info">
@@ -266,11 +267,12 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         elif path == '/api/server-info':
             ip = self.manager.get_local_ip()
             config = self.manager.get_server_config()
+            port = self.manager.server_port
             self._send_json({
                 'success': True,
                 'ip': ip,
-                'port': 5000,
-                'url': f"http://{ip}:5000",
+                'port': port,
+                'url': f"http://{ip}:{port}",
                 'broadcast_interval': config['broadcast_interval']
             })
         
@@ -315,13 +317,27 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         data = self._read_body()
         
         if path == '/api/register':
+            # Obtener IP del cliente desde los datos o desde la conexión
+            client_ip = data.get('client_ip') or self.client_address[0]
+            diagnostic_port = data.get('diagnostic_port', 5002)
+            
             result = self.manager.register_client(
                 name=data.get('name', 'Cliente Sin Nombre'),
                 client_id=data.get('client_id'),
                 session_data=data.get('session'),
                 config=data.get('config'),
-                known_servers=data.get('known_servers', [])
+                known_servers=data.get('known_servers', []),
+                client_ip=client_ip,
+                diagnostic_port=diagnostic_port
             )
+            
+            # Actualizar info de contacto del cliente
+            if result['success']:
+                cid = result['client_id']
+                if cid in self.manager.clients_db:
+                    self.manager.clients_db[cid]['client_ip'] = client_ip
+                    self.manager.clients_db[cid]['diagnostic_port'] = diagnostic_port
+            
             self._send_json(result, 201)
         
         elif path.startswith('/api/client/') and path.endswith('/set-time'):
@@ -363,12 +379,25 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
             if not server_url:
                 self._send_json({'success': False, 'message': 'URL del servidor requerida'}, 400)
             else:
+                # Verificar si es un servidor nuevo
+                server_exists = any(
+                    sd.get('url') == server_url for sd in self.manager.servers_db.values()
+                )
+                
                 result = self.manager.register_server(
                     server_url,
                     data.get('ip'),
                     data.get('port')
                 )
                 result['known_servers'] = self.manager.get_servers()
+                
+                # Si es un nuevo servidor, sincronizar clientes entre servidores
+                if not server_exists:
+                    try:
+                        self.manager._sync_with_other_servers()
+                    except Exception as e:
+                        print(f"[Servidor] Error al sincronizar con otros servidores: {e}")
+                
                 self._send_json(result, 201)
         
         elif path == '/api/sync-servers':
@@ -434,7 +463,7 @@ _server_running = False
 _server_error = None
 
 
-def broadcast_server_presence():
+def broadcast_server_presence(server_port=5000):
     """
     Hace broadcast UDP para anunciar la presencia de este servidor a los clientes.
     Los clientes escuchan en el puerto 5001 y registran automáticamente nuevos servidores.
@@ -449,14 +478,14 @@ def broadcast_server_presence():
                 print(f"[Broadcast] IP no válida para broadcast: {local_ip}")
                 return
             
-            server_url = f"http://{local_ip}:5000"
+            server_url = f"http://{local_ip}:{server_port}"
             server_info_data = {
                 'url': server_url,
                 'ip': local_ip,
-                'port': 5000
+                'port': server_port
             }
             
-            broadcast_addr = mgr.get_broadcast_address()
+            broadcast_addr = mgr.get_broadcast_address(local_ip)
             
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -466,13 +495,19 @@ def broadcast_server_presence():
                 print(f"[Broadcast] Advertencia al hacer bind: {bind_error}")
             
             config = mgr.get_server_config()
-            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:5000")
+            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:{server_port}")
             print(f"[Broadcast] Dirección de broadcast: {broadcast_addr}:{DISCOVERY_PORT}")
             print(f"[Broadcast] Enviando broadcasts UDP cada {config['broadcast_interval']} segundos")
             print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
             
+            # Direcciones de broadcast a intentar (subred específica + broadcast general)
+            broadcast_targets = [broadcast_addr]
+            if broadcast_addr != "255.255.255.255":
+                broadcast_targets.append("255.255.255.255")
+            
             last_client_count = 0
             broadcasts_paused = False
+            last_error_logged = 0
             
             while _server_running:
                 try:
@@ -481,27 +516,56 @@ def broadcast_server_presence():
                     
                     if num_clients > 0:
                         if not broadcasts_paused:
-                            print(f"[Broadcast] ⏸️  Hay {num_clients} cliente(s) conectado(s). Broadcasts pausados.")
+                            print(f"[Broadcast] Hay {num_clients} cliente(s) conectado(s). Broadcasts pausados.")
                             broadcasts_paused = True
                         elif num_clients != last_client_count:
-                            print(f"[Broadcast] ⏸️  {num_clients} cliente(s) conectado(s). Broadcasts siguen pausados.")
+                            print(f"[Broadcast] {num_clients} cliente(s) conectado(s). Broadcasts siguen pausados.")
                         last_client_count = num_clients
                         time.sleep(config['broadcast_interval'])
                         continue
                     else:
                         if broadcasts_paused:
-                            print(f"[Broadcast] ▶️  No hay clientes conectados. Reanudando broadcasts UDP.")
+                            print(f"[Broadcast] No hay clientes conectados. Reanudando broadcasts UDP.")
                             broadcasts_paused = False
                         last_client_count = 0
                     
                     message = json.dumps(server_info_data).encode('utf-8')
-                    sock.sendto(message, (broadcast_addr, DISCOVERY_PORT))
-                    print(f"[Broadcast] 📡 Broadcast enviado a {broadcast_addr}:{DISCOVERY_PORT} - {server_url}")
+                    sent = False
+                    for target_addr in broadcast_targets:
+                        try:
+                            sock.sendto(message, (target_addr, DISCOVERY_PORT))
+                            sent = True
+                            break
+                        except OSError:
+                            continue
+                    
+                    if sent:
+                        last_error_logged = 0
+                    else:
+                        # Todos los targets fallaron - recrear socket e intentar una vez más
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                        sock.bind(('', 0))
+                        try:
+                            sock.sendto(message, ('255.255.255.255', DISCOVERY_PORT))
+                            sent = True
+                            last_error_logged = 0
+                        except OSError as e:
+                            now = time.time()
+                            if now - last_error_logged > 30:
+                                print(f"[Broadcast] No se pudo enviar broadcast: {e}")
+                                last_error_logged = now
+                    
                     time.sleep(config['broadcast_interval'])
                 except Exception as e:
-                    print(f"[Broadcast] Error al enviar broadcast: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    now = time.time()
+                    if now - last_error_logged > 30:
+                        print(f"[Broadcast] Error al enviar broadcast: {e}")
+                        last_error_logged = now
                     time.sleep(config.get('broadcast_interval', 1))
         except Exception as e:
             print(f"[Broadcast] Error en thread de broadcast: {e}")
@@ -514,12 +578,16 @@ def broadcast_server_presence():
 
 def start_server(host='0.0.0.0', port=5000, data_dir=None):
     """Inicia el servidor HTTP."""
-    global _server, _server_running, _server_error
+    global _server, _server_running, _server_error, _manager_instance
     _server_running = True
     _server_error = None
     
     try:
         print(f"[CiberMonday] Iniciando servidor HTTP en {host}:{port}")
+        
+        # Crear manager con el puerto correcto
+        with _manager_lock:
+            _manager_instance = ClientManager(server_port=port)
         
         CiberMondayHandler.manager = get_manager()
         
@@ -527,7 +595,7 @@ def start_server(host='0.0.0.0', port=5000, data_dir=None):
         
         print(f"[CiberMonday] Servidor escuchando en {host}:{port}")
         
-        broadcast_server_presence()
+        broadcast_server_presence(server_port=port)
         
         _server.serve_forever()
         
@@ -564,7 +632,9 @@ def test_server_connection():
     """Prueba si el servidor está respondiendo localmente."""
     import urllib.request
     try:
-        response = urllib.request.urlopen('http://127.0.0.1:5000/api/health', timeout=2)
+        mgr = get_manager()
+        port = mgr.server_port
+        response = urllib.request.urlopen(f'http://127.0.0.1:{port}/api/health', timeout=2)
         return response.read().decode('utf-8')
     except Exception as e:
         return f"Error: {str(e)}"

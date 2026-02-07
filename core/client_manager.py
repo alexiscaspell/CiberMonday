@@ -433,6 +433,10 @@ class ClientManager:
         """
         Sincroniza la lista de servidores con otros servidores.
         
+        NOTA: No llama _sync_with_other_servers() para evitar loops infinitos.
+        Si A recibe sync de B y luego A sincroniza con B, se crea un ping-pong.
+        La sincronización activa debe ser disparada solo por register-server o acciones explícitas.
+        
         Args:
             servers_list: Lista de servidores recibida de otro servidor/cliente
             
@@ -448,7 +452,6 @@ class ClientManager:
                     server_data.get('port')
                 )
         
-        self._sync_with_other_servers()
         return self.get_servers()
     
     def sync_clients_from_remote(self, clients_list):
@@ -505,6 +508,9 @@ class ClientManager:
                                         other_server.get('ip'),
                                         other_server.get('port')
                                     )
+                        # También incorporar clientes del otro servidor
+                        if response_data.get('known_clients'):
+                            self.sync_clients_from_remote(response_data['known_clients'])
             except Exception:
                 pass
     

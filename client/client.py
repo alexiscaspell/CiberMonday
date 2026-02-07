@@ -1162,17 +1162,16 @@ class SyncManager:
             )
             
             if response.status_code == 404:
-                # Cliente no encontrado - re-registrar con el mismo ID
-                print(f"[SyncManager] Cliente no encontrado en {server_url}. Re-registrando...")
-                new_id = register_new_client(existing_client_id=client_id)
-                if new_id:
-                    self.client_id = new_id
-                    print(f"[SyncManager] ✅ Re-registrado en {server_url}")
+                # Cliente no encontrado en ESTE servidor - registrar directamente en él
+                print(f"[SyncManager] Cliente no encontrado en {server_url}. Registrando directamente...")
+                registered = self._register_on_server(client_id, server_url)
+                if registered:
+                    print(f"[SyncManager] ✅ Registrado en {server_url}")
                     if REGISTRY_AVAILABLE:
                         reset_server_timeout_count(server_url)
                     return True
                 else:
-                    print(f"[SyncManager] ❌ Error al re-registrar en {server_url}")
+                    print(f"[SyncManager] ❌ Error al registrar en {server_url}")
                     return False
             
             if response.status_code != 200:
@@ -1221,6 +1220,92 @@ class SyncManager:
             return False
         except Exception as e:
             print(f"[SyncManager] ❌ Error inesperado con {server_url}: {e}")
+            return False
+    
+    def _register_on_server(self, client_id, server_url):
+        """
+        Registra el cliente directamente en un servidor específico.
+        A diferencia de register_new_client() que elige cualquier servidor disponible,
+        este método siempre registra en el server_url indicado.
+        """
+        try:
+            import socket as sock_mod
+            client_name = sock_mod.gethostname()
+            
+            custom_name = None
+            config_data = None
+            if REGISTRY_AVAILABLE:
+                config_data = get_config_from_registry()
+                if config_data:
+                    custom_name = config_data.get('custom_name')
+            
+            register_data = {
+                'name': custom_name if custom_name else client_name,
+                'client_id': client_id
+            }
+            
+            # Obtener IP local y puerto de diagnóstico
+            try:
+                s = sock_mod.socket(sock_mod.AF_INET, sock_mod.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                client_ip = s.getsockname()[0]
+                s.close()
+                register_data['client_ip'] = client_ip
+                register_data['diagnostic_port'] = 5002
+            except:
+                pass
+            
+            # Incluir sesión activa si existe
+            if REGISTRY_AVAILABLE:
+                session_info = get_session_info()
+                if session_info and not session_info['is_expired'] and session_info['remaining_seconds'] > 0:
+                    session_data = get_session_from_registry()
+                    if session_data:
+                        register_data['session'] = {
+                            'remaining_seconds': session_info['remaining_seconds'],
+                            'time_limit_seconds': session_data.get('time_limit_seconds', session_info['remaining_seconds'])
+                        }
+                
+                # Incluir configuración
+                if config_data:
+                    register_data['config'] = {
+                        'sync_interval': config_data.get('sync_interval', 30),
+                        'alert_thresholds': config_data.get('alert_thresholds', [600, 300, 120, 60]),
+                        'custom_name': custom_name
+                    }
+                
+                # Incluir servidores conocidos
+                known_servers = get_servers_from_registry()
+                register_data['known_servers'] = known_servers
+            
+            response = requests.post(
+                f"{server_url}/api/register",
+                json=register_data,
+                timeout=10
+            )
+            
+            if response.status_code == 201:
+                data = response.json()
+                known_servers_resp = data.get('known_servers', [])
+                server_config = data.get('config')
+                
+                if REGISTRY_AVAILABLE:
+                    if known_servers_resp:
+                        save_servers_to_registry(known_servers_resp)
+                    if server_config:
+                        apply_server_config(server_config)
+                
+                print(f"[SyncManager] Cliente registrado en {server_url}")
+                return True
+            else:
+                print(f"[SyncManager] Error al registrar en {server_url}: {response.status_code}")
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            print(f"[SyncManager] Error de conexión al registrar en {server_url}: {e}")
+            return False
+        except Exception as e:
+            print(f"[SyncManager] Error inesperado al registrar en {server_url}: {e}")
             return False
     
     def _update_servers_from_response(self, data, server_url):
