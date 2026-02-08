@@ -391,13 +391,53 @@ def show_time_alert(threshold, remaining_seconds):
     except Exception as e:
         print(f"Error al mostrar alerta: {e}")
 
+def is_user_session_active():
+    """
+    Verifica si la sesión del usuario en la consola está activa (conectada).
+    
+    Usa WTSQuerySessionInformationW para consultar el estado de la sesión.
+    Retorna True si el usuario está conectado al escritorio (WTSActive=0),
+    False si la sesión está desconectada o no hay sesión.
+    
+    Útil para saber si ya bloqueamos/desconectamos y el usuario volvió a entrar.
+    """
+    try:
+        wtsapi32 = ctypes.windll.wtsapi32
+        session_id = kernel32.WTSGetActiveConsoleSessionId()
+        if session_id == 0xFFFFFFFF:
+            return False  # No hay sesión de consola
+        
+        # WTSConnectState = 8 (clase de info para estado de conexión)
+        WTSConnectState = 8
+        buffer = ctypes.c_void_p()
+        bytes_returned = ctypes.c_ulong()
+        
+        result = wtsapi32.WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            session_id,
+            WTSConnectState,
+            ctypes.byref(buffer),
+            ctypes.byref(bytes_returned)
+        )
+        
+        if result and buffer.value is not None:
+            # El buffer contiene un INT con el estado de la sesión
+            # WTSActive = 0: usuario conectado al escritorio
+            # WTSDisconnected = 4: sesión desconectada (bloqueada por nosotros)
+            state = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_int)).contents.value
+            wtsapi32.WTSFreeMemory(buffer)
+            return state == 0  # Solo activa si WTSActive
+        
+        return True  # Asumir activa si no se pudo consultar
+    except Exception:
+        return True  # Asumir activa si hay error (mejor bloquear de más que de menos)
+
+
 def lock_workstation():
     """
     Bloquea la estación de trabajo de Windows.
     
     Funciona tanto desde la sesión del usuario como desde Session 0 (servicios).
-    Si el usuario desbloquea la pantalla, el cliente volverá a bloquearla
-    automáticamente cada 2 segundos mientras la sesión esté expirada.
     
     Métodos (en orden de prioridad):
     1. LockWorkStation() - funciona desde la sesión interactiva del usuario
@@ -2423,22 +2463,29 @@ def monitor_time(client_id):
             
             # Verificar si expiró
             if is_expired or remaining_seconds <= 0:
-                # Bloquear continuamente mientras la sesión esté expirada
-                if last_remaining is None or last_remaining > 0:
+                first_expiry = last_remaining is None or last_remaining > 0
+                
+                if first_expiry:
+                    # Primera vez que expira: bloquear inmediatamente
                     print("\n" + "=" * 50, flush=True)
                     print("[EXPIRACION] TIEMPO AGOTADO!", flush=True)
                     print(f"[EXPIRACION] remaining_seconds={remaining_seconds}, is_expired={is_expired}", flush=True)
-                    print("[EXPIRACION] La PC se bloqueara continuamente hasta que se asigne nuevo tiempo.", flush=True)
+                    print("[EXPIRACION] Bloqueando PC. Se re-bloqueara si el usuario vuelve a entrar.", flush=True)
                     print("=" * 50, flush=True)
+                    result = lock_workstation()
+                    if not result:
+                        print("[EXPIRACION] FALLO: lock_workstation() no pudo bloquear", flush=True)
+                else:
+                    # Ya estaba expirado: solo re-bloquear si el usuario reconectó
+                    if is_user_session_active():
+                        print("[EXPIRACION] Usuario reconecto. Bloqueando de nuevo...", flush=True)
+                        lock_workstation()
                 
-                # Bloquear la estación de trabajo
-                result = lock_workstation()
-                if not result:
-                    print("[EXPIRACION] FALLO: lock_workstation() no pudo bloquear", flush=True)
                 last_remaining = remaining_seconds
                 
-                # Verificar periódicamente si se asignó nuevo tiempo
-                time.sleep(2)
+                # Verificar cada 10 segundos si se asignó nuevo tiempo o si el usuario reconectó
+                # (no cada 2s para no estresar la PC)
+                time.sleep(10)
                 continue
             
             # Verificar alertas de tiempo
