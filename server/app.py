@@ -151,6 +151,7 @@ def set_client_config(client_id):
         alert_thresholds=data.get('alert_thresholds'),
         custom_name=data.get('custom_name'),
         max_server_timeouts=data.get('max_server_timeouts'),
+        lock_recheck_interval=data.get('lock_recheck_interval'),
         notify_client=not from_client
     )
     

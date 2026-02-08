@@ -63,7 +63,8 @@ def get_servers_json():
     return json.dumps(get_manager().get_servers())
 
 
-def set_client_config(client_id, sync_interval=None, alert_thresholds=None, max_server_timeouts=None):
+def set_client_config(client_id, sync_interval=None, alert_thresholds=None,
+                      max_server_timeouts=None, lock_recheck_interval=None):
     """Actualiza la configuración de un cliente."""
     if alert_thresholds is not None:
         if isinstance(alert_thresholds, (list, tuple)):
@@ -77,11 +78,18 @@ def set_client_config(client_id, sync_interval=None, alert_thresholds=None, max_
         except (ValueError, TypeError):
             max_server_timeouts = None
     
+    if lock_recheck_interval is not None:
+        try:
+            lock_recheck_interval = int(lock_recheck_interval)
+        except (ValueError, TypeError):
+            lock_recheck_interval = None
+    
     result = get_manager().set_client_config(
         client_id,
         sync_interval=sync_interval,
         alert_thresholds=alert_thresholds,
-        max_server_timeouts=max_server_timeouts
+        max_server_timeouts=max_server_timeouts,
+        lock_recheck_interval=lock_recheck_interval
     )
     return json.dumps(result)
 
@@ -358,6 +366,7 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 alert_thresholds=data.get('alert_thresholds'),
                 custom_name=data.get('custom_name'),
                 max_server_timeouts=data.get('max_server_timeouts'),
+                lock_recheck_interval=data.get('lock_recheck_interval'),
                 notify_client=not from_client
             )
             self._send_json(result, 200 if result['success'] else 400)

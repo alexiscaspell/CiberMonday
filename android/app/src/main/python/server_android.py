@@ -26,6 +26,8 @@ DEFAULT_CLIENT_CONFIG = {
     'sync_interval': 30,
     'alert_thresholds': [600, 300, 120, 60],
     'custom_name': None,
+    'max_server_timeouts': 10,
+    'lock_recheck_interval': 1,
 }
 
 def create_app(data_dir):
@@ -69,6 +71,8 @@ def create_app(data_dir):
                 'sync_interval': client_config.get('sync_interval', DEFAULT_CLIENT_CONFIG['sync_interval']),
                 'alert_thresholds': client_config.get('alert_thresholds', DEFAULT_CLIENT_CONFIG['alert_thresholds']),
                 'custom_name': client_config.get('custom_name', None),
+                'max_server_timeouts': client_config.get('max_server_timeouts', DEFAULT_CLIENT_CONFIG['max_server_timeouts']),
+                'lock_recheck_interval': client_config.get('lock_recheck_interval', DEFAULT_CLIENT_CONFIG['lock_recheck_interval']),
             }
             if client_configs[client_id]['custom_name']:
                 clients_db[client_id]['name'] = client_configs[client_id]['custom_name']
@@ -225,6 +229,16 @@ def create_app(data_dir):
                 clients_db[client_id]['name'] = custom_name
             else:
                 current_config['custom_name'] = None
+        
+        if 'max_server_timeouts' in data:
+            max_server_timeouts = int(data['max_server_timeouts'])
+            if 1 <= max_server_timeouts <= 100:
+                current_config['max_server_timeouts'] = max_server_timeouts
+        
+        if 'lock_recheck_interval' in data:
+            lock_recheck_interval = int(data['lock_recheck_interval'])
+            if 1 <= lock_recheck_interval <= 60:
+                current_config['lock_recheck_interval'] = lock_recheck_interval
         
         client_configs[client_id] = current_config
         

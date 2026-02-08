@@ -26,6 +26,7 @@ class ClientManager:
         'alert_thresholds': [600, 300, 120, 60],
         'custom_name': None,
         'max_server_timeouts': 10,
+        'lock_recheck_interval': 1,
     }
     
     # Segundos durante los cuales un reporte del cliente es ignorado
@@ -355,7 +356,8 @@ class ClientManager:
         return self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
     
     def set_client_config(self, client_id, sync_interval=None, alert_thresholds=None,
-                          custom_name=None, max_server_timeouts=None, 
+                          custom_name=None, max_server_timeouts=None,
+                          lock_recheck_interval=None,
                           notify_client=True):
         """
         Modifica la configuración de un cliente.
@@ -404,6 +406,14 @@ class ClientManager:
             if max_server_timeouts > 100:
                 return {'success': False, 'message': 'Los reintentos antes de eliminar servidor no deben ser mayor a 100'}
             current_config['max_server_timeouts'] = max_server_timeouts
+        
+        if lock_recheck_interval is not None:
+            lock_recheck_interval = int(lock_recheck_interval)
+            if lock_recheck_interval < 1:
+                return {'success': False, 'message': 'El intervalo de re-bloqueo debe ser al menos 1 segundo'}
+            if lock_recheck_interval > 60:
+                return {'success': False, 'message': 'El intervalo de re-bloqueo no debe ser mayor a 60 segundos'}
+            current_config['lock_recheck_interval'] = lock_recheck_interval
         
         self.client_configs[client_id] = current_config
         

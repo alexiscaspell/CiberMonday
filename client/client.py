@@ -258,6 +258,11 @@ WTS_CURRENT_SERVER_HANDLE = 0
 WTS_SESSION_LOCK = 0x00000007
 WTS_SESSION_UNLOCK = 0x00000008
 
+# ==================== CONFIGURACIÓN DINÁMICA ====================
+# Intervalo de re-verificación cuando la sesión está expirada (segundos)
+# Controla cada cuánto se re-bloquea si el usuario reconecta
+LOCK_RECHECK_INTERVAL = 1  # Default: 1 segundo
+
 # ==================== SISTEMA DE ALERTAS DE TIEMPO ====================
 # Umbrales de alerta en segundos (10min, 5min, 2min, 1min)
 # Se cargan desde la configuración del registro o se usan valores por defecto
@@ -737,7 +742,7 @@ def apply_server_config(server_config):
     Aplica la configuración recibida del servidor.
     Actualiza el registro local y las variables globales.
     """
-    global SYNC_INTERVAL_CONFIG
+    global SYNC_INTERVAL_CONFIG, LOCK_RECHECK_INTERVAL
     
     if not server_config:
         return
@@ -776,6 +781,15 @@ def apply_server_config(server_config):
                 if new_max != old_max:
                     print(f"[Config] Reintentos máx. antes de eliminar servidor: {old_max} -> {new_max}")
                     current_config['max_server_timeouts'] = new_max
+        
+        if 'lock_recheck_interval' in server_config:
+            new_lock = server_config['lock_recheck_interval']
+            if isinstance(new_lock, int) and 1 <= new_lock <= 60:
+                old_lock = current_config.get('lock_recheck_interval', 1)
+                if new_lock != old_lock:
+                    print(f"[Config] Intervalo de re-bloqueo: {old_lock} -> {new_lock}s")
+                    current_config['lock_recheck_interval'] = new_lock
+                LOCK_RECHECK_INTERVAL = new_lock
         
         # Guardar configuración actualizada en el registro
         # Preservar server_url del registro local
@@ -1312,6 +1326,8 @@ class SyncManager:
                     config_payload['alert_thresholds'] = config_data['alert_thresholds']
                 if config_data.get('max_server_timeouts'):
                     config_payload['max_server_timeouts'] = config_data['max_server_timeouts']
+                if config_data.get('lock_recheck_interval'):
+                    config_payload['lock_recheck_interval'] = config_data['lock_recheck_interval']
                 
                 if config_payload:
                     config_payload['from_client'] = True
@@ -2403,6 +2419,17 @@ def monitor_time(client_id):
     
     LOCAL_CHECK_INTERVAL = 1  # Verificar registro local cada segundo
     
+    # Cargar lock_recheck_interval del registro si existe
+    global LOCK_RECHECK_INTERVAL
+    if REGISTRY_AVAILABLE:
+        try:
+            _cfg = get_config_from_registry()
+            if _cfg and 'lock_recheck_interval' in _cfg:
+                LOCK_RECHECK_INTERVAL = int(_cfg['lock_recheck_interval'])
+                print(f"[Config] Intervalo de re-bloqueo: {LOCK_RECHECK_INTERVAL}s (desde registro)")
+        except Exception:
+            pass
+    
     # Iniciar hilo de sincronización con SyncManager
     # El SyncManager se encarga de toda la comunicación con servidores
     sync_manager = SyncManager(client_id, SYNC_INTERVAL)
@@ -2483,9 +2510,10 @@ def monitor_time(client_id):
                 
                 last_remaining = remaining_seconds
                 
-                # Verificar cada 10 segundos si se asignó nuevo tiempo o si el usuario reconectó
-                # (no cada 2s para no estresar la PC)
-                time.sleep(10)
+                # Verificar periódicamente si se asignó nuevo tiempo o si el usuario reconectó.
+                # is_user_session_active() evita re-bloquear innecesariamente,
+                # así que un intervalo corto no estresa la PC.
+                time.sleep(LOCK_RECHECK_INTERVAL)
                 continue
             
             # Verificar alertas de tiempo

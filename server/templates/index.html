@@ -987,6 +987,14 @@
                                 <div class="config-help">Fallos consecutivos antes de eliminar un servidor de la lista (1-100)</div>
                                 
                                 <div class="config-row" style="margin-top: 15px;">
+                                    <label class="config-label">Re-bloqueo:</label>
+                                    <input type="number" class="config-input" id="config-lock-recheck-${client.id}" 
+                                           value="${client.config?.lock_recheck_interval || 1}" min="1" max="60">
+                                    <span style="font-size: 12px; color: #666;">seg</span>
+                                </div>
+                                <div class="config-help">Cada cuánto verifica si el usuario reconectó tras expirar el tiempo (1-60s)</div>
+                                
+                                <div class="config-row" style="margin-top: 15px;">
                                     <button class="btn-config" onclick="saveConfig('${client.id}')">
                                         💾 Guardar configuración
                                     </button>
@@ -1016,10 +1024,12 @@
             const syncInput = document.getElementById(`config-sync-${clientId}`);
             const alertsInput = document.getElementById(`config-alerts-${clientId}`);
             const timeoutsInput = document.getElementById(`config-timeouts-${clientId}`);
+            const lockRecheckInput = document.getElementById(`config-lock-recheck-${clientId}`);
             const statusEl = document.getElementById(`config-status-${clientId}`);
             
             const syncInterval = parseInt(syncInput.value);
             const maxServerTimeouts = parseInt(timeoutsInput.value);
+            const lockRecheckInterval = parseInt(lockRecheckInput.value);
             
             // Parsear umbrales de alerta (en minutos) y convertir a segundos
             const alertsStr = alertsInput.value;
@@ -1045,6 +1055,11 @@
                 return;
             }
             
+            if (isNaN(lockRecheckInterval) || lockRecheckInterval < 1 || lockRecheckInterval > 60) {
+                alert('El intervalo de re-bloqueo debe estar entre 1 y 60 segundos');
+                return;
+            }
+            
             try {
                 const response = await fetch(`${API_URL}/client/${clientId}/config`, {
                     method: 'POST',
@@ -1054,7 +1069,8 @@
                     body: JSON.stringify({
                         sync_interval: syncInterval,
                         alert_thresholds: alertThresholds,
-                        max_server_timeouts: maxServerTimeouts
+                        max_server_timeouts: maxServerTimeouts,
+                        lock_recheck_interval: lockRecheckInterval
                     })
                 });
                 
@@ -1072,6 +1088,11 @@
                     // Actualizar el input de timeouts con el valor del servidor
                     if (data.config?.max_server_timeouts) {
                         timeoutsInput.value = data.config.max_server_timeouts;
+                    }
+                    
+                    // Actualizar el input de lock recheck con el valor del servidor
+                    if (data.config?.lock_recheck_interval) {
+                        lockRecheckInput.value = data.config.lock_recheck_interval;
                     }
                     
                     setTimeout(() => {
