@@ -17,6 +17,13 @@ import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
+# Asegurar que stdout/stderr existan (PyInstaller --windowed los deja en None)
+# Sin esto, cualquier print() crashea el proceso inmediatamente
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+
 # Importar protecciones
 try:
     from protection import apply_protections

@@ -243,11 +243,17 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
                     client_env = os.environ.copy()
                     client_env['PYTHONUNBUFFERED'] = '1'
                     
+                    # cwd debe ser el directorio del servicio/cliente para que
+                    # el cliente encuentre archivos relativos correctamente.
+                    # Sin esto, el CWD sería C:\Windows\System32 (default de servicios Windows)
+                    service_dir = _get_service_dir()
+                    
                     self.process = subprocess.Popen(
                         client_cmd,
                         stdout=log_file if log_file else subprocess.DEVNULL,
                         stderr=subprocess.STDOUT if log_file else subprocess.DEVNULL,
                         env=client_env,
+                        cwd=service_dir,
                         creationflags=subprocess.CREATE_NO_WINDOW
                     )
                     

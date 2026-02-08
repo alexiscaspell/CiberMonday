@@ -20,8 +20,11 @@ echo Compilando cliente...
 echo.
 
 REM Compilar el cliente principal
+REM IMPORTANTE: NO usar --windowed aquí. El cliente necesita sys.stdout funcional
+REM para que el servicio pueda capturar sus logs. CREATE_NO_WINDOW en el servicio
+REM evita que aparezca ventana de consola cuando lo lanza el servicio.
 pyinstaller --onefile ^
-    --windowed ^
+    --console ^
     --name "CiberMondayClient" ^
     --icon=NONE ^
     --add-data "config.py;." ^
