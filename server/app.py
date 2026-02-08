@@ -8,9 +8,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from datetime import datetime
-import threading
-import time
-import socket
 import json
 import urllib.request
 import urllib.error
@@ -363,123 +360,11 @@ def _notify_clients_new_server(server_url, data):
 
 
 def broadcast_server_presence(server_port=5000):
-    """
-    Hace broadcast UDP para anunciar la presencia de este servidor a los clientes.
-    Los clientes escuchan en el puerto 5001 y registran automáticamente nuevos servidores.
-    """
-    def broadcast_thread():
-        DISCOVERY_PORT = 5001
-        
-        try:
-            # Obtener IP del host desde variable de entorno si está disponible (útil en Docker)
-            host_ip = os.getenv('HOST_IP')
-            if host_ip:
-                local_ip = host_ip
-                print(f"[Broadcast] Usando IP del host desde HOST_IP: {local_ip}")
-            else:
-                local_ip = manager.get_local_ip()
-            
-            if local_ip == "127.0.0.1" or not local_ip:
-                print(f"[Broadcast] IP no válida para broadcast: {local_ip}")
-                return
-            
-            server_url = f"http://{local_ip}:{server_port}"
-            server_info_data = {
-                'url': server_url,
-                'ip': local_ip,
-                'port': server_port
-            }
-            
-            broadcast_addr = manager.get_broadcast_address(local_ip)
-            
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            try:
-                sock.bind(('', 0))
-            except Exception as bind_error:
-                print(f"[Broadcast] Advertencia al hacer bind: {bind_error}")
-            
-            config = manager.get_server_config()
-            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:{server_port}")
-            print(f"[Broadcast] Dirección de broadcast: {broadcast_addr}:{DISCOVERY_PORT}")
-            print(f"[Broadcast] Enviando broadcasts UDP cada {config['broadcast_interval']} segundos")
-            print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
-            
-            last_client_count = 0
-            broadcasts_paused = False
-            
-            # Direcciones de broadcast a intentar (subred específica + broadcast general)
-            broadcast_targets = [broadcast_addr]
-            if broadcast_addr != "255.255.255.255":
-                broadcast_targets.append("255.255.255.255")
-            
-            last_error_logged = 0
-            
-            while True:
-                try:
-                    config = manager.get_server_config()
-                    num_clients = len(manager.clients_db)
-                    
-                    if num_clients > 0:
-                        if not broadcasts_paused:
-                            print(f"[Broadcast] ⏸️  Hay {num_clients} cliente(s) conectado(s). Broadcasts pausados.")
-                            broadcasts_paused = True
-                        elif num_clients != last_client_count:
-                            print(f"[Broadcast] ⏸️  {num_clients} cliente(s) conectado(s). Broadcasts siguen pausados.")
-                        last_client_count = num_clients
-                        time.sleep(config['broadcast_interval'])
-                        continue
-                    else:
-                        if broadcasts_paused:
-                            print(f"[Broadcast] ▶️  No hay clientes conectados. Reanudando broadcasts UDP.")
-                            broadcasts_paused = False
-                        last_client_count = 0
-                    
-                    message = json.dumps(server_info_data).encode('utf-8')
-                    sent = False
-                    for target_addr in broadcast_targets:
-                        try:
-                            sock.sendto(message, (target_addr, DISCOVERY_PORT))
-                            sent = True
-                            break
-                        except OSError:
-                            continue
-                    
-                    if sent:
-                        last_error_logged = 0
-                    else:
-                        # Todos los targets fallaron - recrear socket e intentar una vez más
-                        try:
-                            sock.close()
-                        except Exception:
-                            pass
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                        sock.bind(('', 0))
-                        try:
-                            sock.sendto(message, ('255.255.255.255', DISCOVERY_PORT))
-                            sent = True
-                            last_error_logged = 0
-                        except OSError as e:
-                            now = time.time()
-                            if now - last_error_logged > 30:
-                                print(f"[Broadcast] ⚠️  No se pudo enviar broadcast: {e}")
-                                last_error_logged = now
-                    
-                    time.sleep(config['broadcast_interval'])
-                except Exception as e:
-                    now = time.time()
-                    if now - last_error_logged > 30:
-                        print(f"[Broadcast] Error al enviar broadcast: {e}")
-                        last_error_logged = now
-                    time.sleep(config.get('broadcast_interval', 1))
-        except Exception as e:
-            print(f"[Broadcast] Error en thread de broadcast: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    thread = threading.Thread(target=broadcast_thread, daemon=True)
-    thread.start()
+    """Inicia broadcast UDP usando ClientManager.start_broadcast()."""
+    host_ip = os.getenv('HOST_IP')
+    if host_ip:
+        print(f"[Broadcast] Usando IP del host desde HOST_IP: {host_ip}")
+    manager.start_broadcast(host_ip_override=host_ip)
 
 
 if __name__ == '__main__':

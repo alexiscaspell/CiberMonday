@@ -6,10 +6,8 @@ Usa ClientManager de core/ para la lógica de negocio compartida con el servidor
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
-import socket
 import threading
 import re
-import time
 
 from core import ClientManager
 
@@ -530,116 +528,10 @@ _server_error = None
 
 
 def broadcast_server_presence(server_port=5000):
-    """
-    Hace broadcast UDP para anunciar la presencia de este servidor a los clientes.
-    Los clientes escuchan en el puerto 5001 y registran automáticamente nuevos servidores.
-    """
-    def broadcast_thread():
-        DISCOVERY_PORT = 5001
-        mgr = get_manager()
-        
-        try:
-            local_ip = mgr.get_local_ip()
-            if local_ip == "127.0.0.1" or not local_ip:
-                print(f"[Broadcast] IP no válida para broadcast: {local_ip}")
-                return
-            
-            server_url = f"http://{local_ip}:{server_port}"
-            server_info_data = {
-                'url': server_url,
-                'ip': local_ip,
-                'port': server_port
-            }
-            
-            broadcast_addr = mgr.get_broadcast_address(local_ip)
-            
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            try:
-                sock.bind(('', 0))
-            except Exception as bind_error:
-                print(f"[Broadcast] Advertencia al hacer bind: {bind_error}")
-            
-            config = mgr.get_server_config()
-            print(f"[Broadcast] Iniciando anuncios de servidor en {local_ip}:{server_port}")
-            print(f"[Broadcast] Dirección de broadcast: {broadcast_addr}:{DISCOVERY_PORT}")
-            print(f"[Broadcast] Enviando broadcasts UDP cada {config['broadcast_interval']} segundos")
-            print(f"[Broadcast] Los broadcasts se detendrán automáticamente cuando haya clientes conectados")
-            
-            # Direcciones de broadcast a intentar (subred específica + broadcast general)
-            broadcast_targets = [broadcast_addr]
-            if broadcast_addr != "255.255.255.255":
-                broadcast_targets.append("255.255.255.255")
-            
-            last_client_count = 0
-            broadcasts_paused = False
-            last_error_logged = 0
-            
-            while _server_running:
-                try:
-                    config = mgr.get_server_config()
-                    num_clients = len(mgr.clients_db)
-                    
-                    if num_clients > 0:
-                        if not broadcasts_paused:
-                            print(f"[Broadcast] Hay {num_clients} cliente(s) conectado(s). Broadcasts pausados.")
-                            broadcasts_paused = True
-                        elif num_clients != last_client_count:
-                            print(f"[Broadcast] {num_clients} cliente(s) conectado(s). Broadcasts siguen pausados.")
-                        last_client_count = num_clients
-                        time.sleep(config['broadcast_interval'])
-                        continue
-                    else:
-                        if broadcasts_paused:
-                            print(f"[Broadcast] No hay clientes conectados. Reanudando broadcasts UDP.")
-                            broadcasts_paused = False
-                        last_client_count = 0
-                    
-                    message = json.dumps(server_info_data).encode('utf-8')
-                    sent = False
-                    for target_addr in broadcast_targets:
-                        try:
-                            sock.sendto(message, (target_addr, DISCOVERY_PORT))
-                            sent = True
-                            break
-                        except OSError:
-                            continue
-                    
-                    if sent:
-                        last_error_logged = 0
-                    else:
-                        # Todos los targets fallaron - recrear socket e intentar una vez más
-                        try:
-                            sock.close()
-                        except Exception:
-                            pass
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                        sock.bind(('', 0))
-                        try:
-                            sock.sendto(message, ('255.255.255.255', DISCOVERY_PORT))
-                            sent = True
-                            last_error_logged = 0
-                        except OSError as e:
-                            now = time.time()
-                            if now - last_error_logged > 30:
-                                print(f"[Broadcast] No se pudo enviar broadcast: {e}")
-                                last_error_logged = now
-                    
-                    time.sleep(config['broadcast_interval'])
-                except Exception as e:
-                    now = time.time()
-                    if now - last_error_logged > 30:
-                        print(f"[Broadcast] Error al enviar broadcast: {e}")
-                        last_error_logged = now
-                    time.sleep(config.get('broadcast_interval', 1))
-        except Exception as e:
-            print(f"[Broadcast] Error en thread de broadcast: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    thread = threading.Thread(target=broadcast_thread, daemon=True)
-    thread.start()
+    """Inicia broadcast UDP usando ClientManager.start_broadcast()."""
+    get_manager().start_broadcast(
+        stop_check=lambda: not _server_running
+    )
 
 
 def start_server(host='0.0.0.0', port=5000, data_dir=None):

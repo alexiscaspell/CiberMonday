@@ -10,6 +10,7 @@ import json
 import socket
 import hashlib
 import threading
+import time
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
@@ -905,6 +906,123 @@ class ClientManager:
             pass
         
         return None
+    
+    # ==================== BROADCAST ====================
+    
+    def start_broadcast(self, host_ip_override=None, stop_check=None):
+        """
+        Inicia un thread de broadcast UDP para anunciar la presencia del servidor.
+        Los clientes escuchan en el puerto 5001 y se registran automáticamente.
+        
+        Args:
+            host_ip_override: IP explícita (ej: Docker HOST_IP). Si None, se auto-detecta.
+            stop_check: Callable que retorna True cuando se debe detener el broadcast.
+                         Si None, corre indefinidamente.
+        """
+        def broadcast_thread():
+            DISCOVERY_PORT = 5001
+            
+            try:
+                local_ip = host_ip_override or self.get_local_ip()
+                if local_ip == "127.0.0.1" or not local_ip:
+                    print(f"[Broadcast] IP no valida para broadcast: {local_ip}")
+                    return
+                
+                server_url = f"http://{local_ip}:{self.server_port}"
+                server_info_data = {
+                    'url': server_url,
+                    'ip': local_ip,
+                    'port': self.server_port
+                }
+                
+                broadcast_addr = self.get_broadcast_address(local_ip)
+                
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                try:
+                    sock.bind(('', 0))
+                except Exception as bind_error:
+                    print(f"[Broadcast] Advertencia al hacer bind: {bind_error}")
+                
+                config = self.get_server_config()
+                print(f"[Broadcast] Iniciando anuncios en {local_ip}:{self.server_port}")
+                print(f"[Broadcast] Direccion de broadcast: {broadcast_addr}:{DISCOVERY_PORT}")
+                print(f"[Broadcast] Intervalo: {config['broadcast_interval']}s")
+                
+                broadcast_targets = [broadcast_addr]
+                if broadcast_addr != "255.255.255.255":
+                    broadcast_targets.append("255.255.255.255")
+                
+                last_client_count = 0
+                broadcasts_paused = False
+                last_error_logged = 0
+                
+                should_run = lambda: (stop_check is None or not stop_check())
+                
+                while should_run():
+                    try:
+                        config = self.get_server_config()
+                        num_clients = len(self.clients_db)
+                        
+                        if num_clients > 0:
+                            if not broadcasts_paused:
+                                print(f"[Broadcast] {num_clients} cliente(s) conectado(s). Broadcasts pausados.")
+                                broadcasts_paused = True
+                            elif num_clients != last_client_count:
+                                print(f"[Broadcast] {num_clients} cliente(s) conectado(s).")
+                            last_client_count = num_clients
+                            time.sleep(config['broadcast_interval'])
+                            continue
+                        else:
+                            if broadcasts_paused:
+                                print(f"[Broadcast] Sin clientes. Reanudando broadcasts UDP.")
+                                broadcasts_paused = False
+                            last_client_count = 0
+                        
+                        message = json.dumps(server_info_data).encode('utf-8')
+                        sent = False
+                        for target_addr in broadcast_targets:
+                            try:
+                                sock.sendto(message, (target_addr, DISCOVERY_PORT))
+                                sent = True
+                                break
+                            except OSError:
+                                continue
+                        
+                        if sent:
+                            last_error_logged = 0
+                        else:
+                            try:
+                                sock.close()
+                            except Exception:
+                                pass
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                            sock.bind(('', 0))
+                            try:
+                                sock.sendto(message, ('255.255.255.255', DISCOVERY_PORT))
+                                last_error_logged = 0
+                            except OSError as e:
+                                now = time.time()
+                                if now - last_error_logged > 30:
+                                    print(f"[Broadcast] No se pudo enviar broadcast: {e}")
+                                    last_error_logged = now
+                        
+                        time.sleep(config['broadcast_interval'])
+                    except Exception as e:
+                        now = time.time()
+                        if now - last_error_logged > 30:
+                            print(f"[Broadcast] Error: {e}")
+                            last_error_logged = now
+                        time.sleep(config.get('broadcast_interval', 1))
+            except Exception as e:
+                print(f"[Broadcast] Error en thread de broadcast: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        thread = threading.Thread(target=broadcast_thread, daemon=True)
+        thread.start()
+        return thread
     
     # ==================== SERIALIZATION ====================
     

@@ -84,8 +84,7 @@ android/
 │   │   ├── FlaskServerService.kt      # Servicio que ejecuta Flask
 │   │   └── ClientAdapter.kt           # Adaptador de lista de clientes
 │   ├── python/
-│   │   ├── server_android.py           # Wrapper del servidor Flask
-│   │   ├── cibermonday_android.py      # Lógica de gestión de clientes
+│   │   ├── cibermonday_android.py      # Servidor HTTP + API (usa ClientManager de core/)
 │   │   └── templates/index.html        # Panel web (copia del servidor)
 │   ├── res/
 │   │   ├── layout/                     # Layouts XML
