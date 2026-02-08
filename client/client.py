@@ -629,9 +629,24 @@ def register_new_client(existing_client_id=None):
             server_config = data.get('config')
             known_servers = data.get('known_servers', [])
             
-            # Guardar lista de servidores conocidos
+            # Merge lista de servidores conocidos (NO reemplazar, para no perder descubiertos por broadcast)
             if REGISTRY_AVAILABLE and known_servers:
-                save_servers_to_registry(known_servers)
+                current_servers = get_servers_from_registry()
+                current_urls = {s.get('url') for s in current_servers}
+                for server in known_servers:
+                    srv_url = server.get('url')
+                    if srv_url and srv_url not in current_urls:
+                        server.setdefault('timeout_count', 0)
+                        server.setdefault('last_seen', datetime.now().isoformat())
+                        current_servers.append(server)
+                    elif srv_url:
+                        # Actualizar last_seen del existente
+                        for s in current_servers:
+                            if s.get('url') == srv_url:
+                                s['last_seen'] = datetime.now().isoformat()
+                                s['timeout_count'] = 0
+                                break
+                save_servers_to_registry(current_servers)
             
             # Guardar el ID del cliente
             client_id_file_path = os.path.join(BASE_PATH, os.path.basename(CLIENT_ID_FILE))
@@ -1056,6 +1071,10 @@ class SyncManager:
                     print(f"[SyncManager] {self._consecutive_failures} ciclos sin servidores. Seguirá reintentando...")
                 return
             
+            # Log de servidores con los que se va a intentar sincronizar
+            server_urls = [s.get('url', '?') for s in servers_list]
+            print(f"[SyncManager] Sincronizando con {len(servers_list)} servidor(es): {', '.join(server_urls)}")
+            
             # Intentar sincronizar con TODOS los servidores disponibles
             any_success = False
             all_failed = True
@@ -1306,9 +1325,23 @@ class SyncManager:
                 data = response.json()
                 known_servers_resp = data.get('known_servers', [])
                 
-                if REGISTRY_AVAILABLE:
-                    if known_servers_resp:
-                        save_servers_to_registry(known_servers_resp)
+                # Merge servidores (NO reemplazar, para no perder descubiertos por broadcast)
+                if REGISTRY_AVAILABLE and known_servers_resp:
+                    current_servers = get_servers_from_registry()
+                    current_urls = {s.get('url') for s in current_servers}
+                    for srv in known_servers_resp:
+                        srv_url = srv.get('url')
+                        if srv_url and srv_url not in current_urls:
+                            srv.setdefault('timeout_count', 0)
+                            srv.setdefault('last_seen', datetime.now().isoformat())
+                            current_servers.append(srv)
+                        elif srv_url:
+                            for s in current_servers:
+                                if s.get('url') == srv_url:
+                                    s['last_seen'] = datetime.now().isoformat()
+                                    s['timeout_count'] = 0
+                                    break
+                    save_servers_to_registry(current_servers)
                 
                 print(f"[SyncManager] Cliente registrado en {server_url}")
                 return True
