@@ -80,7 +80,7 @@ def _get_client_command():
                 f"No se encontró CiberMondayClient.exe en {exe_dir}. "
                 "Asegúrate de que ambos EXE estén en la misma carpeta."
             )
-        return [client_exe]
+        return [client_exe, '--service']
     else:
         # Entorno Python normal - ejecutar script directamente
         client_script = os.path.join(_get_service_dir(), 'client.py')
@@ -88,7 +88,7 @@ def _get_client_command():
             raise FileNotFoundError(
                 f"No se encontró client.py en {_get_service_dir()}"
             )
-        return [sys.executable, client_script]
+        return [sys.executable, client_script, '--service']
 
 
 def _protect_child_process(pid):

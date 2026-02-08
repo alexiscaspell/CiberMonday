@@ -121,6 +121,11 @@ except:
     # Si hay algún error, asumir que no es servicio (podemos mostrar GUI)
     IS_SERVICE = False
 
+# Modo servicio: si se pasa --service, nunca mostrar GUI
+# El servicio corre en Session 0 sin escritorio, tkinter cuelga/crashea
+if '--service' in sys.argv:
+    IS_SERVICE = True
+
 # Modo configuración: si se pasa --configure, solo muestra la GUI y sale
 # Usado por el instalador del servicio para configurar antes de instalar
 CONFIGURE_ONLY = '--configure' in sys.argv
