@@ -40,8 +40,28 @@ def create_app(data_dir):
     app = Flask(__name__, template_folder=template_dir)
     CORS(app)
     
+    CLIENT_OFFLINE_TIMEOUT = 60  # segundos sin contacto = desconectado
+    
     def generate_client_id():
         return str(uuid.uuid4())
+    
+    def touch_client(client_id):
+        """Actualiza last_seen del cliente."""
+        if client_id in clients_db:
+            clients_db[client_id]['last_seen'] = datetime.now().isoformat()
+    
+    def is_client_connected(client_id):
+        """Verifica si el cliente se reportó recientemente."""
+        if client_id not in clients_db:
+            return False
+        last_seen = clients_db[client_id].get('last_seen')
+        if not last_seen:
+            return False
+        try:
+            elapsed = (datetime.now() - datetime.fromisoformat(last_seen)).total_seconds()
+            return elapsed < CLIENT_OFFLINE_TIMEOUT
+        except Exception:
+            return False
     
     @app.route('/api/register', methods=['POST'])
     def register_client():
@@ -58,11 +78,15 @@ def create_app(data_dir):
             client_id = generate_client_id()
             is_reregister = False
         
+        # Preservar total_time_used en re-registro
+        prev_time_used = clients_db.get(client_id, {}).get('total_time_used', 0) if is_reregister else 0
+        
         clients_db[client_id] = {
             'id': client_id,
             'name': client_name,
             'registered_at': datetime.now().isoformat(),
-            'total_time_used': 0,
+            'last_seen': datetime.now().isoformat(),
+            'total_time_used': prev_time_used,
             'is_active': False
         }
         
@@ -84,6 +108,7 @@ def create_app(data_dir):
             time_limit = session_data.get('time_limit_seconds', remaining_seconds)
             
             if remaining_seconds > 0:
+                # Sesión activa
                 end_time = datetime.now() + timedelta(seconds=remaining_seconds)
                 start_time = end_time - timedelta(seconds=time_limit)
                 
@@ -93,6 +118,16 @@ def create_app(data_dir):
                     'end_time': end_time.isoformat()
                 }
                 clients_db[client_id]['is_active'] = True
+            elif time_limit > 0 and client_id not in client_sessions:
+                # Sesión expirada - crear entrada para que el panel muestre EXPIRADO
+                now = datetime.now()
+                client_sessions[client_id] = {
+                    'time_limit': time_limit,
+                    'start_time': (now - timedelta(seconds=time_limit)).isoformat(),
+                    'end_time': now.isoformat(),
+                    'expired_at': now.isoformat()
+                }
+                clients_db[client_id]['is_active'] = False
         
         message = 'Cliente re-registrado exitosamente' if is_reregister else 'Cliente registrado exitosamente'
         
@@ -109,10 +144,15 @@ def create_app(data_dir):
         clients_list = []
         for client_id, client_data in clients_db.items():
             client_info = client_data.copy()
+            client_info['connected'] = is_client_connected(client_id)
+            
             if client_id in client_sessions:
                 session = client_sessions[client_id]
                 end_time = datetime.fromisoformat(session['end_time'])
                 remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
+                
+                if remaining_seconds == 0:
+                    client_info['is_active'] = False
                 
                 client_info['current_session'] = {
                     'time_limit': session['time_limit'],
@@ -120,6 +160,8 @@ def create_app(data_dir):
                     'end_time': session['end_time'],
                     'remaining_seconds': remaining_seconds
                 }
+            else:
+                client_info['current_session'] = None
             
             client_info['config'] = client_configs.get(client_id, DEFAULT_CLIENT_CONFIG.copy())
             clients_list.append(client_info)
@@ -172,7 +214,9 @@ def create_app(data_dir):
         if client_id not in clients_db:
             return jsonify({'success': False, 'message': 'Cliente no encontrado'}), 404
         
+        touch_client(client_id)
         client_data = clients_db[client_id].copy()
+        client_data['connected'] = is_client_connected(client_id)
         
         if client_id in client_sessions:
             session = client_sessions[client_id]
@@ -249,12 +293,34 @@ def create_app(data_dir):
         if client_id not in clients_db:
             return jsonify({'success': False, 'message': 'Cliente no encontrado'}), 404
         
+        touch_client(client_id)
         data = request.json
         remaining_seconds = data.get('remaining_seconds', 0)
         time_limit = data.get('time_limit_seconds', remaining_seconds)
         
+        # Sesión expirada: mantenerla para que el panel muestre "EXPIRADO"
         if remaining_seconds <= 0:
-            return jsonify({'success': False, 'message': 'El tiempo debe ser mayor a 0'}), 400
+            if client_id in client_sessions:
+                session = client_sessions[client_id]
+                if 'expired_at' not in session:
+                    session['expired_at'] = datetime.now().isoformat()
+                    clients_db[client_id]['total_time_used'] += session.get('time_limit', 0)
+            elif time_limit and time_limit > 0:
+                # Server no conocía la sesión (ej: recién arrancó). Crear entrada expirada.
+                now = datetime.now()
+                client_sessions[client_id] = {
+                    'time_limit': time_limit,
+                    'start_time': (now - timedelta(seconds=time_limit)).isoformat(),
+                    'end_time': now.isoformat(),
+                    'expired_at': now.isoformat()
+                }
+                clients_db[client_id]['total_time_used'] += time_limit
+            clients_db[client_id]['is_active'] = False
+            return jsonify({
+                'success': True,
+                'message': 'Sesión expirada',
+                'session': None
+            }), 200
         
         end_time = datetime.now() + timedelta(seconds=remaining_seconds)
         start_time = end_time - timedelta(seconds=time_limit)

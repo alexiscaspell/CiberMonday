@@ -119,13 +119,14 @@ class ClientManager:
         elif client_id not in self.client_configs:
             self.client_configs[client_id] = self.DEFAULT_CONFIG.copy()
         
-        # Restaurar sesión si se proporcionó
+        # Restaurar sesión si se proporcionó (activa o expirada)
         session_restored = False
         if session_data:
             remaining_seconds = session_data.get('remaining_seconds', 0)
             time_limit = session_data.get('time_limit_seconds', remaining_seconds)
             
             if remaining_seconds > 0:
+                # Sesión activa
                 end_time = datetime.now() + timedelta(seconds=remaining_seconds)
                 start_time = end_time - timedelta(seconds=time_limit)
                 
@@ -136,6 +137,17 @@ class ClientManager:
                 }
                 self.clients_db[client_id]['is_active'] = True
                 session_restored = True
+            elif time_limit > 0 and client_id not in self.client_sessions:
+                # Sesión expirada que el servidor no conocía (ej: server recién arrancó).
+                # Crear entrada expirada para que el panel muestre "EXPIRADO".
+                now = datetime.now()
+                self.client_sessions[client_id] = {
+                    'time_limit': time_limit,
+                    'start_time': (now - timedelta(seconds=time_limit)).isoformat(),
+                    'end_time': now.isoformat(),
+                    'expired_at': now.isoformat()
+                }
+                self.clients_db[client_id]['is_active'] = False
         
         # Registrar servidores conocidos del cliente
         if known_servers:
@@ -518,7 +530,9 @@ class ClientManager:
     def report_session(self, client_id, remaining_seconds, time_limit_seconds=None):
         """
         Permite a un cliente reportar su sesión activa.
-        Si remaining_seconds <= 0, limpia la sesión (el cliente informa que no tiene sesión).
+        Si remaining_seconds <= 0, marca la sesión como expirada pero la mantiene
+        para que el panel siga mostrando "EXPIRADO". La sesión solo se elimina
+        cuando el admin asigna nuevo tiempo o hace "Detener".
         
         Si hay un cambio de admin pendiente (grace period), el reporte se ignora
         para evitar que el sync del cliente sobreescriba el cambio del admin.
@@ -540,18 +554,32 @@ class ClientManager:
                 'session': None
             }
         
-        # remaining_seconds <= 0 significa que el cliente no tiene sesión activa
+        # remaining_seconds <= 0: sesión expirada. Mantener la sesión en client_sessions
+        # para que get_clients() siga devolviendo remaining_seconds=0 y el panel muestre
+        # "EXPIRADO". Solo acumular tiempo usado la primera vez (marcar con expired_at).
         if remaining_seconds <= 0:
             if client_id in self.client_sessions:
                 session = self.client_sessions[client_id]
-                start_time = datetime.fromisoformat(session['start_time'])
-                time_used = int((datetime.now() - start_time).total_seconds())
-                self.clients_db[client_id]['total_time_used'] += time_used
-                del self.client_sessions[client_id]
+                if 'expired_at' not in session:
+                    # Primera vez que se reporta expirada: acumular tiempo usado
+                    session['expired_at'] = datetime.now().isoformat()
+                    self.clients_db[client_id]['total_time_used'] += session['time_limit']
+            elif time_limit_seconds and time_limit_seconds > 0:
+                # El servidor no conocía esta sesión (ej: server recién arrancó) pero
+                # el cliente tiene una sesión expirada. Crear entrada expirada para
+                # que el panel muestre "EXPIRADO".
+                now = datetime.now()
+                self.client_sessions[client_id] = {
+                    'time_limit': time_limit_seconds,
+                    'start_time': (now - timedelta(seconds=time_limit_seconds)).isoformat(),
+                    'end_time': now.isoformat(),
+                    'expired_at': now.isoformat()
+                }
+                self.clients_db[client_id]['total_time_used'] += time_limit_seconds
             self.clients_db[client_id]['is_active'] = False
             return {
                 'success': True,
-                'message': 'Sesión limpiada por reporte del cliente',
+                'message': 'Sesión expirada',
                 'session': None
             }
         

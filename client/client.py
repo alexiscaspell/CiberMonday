@@ -647,17 +647,17 @@ def register_new_client(existing_client_id=None):
             # Si no se puede obtener IP, continuar sin ella
             pass
         
-        # Incluir sesión activa si existe en el registro local
+        # Incluir sesión si existe en el registro local (activa o expirada)
         if REGISTRY_AVAILABLE:
             session_info = get_session_info()
-            if session_info and not session_info['is_expired'] and session_info['remaining_seconds'] > 0:
+            if session_info:
                 session_data = get_session_from_registry()
                 if session_data:
+                    remaining = max(0, session_info['remaining_seconds'])
                     register_data['session'] = {
-                        'remaining_seconds': session_info['remaining_seconds'],
-                        'time_limit_seconds': session_data.get('time_limit_seconds', session_info['remaining_seconds'])
+                        'remaining_seconds': remaining,
+                        'time_limit_seconds': session_data.get('time_limit_seconds', remaining or 0)
                     }
-                    pass  # Sesión activa incluida en registro
             
             # Incluir configuración actual del cliente (incluyendo nombre personalizado)
             if config_data:
@@ -1298,16 +1298,22 @@ class SyncManager:
         if not REGISTRY_AVAILABLE:
             return
         
-        # Reportar sesión actual (o limpiarla si no hay sesión activa)
+        # Reportar sesión actual (activa o expirada)
         session_info = get_session_info()
         if session_info and not session_info['is_expired'] and session_info['remaining_seconds'] > 0:
             report_session_to_server(client_id, server_url=server_url)
         else:
-            # Informar al server que no hay sesión activa
+            # Informar al server la sesión expirada (con time_limit para que muestre EXPIRADO)
+            # o que no hay sesión (time_limit=0)
             try:
+                time_limit = 0
+                if session_info:
+                    session_data = get_session_from_registry()
+                    if session_data:
+                        time_limit = session_data.get('time_limit_seconds', 0)
                 requests.post(
                     f"{server_url}/api/client/{client_id}/report-session",
-                    json={'remaining_seconds': 0, 'time_limit_seconds': 0},
+                    json={'remaining_seconds': 0, 'time_limit_seconds': time_limit},
                     timeout=5
                 )
             except:
@@ -1372,15 +1378,16 @@ class SyncManager:
             except:
                 pass
             
-            # Incluir sesión activa si existe
+            # Incluir sesión si existe (activa o expirada)
             if REGISTRY_AVAILABLE:
                 session_info = get_session_info()
-                if session_info and not session_info['is_expired'] and session_info['remaining_seconds'] > 0:
+                if session_info:
                     session_data = get_session_from_registry()
                     if session_data:
+                        remaining = max(0, session_info['remaining_seconds'])
                         register_data['session'] = {
-                            'remaining_seconds': session_info['remaining_seconds'],
-                            'time_limit_seconds': session_data.get('time_limit_seconds', session_info['remaining_seconds'])
+                            'remaining_seconds': remaining,
+                            'time_limit_seconds': session_data.get('time_limit_seconds', remaining or 0)
                         }
                 
                 # Incluir configuración
@@ -1897,13 +1904,16 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
                             # Reportar sesión activa
                             report_session_to_server(client_id, server_url=server_url)
                         else:
-                            # Reportar que la sesión fue detenida
-                            # Usar report-session con remaining=0 para limpiar en el server
-                            # sin disparar el flujo de admin (stop) que volvería a notificar
+                            # Reportar sesión expirada (con time_limit) o sin sesión
                             try:
+                                time_limit = 0
+                                if session_info:
+                                    sd = get_session_from_registry()
+                                    if sd:
+                                        time_limit = sd.get('time_limit_seconds', 0)
                                 requests.post(
                                     f"{server_url}/api/client/{client_id}/report-session",
-                                    json={'remaining_seconds': 0, 'time_limit_seconds': 0},
+                                    json={'remaining_seconds': 0, 'time_limit_seconds': time_limit},
                                     timeout=5
                                 )
                             except:
