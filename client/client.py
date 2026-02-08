@@ -393,40 +393,54 @@ def show_time_alert(threshold, remaining_seconds):
 
 def lock_workstation():
     """
-    Bloquea la estación de trabajo de Windows usando la API nativa.
+    Bloquea la estación de trabajo de Windows.
     
-    Utiliza LockWorkStation() que es equivalente a presionar Windows+L.
+    Funciona tanto desde la sesión del usuario como desde Session 0 (servicios).
     Si el usuario desbloquea la pantalla, el cliente volverá a bloquearla
     automáticamente cada 2 segundos mientras la sesión esté expirada.
+    
+    Métodos (en orden de prioridad):
+    1. LockWorkStation() - funciona desde la sesión interactiva del usuario
+    2. WTSDisconnectSession() - funciona desde Session 0 (servicios de Windows)
+       Desconecta la sesión activa mostrando la pantalla de bloqueo.
+       Los programas del usuario siguen corriendo.
     """
+    # Método 1: LockWorkStation() - solo funciona desde la sesión del usuario
     try:
         result = user32.LockWorkStation()
         if result:
+            print("[Lock] PC bloqueada (LockWorkStation)", flush=True)
             return True
         else:
-            # Si LockWorkStation falla, intentar método alternativo
-            return lock_workstation_alternative()
+            print("[Lock] LockWorkStation() fallo (retorno 0), intentando WTSDisconnectSession...", flush=True)
     except Exception as e:
-        print(f"Error al bloquear la PC: {e}")
-        return lock_workstation_alternative()
-
-def lock_workstation_alternative():
-    """
-    Método alternativo de bloqueo usando mensajes del sistema.
-    Se usa como respaldo si LockWorkStation() falla.
-    """
+        print(f"[Lock] Error en LockWorkStation: {e}", flush=True)
+    
+    # Método 2: WTSDisconnectSession - funciona desde Session 0 (servicios)
+    # Desconecta la sesión de consola activa, mostrando la pantalla de login/bloqueo
     try:
-        # Enviar comando de bloqueo usando mensajes del sistema
-        HWND_BROADCAST = 0xFFFF
-        WM_SYSCOMMAND = 0x0112
-        SC_MONITORPOWER = 0xF170
-        
-        # Bloquear la pantalla
-        user32.SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)
-        return True
+        wtsapi32 = ctypes.windll.wtsapi32
+        # Obtener la sesión de consola activa (donde el usuario está logueado)
+        session_id = kernel32.WTSGetActiveConsoleSessionId()
+        if session_id != 0xFFFFFFFF:  # 0xFFFFFFFF = no hay sesión activa
+            result = wtsapi32.WTSDisconnectSession(
+                WTS_CURRENT_SERVER_HANDLE,  # Servidor local
+                session_id,                  # Sesión del usuario
+                False                        # No esperar
+            )
+            if result:
+                print(f"[Lock] Sesion {session_id} desconectada (WTSDisconnectSession)", flush=True)
+                return True
+            else:
+                error_code = kernel32.GetLastError()
+                print(f"[Lock] WTSDisconnectSession fallo para sesion {session_id} (error: {error_code})", flush=True)
+        else:
+            print("[Lock] No se encontro sesion activa de consola", flush=True)
     except Exception as e:
-        print(f"Error en método alternativo: {e}")
-        return False
+        print(f"[Lock] Error en WTSDisconnectSession: {e}", flush=True)
+    
+    print("[Lock] ERROR: No se pudo bloquear la PC con ningun metodo", flush=True)
+    return False
 
 
 def get_client_id():
@@ -2411,13 +2425,16 @@ def monitor_time(client_id):
             if is_expired or remaining_seconds <= 0:
                 # Bloquear continuamente mientras la sesión esté expirada
                 if last_remaining is None or last_remaining > 0:
-                    print("\n" + "=" * 50)
-                    print("¡TIEMPO AGOTADO!")
-                    print("La PC se bloqueará continuamente hasta que se asigne nuevo tiempo.")
-                    print("=" * 50)
+                    print("\n" + "=" * 50, flush=True)
+                    print("[EXPIRACION] TIEMPO AGOTADO!", flush=True)
+                    print(f"[EXPIRACION] remaining_seconds={remaining_seconds}, is_expired={is_expired}", flush=True)
+                    print("[EXPIRACION] La PC se bloqueara continuamente hasta que se asigne nuevo tiempo.", flush=True)
+                    print("=" * 50, flush=True)
                 
                 # Bloquear la estación de trabajo
-                lock_workstation()
+                result = lock_workstation()
+                if not result:
+                    print("[EXPIRACION] FALLO: lock_workstation() no pudo bloquear", flush=True)
                 last_remaining = remaining_seconds
                 
                 # Verificar periódicamente si se asignó nuevo tiempo

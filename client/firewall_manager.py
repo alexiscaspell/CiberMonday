@@ -43,7 +43,7 @@ def add_firewall_rule():
         bool: True si se agregó correctamente o ya existe, False en caso contrario
     """
     if not is_admin():
-        print(f"[Firewall] ⚠️  Se requieren privilegios de administrador para agregar regla del firewall")
+        print(f"[Firewall] [WARN]  Se requieren privilegios de administrador para agregar regla del firewall")
         print(f"[Firewall] Ejecuta este script como administrador")
         return False
     
@@ -56,7 +56,7 @@ def add_firewall_rule():
         result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
         
         if result.returncode == 0 and FIREWALL_RULE_NAME in result.stdout:
-            print(f"[Firewall] ✅ La regla '{FIREWALL_RULE_NAME}' ya existe")
+            print(f"[Firewall] [OK] La regla '{FIREWALL_RULE_NAME}' ya existe")
             return True
         
         # Agregar regla del firewall
@@ -75,25 +75,25 @@ def add_firewall_rule():
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
         
         if result.returncode == 0:
-            print(f"[Firewall] ✅ Regla del firewall agregada exitosamente")
+            print(f"[Firewall] [OK] Regla del firewall agregada exitosamente")
             print(f"[Firewall] Puerto UDP {DISCOVERY_PORT} ahora está permitido para recibir broadcasts")
             return True
         else:
             error_msg = result.stderr if result.stderr else result.stdout
-            print(f"[Firewall] ❌ Error al agregar regla del firewall")
+            print(f"[Firewall] [ERROR] Error al agregar regla del firewall")
             print(f"[Firewall] Código de salida: {result.returncode}")
             if error_msg:
                 print(f"[Firewall] Mensaje: {error_msg}")
             return False
             
     except subprocess.TimeoutExpired:
-        print(f"[Firewall] ❌ Timeout al ejecutar comando del firewall")
+        print(f"[Firewall] [ERROR] Timeout al ejecutar comando del firewall")
         return False
     except FileNotFoundError:
-        print(f"[Firewall] ❌ Error: netsh no encontrado. Asegúrate de estar en Windows.")
+        print(f"[Firewall] [ERROR] Error: netsh no encontrado. Asegúrate de estar en Windows.")
         return False
     except Exception as e:
-        print(f"[Firewall] ❌ Error al agregar regla del firewall: {e}")
+        print(f"[Firewall] [ERROR] Error al agregar regla del firewall: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -106,7 +106,7 @@ def remove_firewall_rule():
         bool: True si se eliminó correctamente, False en caso contrario
     """
     if not is_admin():
-        print(f"[Firewall] ⚠️  Se requieren privilegios de administrador para eliminar regla del firewall")
+        print(f"[Firewall] [WARN]  Se requieren privilegios de administrador para eliminar regla del firewall")
         return False
     
     try:
@@ -118,21 +118,21 @@ def remove_firewall_rule():
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         
         if result.returncode == 0:
-            print(f"[Firewall] ✅ Regla del firewall eliminada exitosamente")
+            print(f"[Firewall] [OK] Regla del firewall eliminada exitosamente")
             return True
         else:
             # Si la regla no existe, netsh retorna código de error pero no es crítico
             if "No rules match" in result.stderr or "No se encontraron reglas" in result.stderr:
-                print(f"[Firewall] ℹ️  La regla '{FIREWALL_RULE_NAME}' no existe")
+                print(f"[Firewall] [INFO]  La regla '{FIREWALL_RULE_NAME}' no existe")
                 return True
-            print(f"[Firewall] ❌ Error al eliminar regla del firewall: {result.stderr}")
+            print(f"[Firewall] [ERROR] Error al eliminar regla del firewall: {result.stderr}")
             return False
             
     except subprocess.TimeoutExpired:
-        print(f"[Firewall] ❌ Timeout al ejecutar comando del firewall")
+        print(f"[Firewall] [ERROR] Timeout al ejecutar comando del firewall")
         return False
     except Exception as e:
-        print(f"[Firewall] ❌ Error al eliminar regla del firewall: {e}")
+        print(f"[Firewall] [ERROR] Error al eliminar regla del firewall: {e}")
         return False
 
 def check_firewall_rule():
@@ -180,7 +180,7 @@ if __name__ == '__main__':
     elif args.action == 'check':
         exists = check_firewall_rule()
         if exists:
-            print(f"[Firewall] ✅ La regla '{FIREWALL_RULE_NAME}' existe")
+            print(f"[Firewall] [OK] La regla '{FIREWALL_RULE_NAME}' existe")
         else:
-            print(f"[Firewall] ❌ La regla '{FIREWALL_RULE_NAME}' no existe")
+            print(f"[Firewall] [ERROR] La regla '{FIREWALL_RULE_NAME}' no existe")
         sys.exit(0 if exists else 1)

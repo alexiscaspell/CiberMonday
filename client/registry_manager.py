@@ -368,7 +368,7 @@ def get_servers_from_registry():
         
         # Si se eliminaron servidores, guardar la lista filtrada
         if removed_servers:
-            print(f"[Servidores] 🗑️  Eliminando {len(removed_servers)} servidor(es) con {MAX_TIMEOUTS}+ timeouts: {', '.join(removed_servers)}")
+            print(f"[Servidores] [DEL]  Eliminando {len(removed_servers)} servidor(es) con {MAX_TIMEOUTS}+ timeouts: {', '.join(removed_servers)}")
             save_servers_to_registry(filtered_servers)
         
         return filtered_servers
@@ -410,7 +410,7 @@ def increment_server_timeouts(server_urls):
                 timeout_count = server.get('timeout_count', 0)
                 server['timeout_count'] = timeout_count + 1
                 updated = True
-                print(f"[Servidores] ⚠️  Servidor {server_url} - Timeouts: {server['timeout_count']}/{MAX_TIMEOUTS}")
+                print(f"[Servidores] [WARN]  Servidor {server_url} - Timeouts: {server['timeout_count']}/{MAX_TIMEOUTS}")
         
         if updated:
             save_servers_to_registry(servers_list)
@@ -437,7 +437,7 @@ def reset_server_timeout_count(server_url):
                 if old_count > 0:
                     server['timeout_count'] = 0
                     updated = True
-                    print(f"[Servidores] ✅ Servidor {server_url} - Timeouts reseteados (era {old_count})")
+                    print(f"[Servidores] [OK] Servidor {server_url} - Timeouts reseteados (era {old_count})")
                 break
         
         if updated:

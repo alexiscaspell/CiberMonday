@@ -57,7 +57,7 @@ def show_config_window():
     # Título
     title_label = tk.Label(
         main_frame,
-        text="🖥️ Configuración de CiberMonday",
+        text="Configuracion de CiberMonday",
         font=("Arial", 16, "bold")
     )
     title_label.pack(pady=(0, 10))
@@ -277,9 +277,9 @@ def show_config_window():
                     }]
                     
                     save_servers_to_registry(new_servers_list)
-                    print(f"[Config] ✅ Lista de servidores conocidos RESETEADA. Solo se mantiene el servidor configurado: {server_url}")
+                    print(f"[Config] [OK] Lista de servidores conocidos RESETEADA. Solo se mantiene el servidor configurado: {server_url}")
                 except Exception as e:
-                    print(f"[Config] ⚠️  Advertencia: No se pudo actualizar lista de servidores: {e}")
+                    print(f"[Config] [WARN]  Advertencia: No se pudo actualizar lista de servidores: {e}")
                     import traceback
                     traceback.print_exc()
                 
