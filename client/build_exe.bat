@@ -26,7 +26,7 @@ REM evita que aparezca ventana de consola cuando lo lanza el servicio.
 pyinstaller --onefile ^
     --console ^
     --name "CiberMondayClient" ^
-    --icon=NONE ^
+    --icon=icon.ico ^
     --add-data "config.py;." ^
     --hidden-import "winreg" ^
     --hidden-import "win32serviceutil" ^
@@ -53,7 +53,7 @@ REM Compilar el servicio (ya no necesita client.py como data, lanza CiberMondayC
 pyinstaller --onefile ^
     --windowed ^
     --name "CiberMondayService" ^
-    --icon=NONE ^
+    --icon=icon.ico ^
     --hidden-import "winreg" ^
     --hidden-import "win32serviceutil" ^
     --hidden-import "win32service" ^
@@ -81,7 +81,7 @@ REM Compilar el watchdog (ahora incluye protección DACL)
 pyinstaller --onefile ^
     --windowed ^
     --name "CiberMondayWatchdog" ^
-    --icon=NONE ^
+    --icon=icon.ico ^
     --hidden-import "winreg" ^
     --hidden-import "protection" ^
     --hidden-import "ctypes" ^

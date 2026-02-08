@@ -1,105 +1,116 @@
-# CiberMonday Server - App Android
+<p align="center">
+  <img src="../resources/icono.png" alt="CiberMonday" width="80">
+</p>
 
-Aplicación Android que ejecuta el servidor CiberMonday y muestra la interfaz web en un WebView.
+# CiberMonday — App Android
 
-## Requisitos para compilar
+Aplicación Android que ejecuta el servidor CiberMonday directamente desde un teléfono o tablet. Empaqueta el servidor Flask con [Chaquopy](https://chaquo.com/chaquopy/) y expone la misma interfaz web que la versión de escritorio.
 
-### Opción Docker (Recomendada)
-- Docker instalado y corriendo
-- No necesitas Android Studio ni Java instalados
+## Características
 
-### Opción Android Studio
-- Android Studio Arctic Fox (2020.3.1) o superior
-- JDK 17
-- Android SDK 34
+- **Servidor Flask integrado** ejecutado con Chaquopy (Python en Android).
+- **WebView nativo** que muestra el panel de administración.
+- **Servicio en segundo plano** con notificación persistente.
+- **Wake Lock** para mantener el servidor activo con pantalla apagada.
+- **Misma interfaz y API** que el servidor de escritorio/Docker.
 
-### Para ejecutar la app
-- Dispositivo Android 7.0 (API 24) o superior
+## Requisitos
 
-## Cómo compilar
+### Para compilar
 
-### Opción 1: Docker (Recomendada) 🐳
+| Método | Requisitos |
+|--------|-----------|
+| Docker (recomendado) | Solo Docker instalado |
+| Android Studio | JDK 17, Android SDK 34, Gradle 8.2+ |
 
-La forma más fácil de compilar sin instalar Android Studio.
+### Para ejecutar
+
+- Android 7.0 (API 24) o superior.
+- Los clientes Windows deben estar en la misma red Wi-Fi que el dispositivo.
+
+## Compilar el APK
+
+### Con Docker (recomendado)
 
 ```bash
 # Desde la raíz del proyecto CiberMonday
 
-# En Linux/Mac
+# Linux / macOS
 ./build_android.sh
 
-# En Windows
+# Windows
 build_android.bat
 ```
 
-El APK se generará en `dist/CiberMondayServer.apk`
+El APK se genera en `dist/CiberMondayServer.apk`.
 
-**Nota**: La primera compilación tarda varios minutos porque descarga el Android SDK y las dependencias de Python.
+> La primera compilación tarda varios minutos (descarga Android SDK y dependencias Python).
 
-### Opción 2: Android Studio
+### Con Android Studio
 
-1. Abre Android Studio
-2. Selecciona "Open" y navega a la carpeta `android`
-3. Espera a que Gradle sincronice el proyecto
-4. Conecta un dispositivo Android o inicia un emulador
-5. Presiona el botón "Run" (▶️)
+1. Abrir Android Studio y seleccionar **Open** > carpeta `android/`.
+2. Esperar a que Gradle sincronice.
+3. Conectar dispositivo o iniciar emulador.
+4. Presionar **Run**.
 
-### Opción 3: Línea de comandos (requiere Android SDK)
+### Línea de comandos (requiere Android SDK)
 
 ```bash
 cd android
-
-# En Linux/Mac
-./gradlew assembleDebug
-
-# En Windows
-gradlew.bat assembleDebug
+./gradlew assembleDebug   # Linux/macOS
+gradlew.bat assembleDebug  # Windows
 ```
 
-El APK se generará en `app/build/outputs/apk/debug/app-debug.apk`
+APK en `app/build/outputs/apk/debug/app-debug.apk`.
 
-## Características
+## Instalar
 
-- **Servidor Flask integrado**: Ejecuta el servidor Python usando Chaquopy
-- **WebView nativo**: Muestra la misma interfaz web sin duplicar código
-- **Servicio en segundo plano**: El servidor sigue corriendo aunque minimices la app
-- **Notificación persistente**: Indica que el servidor está activo
-- **Wake Lock**: Mantiene el servidor activo incluso con la pantalla apagada
+```bash
+# Por USB con adb
+adb install dist/CiberMondayServer.apk
 
-## Estructura del proyecto
+# Si hay versión anterior con distinta firma
+adb uninstall com.cibermonday.server
+adb install dist/CiberMondayServer.apk
+```
+
+## Estructura
 
 ```
 android/
-├── app/
-│   ├── src/main/
-│   │   ├── java/com/cibermonday/server/
-│   │   │   ├── MainActivity.kt       # Actividad principal con WebView
-│   │   │   └── FlaskServerService.kt # Servicio que ejecuta Flask
-│   │   ├── python/
-│   │   │   ├── server_android.py     # Wrapper del servidor Flask
-│   │   │   └── templates/            # Se copian automáticamente
-│   │   ├── res/
-│   │   │   ├── layout/
-│   │   │   ├── values/
-│   │   │   └── drawable/
-│   │   └── AndroidManifest.xml
-│   └── build.gradle
-├── build.gradle
+├── app/src/main/
+│   ├── java/com/cibermonday/server/
+│   │   ├── MainActivity.kt            # WebView + gestión de permisos
+│   │   ├── FlaskServerService.kt      # Servicio que ejecuta Flask
+│   │   └── ClientAdapter.kt           # Adaptador de lista de clientes
+│   ├── python/
+│   │   ├── server_android.py           # Wrapper del servidor Flask
+│   │   ├── cibermonday_android.py      # Lógica de gestión de clientes
+│   │   └── templates/index.html        # Panel web (copia del servidor)
+│   ├── res/
+│   │   ├── layout/                     # Layouts XML
+│   │   ├── mipmap-*/                   # Íconos del launcher (todas las densidades)
+│   │   ├── drawable/                   # Drawables, ícono de notificación
+│   │   └── values/                     # Strings, temas
+│   └── AndroidManifest.xml
+├── build.gradle                        # Config de Gradle + Chaquopy
 ├── settings.gradle
-└── gradle.properties
+├── gradle.properties
+└── README.md                           # Este archivo
 ```
 
-## Notas importantes
+## Permisos
 
-1. **Templates**: Los templates HTML se copian automáticamente desde `server/templates/` al compilar
-2. **Puerto**: El servidor usa el puerto 5000 por defecto
-3. **Red**: Los clientes deben estar en la misma red WiFi que el dispositivo Android
-4. **Batería**: El servidor consume batería, considera conectar el dispositivo a la corriente
+| Permiso | Motivo |
+|---------|--------|
+| `INTERNET` | Servir peticiones HTTP |
+| `ACCESS_WIFI_STATE` | Obtener la IP del dispositivo |
+| `FOREGROUND_SERVICE` | Mantener el servidor activo |
+| `WAKE_LOCK` | Evitar que el servidor se detenga con pantalla apagada |
+| `POST_NOTIFICATIONS` (Android 13+) | Notificación del servicio |
 
-## Permisos requeridos
+## Notas
 
-- `INTERNET`: Para servir peticiones HTTP
-- `ACCESS_WIFI_STATE`: Para obtener la IP del dispositivo
-- `FOREGROUND_SERVICE`: Para mantener el servidor activo
-- `WAKE_LOCK`: Para evitar que el servidor se detenga con la pantalla apagada
-- `POST_NOTIFICATIONS` (Android 13+): Para mostrar la notificación del servicio
+- El servidor usa el puerto **5000** por defecto.
+- El servidor consume batería; es recomendable conectar el dispositivo a la corriente.
+- Los templates HTML se copian desde `server/templates/` al compilar.
