@@ -1086,10 +1086,13 @@ class SyncManager:
                 
                 # Verificar si el servidor está disponible
                 try:
+                    print(f"[SyncManager]   -> Verificando {server_url} ...", flush=True)
                     health_response = requests.get(f"{server_url}/api/health", timeout=3)
                     if health_response.status_code != 200:
+                        print(f"[SyncManager] {server_url} - health check falló (status {health_response.status_code}), saltando")
                         continue
-                except requests.exceptions.RequestException:
+                except requests.exceptions.RequestException as e:
+                    print(f"[SyncManager] {server_url} - health check falló ({type(e).__name__}: {e}), saltando")
                     continue
                 
                 all_failed = False
@@ -1097,10 +1100,12 @@ class SyncManager:
                 # Sincronizar con este servidor
                 success = self._sync_with_server(client_id, server_url)
                 if success:
+                    print(f"[SyncManager] ✅ Sync exitoso con {server_url}")
                     any_success = True
                     if REGISTRY_AVAILABLE:
                         reset_server_timeout_count(server_url)
                 else:
+                    print(f"[SyncManager] ❌ Sync fallido con {server_url}")
                     if REGISTRY_AVAILABLE:
                         increment_server_timeouts([server_url])
             
@@ -1366,6 +1371,7 @@ class SyncManager:
             current_servers = get_servers_from_registry()
             current_urls = {s.get('url') for s in current_servers}
             
+            new_servers_added = []
             for server in received_servers:
                 server_url_received = server.get('url')
                 if not server_url_received:
@@ -1387,9 +1393,12 @@ class SyncManager:
                         'last_seen': datetime.now().isoformat(),
                         'timeout_count': 0
                     })
+                    new_servers_added.append(server_url_received)
             
             save_servers_to_registry(current_servers)
-            print(f"[SyncManager] ✅ Lista de servidores actualizada desde {server_url}")
+            # Solo loguear cuando se descubren servidores nuevos
+            if new_servers_added:
+                print(f"[SyncManager] ✅ Nuevos servidores descubiertos desde {server_url}: {', '.join(new_servers_added)}")
         except Exception as e:
             print(f"[SyncManager] ⚠️  Error al actualizar servidores: {e}")
     
@@ -1646,6 +1655,8 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
             self._send_status_info()
         elif path == '/api/discovery':
             self._send_discovery_info()
+        elif path == '/api/test-connectivity':
+            self._send_connectivity_test()
         elif path == '/':
             self._send_html_dashboard()
         else:
@@ -2131,6 +2142,80 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
             'success': True,
             'servers': known_servers,
             'count': len(known_servers)
+        })
+    
+    def _send_connectivity_test(self):
+        """Prueba la conectividad a cada servidor conocido con detalle de errores."""
+        results = []
+        
+        # Servidores del registry
+        known_servers = []
+        if REGISTRY_AVAILABLE:
+            try:
+                known_servers = get_servers_from_registry()
+            except:
+                pass
+        
+        # Agregar SERVER_URL si no está
+        known_urls = {s.get('url') for s in known_servers}
+        if SERVER_URL and SERVER_URL not in known_urls:
+            known_servers.append({'url': SERVER_URL, 'source': 'configured'})
+        
+        for server in known_servers:
+            server_url = server.get('url')
+            if not server_url:
+                continue
+            
+            test_result = {
+                'url': server_url,
+                'ip': server.get('ip', '?'),
+                'timeout_count': server.get('timeout_count', 0),
+            }
+            
+            # Test 1: Health check
+            try:
+                import time as _time
+                t0 = _time.time()
+                response = requests.get(f"{server_url}/api/health", timeout=5)
+                elapsed = round((_time.time() - t0) * 1000)
+                test_result['health'] = {
+                    'status': response.status_code,
+                    'ok': response.status_code == 200,
+                    'elapsed_ms': elapsed,
+                    'body': response.text[:200]
+                }
+            except requests.exceptions.ConnectTimeout:
+                test_result['health'] = {'ok': False, 'error': 'ConnectTimeout (5s)'}
+            except requests.exceptions.ConnectionError as e:
+                test_result['health'] = {'ok': False, 'error': f'ConnectionError: {str(e)[:200]}'}
+            except requests.exceptions.ReadTimeout:
+                test_result['health'] = {'ok': False, 'error': 'ReadTimeout (5s)'}
+            except Exception as e:
+                test_result['health'] = {'ok': False, 'error': f'{type(e).__name__}: {str(e)[:200]}'}
+            
+            # Test 2: Si health OK, probar status endpoint
+            if test_result['health'].get('ok'):
+                try:
+                    client_id = get_client_id_from_registry() if REGISTRY_AVAILABLE else None
+                    if client_id:
+                        t0 = _time.time()
+                        response = requests.get(f"{server_url}/api/client/{client_id}/status", timeout=5)
+                        elapsed = round((_time.time() - t0) * 1000)
+                        test_result['status_check'] = {
+                            'http_status': response.status_code,
+                            'elapsed_ms': elapsed,
+                            'registered': response.status_code == 200,
+                        }
+                except Exception as e:
+                    test_result['status_check'] = {'error': f'{type(e).__name__}: {str(e)[:200]}'}
+            
+            results.append(test_result)
+        
+        self._send_json({
+            'success': True,
+            'tests': results,
+            'client_ip': socket.gethostbyname(socket.gethostname()),
+            'timestamp': datetime.now().isoformat()
         })
 
 def start_diagnostic_server(port=5002):
