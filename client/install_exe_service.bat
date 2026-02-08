@@ -102,7 +102,7 @@ REM   Fallas subsiguientes: reiniciar en 5 segundos
 REM   Resetear contador de fallas despues de 60 segundos sin fallas
 sc failure CiberMondayClient reset= 60 actions= restart/5000/restart/5000/restart/5000 >nul 2>&1
 if %errorLevel% equ 0 (
-    echo    Recuperacion automatica configurada (reinicio en 5s tras falla).
+    echo    Recuperacion automatica configurada ^(reinicio en 5s tras falla^).
 ) else (
     echo    ADVERTENCIA: No se pudo configurar recuperacion automatica.
 )
@@ -116,7 +116,7 @@ REM   IU (Interactive Users): Solo lectura (no pueden detener/pausar/eliminar)
 REM   SU (Service Users): Solo lectura
 sc sdset CiberMondayClient D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU) >nul 2>&1
 if %errorLevel% equ 0 (
-    echo    Permisos del servicio restringidos (solo admin puede detenerlo).
+    echo    Permisos del servicio restringidos ^(solo admin puede detenerlo^).
 ) else (
     echo    ADVERTENCIA: No se pudieron restringir los permisos del servicio.
 )
@@ -137,13 +137,13 @@ echo ========================================
 echo.
 echo Protecciones activas:
 echo   - Inicio automatico con Windows
-echo   - Reinicio automatico si el servicio falla (cada 5 segundos)
+echo   - Reinicio automatico si el servicio falla, cada 5 segundos
 echo   - Solo administradores pueden detener el servicio
 echo   - Proteccion DACL contra terminacion del proceso
 echo   - Watchdog interno reinicia el cliente si muere
 echo.
 echo El servicio se iniciara automaticamente al arrancar Windows.
-echo Puedes gestionarlo desde "Servicios" (services.msc)
+echo Puedes gestionarlo desde "Servicios" - services.msc
 echo.
 echo Comandos de administracion (requieren admin):
 echo   net start CiberMondayClient    - Iniciar servicio
