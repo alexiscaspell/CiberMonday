@@ -173,7 +173,7 @@ try:
                         if known_servers:
                             print(f"[Inicio] Servidores: {', '.join([s.get('url', 'Unknown') for s in known_servers])}")
                     except Exception as e:
-                        print(f"[Inicio] ⚠️  Advertencia: No se pudo leer lista de servidores: {e}")
+                        print(f"[Inicio] [WARN]  Advertencia: No se pudo leer lista de servidores: {e}")
             except Exception as e:
                 import traceback
                 print(f"Error al mostrar GUI de configuración: {e}")
@@ -209,7 +209,7 @@ try:
                             if known_servers:
                                 print(f"[Inicio] Servidores: {', '.join([s.get('url', 'Unknown') for s in known_servers])}")
                         except Exception as e:
-                            print(f"[Inicio] ⚠️  Advertencia: No se pudo leer lista de servidores: {e}")
+                            print(f"[Inicio] [WARN]  Advertencia: No se pudo leer lista de servidores: {e}")
                 else:
                     # Usuario canceló pero hay configuración previa, usar esa
                     SERVER_URL = config_data.get('server_url', 'http://localhost:5000')
@@ -238,7 +238,7 @@ try:
                     if known_servers:
                         print(f"[Inicio] Servidores: {', '.join([s.get('url', 'Unknown') for s in known_servers])}")
                 except Exception as e:
-                    print(f"[Inicio] ⚠️  Advertencia: No se pudo leer lista de servidores: {e}")
+                    print(f"[Inicio] [WARN]  Advertencia: No se pudo leer lista de servidores: {e}")
     
     CLIENT_ID_FILE = os.path.join(BASE_PATH, "client_id.txt")
     
@@ -344,13 +344,13 @@ def get_alert_message(threshold, remaining_seconds):
     minutes = threshold // 60
     
     if threshold == 600:
-        return f"⚠️ AVISO: Te quedan 10 minutos de tiempo.\n\nGuarda tu trabajo."
+        return f"[WARN] AVISO: Te quedan 10 minutos de tiempo.\n\nGuarda tu trabajo."
     elif threshold == 300:
-        return f"⚠️ ATENCIÓN: Te quedan 5 minutos de tiempo.\n\nPrepárate para terminar."
+        return f"[WARN] ATENCIÓN: Te quedan 5 minutos de tiempo.\n\nPrepárate para terminar."
     elif threshold == 120:
-        return f"🔴 ADVERTENCIA: Te quedan solo 2 minutos.\n\n¡Guarda todo ahora!"
+        return f"[WARN] ADVERTENCIA: Te quedan solo 2 minutos.\n\n¡Guarda todo ahora!"
     elif threshold == 60:
-        return f"🚨 ¡ÚLTIMO MINUTO!\n\nLa PC se bloqueará en 1 minuto.\n¡Guarda tu trabajo inmediatamente!"
+        return f"[ALERTA] ¡ULTIMO MINUTO!\n\nLa PC se bloqueara en 1 minuto.\n¡Guarda tu trabajo inmediatamente!"
     else:
         return f"Quedan {minutes} minutos."
 
@@ -365,13 +365,13 @@ def show_time_alert(threshold, remaining_seconds):
         # Determinar el tipo de icono según la urgencia
         if threshold <= 60:
             icon = 0x30  # MB_ICONWARNING (triángulo amarillo con !)
-            title = "⚠️ ¡TIEMPO CASI AGOTADO!"
+            title = "[WARN] ¡TIEMPO CASI AGOTADO!"
         elif threshold <= 120:
             icon = 0x30  # MB_ICONWARNING
-            title = "⚠️ Advertencia de Tiempo"
+            title = "[WARN] Advertencia de Tiempo"
         else:
             icon = 0x40  # MB_ICONINFORMATION
-            title = "⏰ Aviso de Tiempo"
+            title = "Aviso de Tiempo"
         
         # MB_OK | MB_TOPMOST | icon
         # MB_OK = 0x0
@@ -1105,12 +1105,12 @@ class SyncManager:
                 # Sincronizar con este servidor
                 success = self._sync_with_server(client_id, server_url)
                 if success:
-                    print(f"[SyncManager] ✅ Sync exitoso con {server_url}")
+                    print(f"[SyncManager] [OK] Sync exitoso con {server_url}")
                     any_success = True
                     if REGISTRY_AVAILABLE:
                         reset_server_timeout_count(server_url)
                 else:
-                    print(f"[SyncManager] ❌ Sync fallido con {server_url}")
+                    print(f"[SyncManager] [ERROR] Sync fallido con {server_url}")
                     if REGISTRY_AVAILABLE:
                         increment_server_timeouts([server_url])
             
@@ -1155,7 +1155,7 @@ class SyncManager:
                 with self._lock:
                     self._client_registered = True
                     self._consecutive_failures = 0
-                print(f"[SyncManager] ✅ Cliente registrado exitosamente: {new_id}")
+                print(f"[SyncManager] [OK] Cliente registrado exitosamente: {new_id}")
         except Exception as e:
             print(f"[SyncManager] Error al intentar registrar: {e}")
     
@@ -1403,9 +1403,9 @@ class SyncManager:
             save_servers_to_registry(current_servers)
             # Solo loguear cuando se descubren servidores nuevos
             if new_servers_added:
-                print(f"[SyncManager] ✅ Nuevos servidores descubiertos desde {server_url}: {', '.join(new_servers_added)}")
+                print(f"[SyncManager] [OK] Nuevos servidores descubiertos desde {server_url}: {', '.join(new_servers_added)}")
         except Exception as e:
-            print(f"[SyncManager] ⚠️  Error al actualizar servidores: {e}")
+            print(f"[SyncManager] [WARN]  Error al actualizar servidores: {e}")
     
     def _update_session_from_server(self, session, server_url):
         """Actualiza la sesión local desde los datos del servidor."""
@@ -1417,7 +1417,7 @@ class SyncManager:
         remaining_from_server = session.get('remaining_seconds', 0)
         
         if not all([time_limit, start_time, end_time]):
-            print(f"[SyncManager] ⚠️  Datos de sesión incompletos desde {server_url}")
+            print(f"[SyncManager] [WARN]  Datos de sesión incompletos desde {server_url}")
             return
         
         now_local = datetime.now()
@@ -1437,7 +1437,7 @@ class SyncManager:
                 reset_alerts_for_new_session(remaining_from_server)
             
             last_known_remaining = remaining_from_server
-            print(f"[SyncManager] ✅ Sesión actualizada desde {server_url}: {remaining_from_server}s restantes")
+            print(f"[SyncManager] [OK] Sesión actualizada desde {server_url}: {remaining_from_server}s restantes")
     
     def _handle_no_server_session(self, client_id, server_url):
         """Maneja el caso donde el servidor no tiene sesión para este cliente."""
@@ -1499,10 +1499,10 @@ def start_server_discovery_listener():
             # Intentar hacer bind al puerto
             try:
                 sock.bind(('0.0.0.0', DISCOVERY_PORT))
-                print(f"[Discovery] ✅ Socket vinculado correctamente a 0.0.0.0:{DISCOVERY_PORT}")
+                print(f"[Discovery] [OK] Socket vinculado correctamente a 0.0.0.0:{DISCOVERY_PORT}")
             except OSError as e:
                 if e.errno == 10048 or "Address already in use" in str(e):
-                    print(f"[Discovery] ❌ ERROR: El puerto {DISCOVERY_PORT} ya está en uso")
+                    print(f"[Discovery] [ERROR] ERROR: El puerto {DISCOVERY_PORT} ya está en uso")
                     print(f"[Discovery] Posible causa: Otro proceso está usando el puerto o el listener anterior no se cerró")
                     print(f"[Discovery] Solución: Cierra otros procesos que usen el puerto {DISCOVERY_PORT} o reinicia el cliente")
                     return
@@ -1511,8 +1511,8 @@ def start_server_discovery_listener():
             
             sock.settimeout(1.0)  # Timeout para poder verificar si el thread debe continuar
             
-            print(f"[Discovery] ✅ Escuchando broadcasts de servidores en puerto {DISCOVERY_PORT}...")
-            print(f"[Discovery] ✅ El listener está activo y escuchando...")
+            print(f"[Discovery] [OK] Escuchando broadcasts de servidores en puerto {DISCOVERY_PORT}...")
+            print(f"[Discovery] [OK] El listener está activo y escuchando...")
             print(f"[Discovery] Esperando broadcasts UDP desde la red local...")
             
             # Marcar listener como iniciado
@@ -1607,19 +1607,19 @@ def start_server_discovery_listener():
                     
         except OSError as e:
             if e.errno == 10048 or "Address already in use" in str(e):
-                print(f"[Discovery] ❌ ERROR CRÍTICO: El puerto {DISCOVERY_PORT} ya está en uso")
+                print(f"[Discovery] [ERROR] ERROR CRÍTICO: El puerto {DISCOVERY_PORT} ya está en uso")
                 print(f"[Discovery] El listener no puede iniciarse porque otro proceso está usando el puerto")
                 print(f"[Discovery] Esto impedirá que el cliente reciba broadcasts de servidores")
                 print(f"[Discovery] Solución: Cierra otros procesos o reinicia el cliente")
             else:
-                print(f"[Discovery] ❌ Error en listener (OSError): {e}")
+                print(f"[Discovery] [ERROR] Error en listener (OSError): {e}")
                 import traceback
                 traceback.print_exc()
             # Reintentar después de un delay más largo para errores críticos
             time.sleep(10)
             start_server_discovery_listener()
         except Exception as e:
-            print(f"[Discovery] ❌ Error en listener: {e}")
+            print(f"[Discovery] [ERROR] Error en listener: {e}")
             import traceback
             traceback.print_exc()
             # Reintentar después de un delay
@@ -1900,7 +1900,7 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
                         save_servers_to_registry(known_servers)
                         self._send_json({'success': True, 'message': f'Servidor {server_url} actualizado'})
                 except Exception as e:
-                    print(f"[Notificación] ❌ Error al agregar servidor: {e}")
+                    print(f"[Notificación] [ERROR] Error al agregar servidor: {e}")
                     import traceback
                     traceback.print_exc()
                     self._send_json({'success': False, 'message': str(e)}, 500)
@@ -1910,7 +1910,7 @@ class DiagnosticHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_json({'success': False, 'message': 'Invalid JSON'}, 400)
         except Exception as e:
-            print(f"[Notificación] ❌ Error al procesar notificación: {e}")
+            print(f"[Notificación] [ERROR] Error al procesar notificación: {e}")
             import traceback
             traceback.print_exc()
             self._send_json({'success': False, 'message': str(e)}, 500)
@@ -2257,11 +2257,11 @@ def start_diagnostic_server(port=5002):
             server.serve_forever()
         except OSError as e:
             if e.errno == 10048 or "Address already in use" in str(e):
-                print(f"[Diagnóstico] ⚠️  El puerto {port} ya está en uso. El servidor de diagnóstico no se iniciará.")
+                print(f"[Diagnóstico] [WARN]  El puerto {port} ya está en uso. El servidor de diagnóstico no se iniciará.")
             else:
-                print(f"[Diagnóstico] ❌ Error al iniciar servidor de diagnóstico: {e}")
+                print(f"[Diagnóstico] [ERROR] Error al iniciar servidor de diagnóstico: {e}")
         except Exception as e:
-            print(f"[Diagnóstico] ❌ Error en servidor de diagnóstico: {e}")
+            print(f"[Diagnóstico] [ERROR] Error en servidor de diagnóstico: {e}")
     
     thread = threading.Thread(target=server_thread, daemon=True)
     thread.start()
@@ -2305,32 +2305,32 @@ def monitor_time(client_id):
         print("\n[Firewall] Verificando configuración del firewall...")
         
         if not check_firewall_rule():
-            print("[Firewall] ⚠️  La regla del firewall no está configurada")
+            print("[Firewall] [WARN]  La regla del firewall no está configurada")
             
             # Intentar agregar automáticamente si tenemos privilegios de administrador
             if is_admin():
                 print("[Firewall] Intentando agregar regla automáticamente...")
                 if add_firewall_rule():
-                    print("[Firewall] ✅ Regla del firewall agregada exitosamente\n")
+                    print("[Firewall] [OK] Regla del firewall agregada exitosamente\n")
                 else:
-                    print("[Firewall] ❌ No se pudo agregar la regla automáticamente")
+                    print("[Firewall] [ERROR] No se pudo agregar la regla automáticamente")
                     print("[Firewall] El cliente puede no recibir broadcasts UDP de servidores")
                     print("[Firewall] Para agregar manualmente, ejecuta como administrador:")
                     print("[Firewall]   python firewall_manager.py add\n")
             else:
-                print("[Firewall] ⚠️  Se requieren privilegios de administrador para agregar la regla")
+                print("[Firewall] [WARN]  Se requieren privilegios de administrador para agregar la regla")
                 print("[Firewall] El cliente puede no recibir broadcasts UDP de servidores")
                 print("[Firewall] Para agregar la regla, ejecuta como administrador:")
                 print("[Firewall]   python firewall_manager.py add")
                 print("[Firewall] O desde PowerShell como administrador:")
                 print("[Firewall]   netsh advfirewall firewall add rule name=\"CiberMonday Client UDP Discovery\" dir=in action=allow protocol=UDP localport=5001 enable=yes\n")
         else:
-            print("[Firewall] ✅ Regla del firewall configurada correctamente\n")
+            print("[Firewall] [OK] Regla del firewall configurada correctamente\n")
     except ImportError:
         # firewall_manager no disponible, continuar sin verificar
-        print("[Firewall] ⚠️  Módulo firewall_manager no disponible. No se puede verificar/configurar firewall.\n")
+        print("[Firewall] [WARN]  Módulo firewall_manager no disponible. No se puede verificar/configurar firewall.\n")
     except Exception as e:
-        print(f"[Firewall] ⚠️  Error al verificar/configurar firewall: {e}")
+        print(f"[Firewall] [WARN]  Error al verificar/configurar firewall: {e}")
         import traceback
         traceback.print_exc()
         print()

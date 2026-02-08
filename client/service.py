@@ -242,6 +242,7 @@ class CiberMondayService(win32serviceutil.ServiceFramework):
                     # (sin esto, Python buferea la salida cuando detecta que no es un terminal)
                     client_env = os.environ.copy()
                     client_env['PYTHONUNBUFFERED'] = '1'
+                    client_env['PYTHONIOENCODING'] = 'utf-8'
                     
                     # cwd debe ser el directorio del servicio/cliente para que
                     # el cliente encuentre archivos relativos correctamente.
