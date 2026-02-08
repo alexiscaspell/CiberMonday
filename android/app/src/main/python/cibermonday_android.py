@@ -159,6 +159,48 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
             return json.loads(body.decode('utf-8'))
         return {}
     
+    def _render_clients_html(self, clients):
+        """Genera HTML para la lista de clientes en la página de status."""
+        if not clients:
+            return '<p style="color: #6b7280; text-align: center;">No hay clientes registrados</p>'
+        
+        html_parts = []
+        for c in clients:
+            name = c.get('name', 'Sin Nombre')
+            connected = c.get('connected', False)
+            conn_class = 'active' if connected else 'inactive'
+            conn_text = 'Conectado' if connected else 'Desconectado'
+            
+            session = c.get('current_session')
+            session_html = ''
+            if session:
+                remaining = session.get('remaining_seconds', 0)
+                if remaining <= 0:
+                    session_html = '<div class="client-session expired">EXPIRADO</div>'
+                else:
+                    h = remaining // 3600
+                    m = (remaining % 3600) // 60
+                    s = remaining % 60
+                    if h > 0:
+                        time_str = f"{h}h {m}m {s}s"
+                    elif m > 0:
+                        time_str = f"{m}m {s}s"
+                    else:
+                        time_str = f"{s}s"
+                    session_html = f'<div class="client-session running">Restante: {time_str}</div>'
+            
+            html_parts.append(
+                f'<div class="client">'
+                f'<div class="client-header">'
+                f'<span class="client-name">{name}</span>'
+                f'<span class="client-status {conn_class}">{conn_text}</span>'
+                f'</div>'
+                f'{session_html}'
+                f'</div>'
+            )
+        
+        return ''.join(html_parts)
+    
     def do_OPTIONS(self):
         """Handle CORS preflight."""
         self._set_headers(200)
@@ -204,12 +246,15 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         .method.delete {{ background: #ef4444; }}
         h2 {{ color: #1f2937; font-size: 18px; margin: 0 0 12px 0; }}
         .clients {{ margin-top: 16px; }}
-        .client {{ background: #f9fafb; padding: 12px; border-radius: 8px; margin: 8px 0; 
-                  display: flex; justify-content: space-between; align-items: center; }}
+        .client {{ background: #f9fafb; padding: 12px; border-radius: 8px; margin: 8px 0; }}
+        .client-header {{ display: flex; justify-content: space-between; align-items: center; }}
         .client-name {{ font-weight: 500; }}
         .client-status {{ font-size: 12px; padding: 4px 8px; border-radius: 4px; }}
         .client-status.active {{ background: #dcfce7; color: #166534; }}
         .client-status.inactive {{ background: #f3f4f6; color: #6b7280; }}
+        .client-session {{ font-size: 13px; margin-top: 6px; }}
+        .client-session.expired {{ color: #ef4444; font-weight: 600; }}
+        .client-session.running {{ color: #166534; }}
     </style>
 </head>
 <body>
@@ -237,7 +282,7 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         <div class="card">
             <h2>Clientes Registrados</h2>
             <div class="clients">
-                {"".join([f'<div class="client"><span class="client-name">{c["name"]}</span><span class="client-status {"active" if c.get("is_active") else "inactive"}">{"Activo" if c.get("is_active") else "Inactivo"}</span></div>' for c in clients]) if clients else '<p style="color: #6b7280; text-align: center;">No hay clientes registrados</p>'}
+                {self._render_clients_html(clients)}
             </div>
         </div>
         
