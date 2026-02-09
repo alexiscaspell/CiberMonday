@@ -13,6 +13,7 @@ data class Client(
     val id: String,
     val name: String,
     val isActive: Boolean,
+    val connected: Boolean,
     val currentSession: SessionInfo?,
     val config: ClientConfig?
 )
@@ -91,12 +92,12 @@ class ClientAdapter(
             tvClientName.text = client.name
             tvClientId.text = "ID: ${client.id.take(8)}..."
 
-            // Estado
-            if (client.isActive) {
-                tvClientStatus.text = "ACTIVO"
+            // Estado de conexión
+            if (client.connected) {
+                tvClientStatus.text = "CONECTADO"
                 tvClientStatus.setBackgroundResource(R.drawable.status_active_bg)
             } else {
-                tvClientStatus.text = "INACTIVO"
+                tvClientStatus.text = "DESCONECTADO"
                 tvClientStatus.setBackgroundResource(R.drawable.status_inactive_bg)
             }
 
@@ -298,6 +299,7 @@ class ClientAdapter(
                         id = obj.getString("id"),
                         name = obj.optString("name", "Sin nombre"),
                         isActive = obj.optBoolean("is_active", false),
+                        connected = obj.optBoolean("connected", false),
                         currentSession = session,
                         config = config
                     ))
