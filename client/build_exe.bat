@@ -27,7 +27,8 @@ pyinstaller --onefile ^
     --console ^
     --name "CiberMondayClient" ^
     --icon=icon.ico ^
-    --add-data "config.py;." ^
+    --hidden-import "client_base" ^
+    --hidden-import "client_windows" ^
     --hidden-import "winreg" ^
     --hidden-import "win32serviceutil" ^
     --hidden-import "win32service" ^
@@ -36,6 +37,8 @@ pyinstaller --onefile ^
     --hidden-import "win32timezone" ^
     --hidden-import "protection" ^
     --hidden-import "registry_manager" ^
+    --hidden-import "config_gui" ^
+    --hidden-import "requests" ^
     client.py
 
 if %errorLevel% neq 0 (

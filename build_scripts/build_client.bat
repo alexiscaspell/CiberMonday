@@ -21,7 +21,8 @@ echo.
 REM Compilar el cliente principal
 pyinstaller --onefile ^
     --name "CiberMondayClient" ^
-    --add-data "config.py;." ^
+    --hidden-import "client_base" ^
+    --hidden-import "client_windows" ^
     --hidden-import "winreg" ^
     --hidden-import "win32serviceutil" ^
     --hidden-import "win32service" ^
@@ -30,6 +31,7 @@ pyinstaller --onefile ^
     --hidden-import "win32timezone" ^
     --hidden-import "protection" ^
     --hidden-import "registry_manager" ^
+    --hidden-import "config_gui" ^
     --hidden-import "requests" ^
     --hidden-import "ctypes" ^
     --hidden-import "ctypes.wintypes" ^

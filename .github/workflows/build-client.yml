@@ -39,6 +39,8 @@ jobs:
       run: |
         pyinstaller --onefile `
           --name "CiberMondayClient" `
+          --hidden-import "client_base" `
+          --hidden-import "client_windows" `
           --hidden-import "winreg" `
           --hidden-import "win32serviceutil" `
           --hidden-import "win32service" `

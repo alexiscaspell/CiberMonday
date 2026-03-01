@@ -1,6 +1,7 @@
 """
 Interfaz gráfica para configurar el cliente CiberMonday
-Se muestra al iniciar si no hay configuración guardada
+Se muestra al iniciar si no hay configuración guardada.
+Acepta opcionalmente una instancia de CiberMondayClient para storage cross-platform.
 """
 
 import tkinter as tk
@@ -8,7 +9,7 @@ from tkinter import ttk, messagebox
 import sys
 import os
 
-# Importar gestor de registro
+# Importar gestor de registro (fallback cuando no se pasa client)
 try:
     from registry_manager import (
         save_config_to_registry,
@@ -18,7 +19,7 @@ try:
 except ImportError:
     REGISTRY_AVAILABLE = False
 
-def show_config_window():
+def show_config_window(client=None):
     """
     Muestra la ventana de configuración con los valores actuales
     Permite modificar y actualizar la configuración
@@ -26,7 +27,9 @@ def show_config_window():
     """
     # Cargar configuración existente si hay
     current_config = None
-    if REGISTRY_AVAILABLE:
+    if client is not None:
+        current_config = client.load_config()
+    elif REGISTRY_AVAILABLE:
         current_config = get_config_from_registry()
     
     # Crear ventana principal
@@ -254,46 +257,44 @@ def show_config_window():
             'max_server_timeouts': max_server_timeouts
         }
         
-        if REGISTRY_AVAILABLE:
-            if save_config_to_registry(config):
-                # BORRAR todos los servidores conocidos y agregar solo el nuevo servidor configurado
-                try:
+        save_ok = False
+        if client is not None:
+            client.save_config(config)
+            save_ok = True
+        elif REGISTRY_AVAILABLE:
+            save_ok = save_config_to_registry(config)
+
+        if save_ok:
+            try:
+                from datetime import datetime
+                import re
+
+                url_match = re.match(r'http://([^:]+):?(\d+)?', server_url)
+                server_ip = url_match.group(1) if url_match else None
+                server_port = int(url_match.group(2)) if url_match and url_match.group(2) else 5000
+
+                new_servers_list = [{
+                    'url': server_url,
+                    'ip': server_ip,
+                    'port': server_port,
+                    'last_seen': datetime.now().isoformat(),
+                    'timeout_count': 0
+                }]
+
+                if client is not None:
+                    client.save_servers(new_servers_list)
+                elif REGISTRY_AVAILABLE:
                     from registry_manager import save_servers_to_registry
-                    from datetime import datetime
-                    import re
-                    
-                    # Extraer IP y puerto de la URL
-                    url_match = re.match(r'http://([^:]+):?(\d+)?', server_url)
-                    server_ip = url_match.group(1) if url_match else None
-                    server_port = int(url_match.group(2)) if url_match and url_match.group(2) else 5000
-                    
-                    # Crear nueva lista con solo el servidor configurado (resetear lista)
-                    new_servers_list = [{
-                        'url': server_url,
-                        'ip': server_ip,
-                        'port': server_port,
-                        'last_seen': datetime.now().isoformat(),
-                        'timeout_count': 0  # Resetear contador de timeouts
-                    }]
-                    
                     save_servers_to_registry(new_servers_list)
-                    print(f"[Config] [OK] Lista de servidores conocidos RESETEADA. Solo se mantiene el servidor configurado: {server_url}")
-                except Exception as e:
-                    print(f"[Config] [WARN]  Advertencia: No se pudo actualizar lista de servidores: {e}")
-                    import traceback
-                    traceback.print_exc()
-                
-                nonlocal config_result
-                config_result = config
-                root.quit()
-                root.destroy()
-            else:
-                messagebox.showerror(
-                    "Error",
-                    "No se pudo guardar la configuración.\n\n"
-                    "Asegúrate de ejecutar como Administrador."
-                )
-        else:
+                print(f"[Config] [OK] Servidores reseteados. Solo: {server_url}")
+            except Exception as e:
+                print(f"[Config] [WARN] No se pudo actualizar servidores: {e}")
+
+            nonlocal config_result
+            config_result = config
+            root.quit()
+            root.destroy()
+        elif client is None and not REGISTRY_AVAILABLE:
             # Fallback: guardar en archivo si no hay registro
             try:
                 config_file = os.path.join(os.path.dirname(__file__), 'config.py')
@@ -307,6 +308,12 @@ def show_config_window():
                 root.destroy()
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo guardar la configuración: {e}")
+        else:
+            messagebox.showerror(
+                "Error",
+                "No se pudo guardar la configuración.\n\n"
+                "Asegúrate de ejecutar como Administrador."
+            )
     
     def cancel():
         """Cancela la configuración"""
@@ -371,28 +378,30 @@ def show_config_window():
     
     return config_result
 
-def get_config(always_show=False):
+def get_config(always_show=False, client=None):
     """
-    Obtiene la configuración desde el registro o muestra la ventana de configuración
+    Obtiene la configuración desde el storage o muestra la ventana de configuración.
     
     Args:
         always_show: Si es True, siempre muestra la ventana (para reconfigurar)
+        client: Instancia de CiberMondayClient (opcional, para storage cross-platform)
     
     Returns:
         dict con configuración o None si se cancela
     """
-    # Si se solicita mostrar siempre, mostrar ventana
     if always_show:
-        return show_config_window()
-    
-    # Intentar obtener del registro
-    if REGISTRY_AVAILABLE:
+        return show_config_window(client=client)
+
+    if client is not None:
+        config = client.load_config()
+        if config and config.get('server_url'):
+            return config
+    elif REGISTRY_AVAILABLE:
         config = get_config_from_registry()
         if config and config.get('server_url'):
             return config
-    
-    # Si no hay configuración, mostrar ventana
-    return show_config_window()
+
+    return show_config_window(client=client)
 
 if __name__ == '__main__':
     # Para probar la ventana

@@ -1,0 +1,24 @@
+[Unit]
+Description=CiberMonday Client - Control de tiempo de uso
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/cibermonday/client.py --service --platform linux
+WorkingDirectory=/opt/cibermonday
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+ProtectSystem=strict
+ReadWritePaths=/etc/cibermonday
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cibermonday
+
+[Install]
+WantedBy=multi-user.target
