@@ -1,13 +1,14 @@
 """
 CiberMonday para Android - Módulo unificado
-Provee tanto la API HTTP (para clientes remotos) como acceso directo (para UI nativa).
-Usa ClientManager de core/ para la lógica de negocio compartida con el servidor web.
+API HTTP para clientes + panel admin (Expo static en admin_static/).
+Usa ClientManager de core/ compartido con el servidor web.
 """
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
+import mimetypes
+import os
 import threading
-import re
 
 from core import ClientManager
 
@@ -16,6 +17,7 @@ from core import ClientManager
 
 _manager_instance = None
 _manager_lock = threading.Lock()
+_ADMIN_STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'admin_static')
 
 
 def get_manager():
@@ -28,25 +30,21 @@ def get_manager():
     return _manager_instance
 
 
-# ============== FUNCIONES PARA LA UI NATIVA (Kotlin) ==============
+# ============== HELPERS (compat / diagnóstico) ==============
 
 def get_clients_json():
-    """Obtiene los clientes como JSON string."""
     return json.dumps(get_manager().get_clients())
 
 
 def set_client_time(client_id, time_value, time_unit='minutes'):
-    """Establece el tiempo de un cliente."""
     return json.dumps(get_manager().set_client_time(client_id, time_value, time_unit))
 
 
 def stop_client_session(client_id):
-    """Detiene la sesión de un cliente."""
     return json.dumps(get_manager().stop_client_session(client_id))
 
 
 def delete_client(client_id):
-    """Elimina un cliente."""
     return json.dumps(get_manager().delete_client(client_id))
 
 
@@ -156,49 +154,43 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(content_length)
             return json.loads(body.decode('utf-8'))
         return {}
-    
-    def _render_clients_html(self, clients):
-        """Genera HTML para la lista de clientes en la página de status."""
-        if not clients:
-            return '<p style="color: #6b7280; text-align: center;">No hay clientes registrados</p>'
-        
-        html_parts = []
-        for c in clients:
-            name = c.get('name', 'Sin Nombre')
-            connected = c.get('connected', False)
-            conn_class = 'active' if connected else 'inactive'
-            conn_text = 'Conectado' if connected else 'Desconectado'
-            
-            session = c.get('current_session')
-            session_html = ''
-            if session:
-                remaining = session.get('remaining_seconds', 0)
-                if remaining <= 0:
-                    session_html = '<div class="client-session expired">EXPIRADO</div>'
-                else:
-                    h = remaining // 3600
-                    m = (remaining % 3600) // 60
-                    s = remaining % 60
-                    if h > 0:
-                        time_str = f"{h}h {m}m {s}s"
-                    elif m > 0:
-                        time_str = f"{m}m {s}s"
-                    else:
-                        time_str = f"{s}s"
-                    session_html = f'<div class="client-session running">Restante: {time_str}</div>'
-            
-            html_parts.append(
-                f'<div class="client">'
-                f'<div class="client-header">'
-                f'<span class="client-name">{name}</span>'
-                f'<span class="client-status {conn_class}">{conn_text}</span>'
-                f'</div>'
-                f'{session_html}'
-                f'</div>'
-            )
-        
-        return ''.join(html_parts)
-    
+
+    def _serve_admin_static(self, path):
+        """Sirve el panel Expo desde admin_static/ (SPA)."""
+        rel = path.lstrip('/')
+        if not rel or rel == 'status':
+            rel = 'index.html'
+
+        base = os.path.normpath(_ADMIN_STATIC)
+        full = os.path.normpath(os.path.join(base, rel))
+        if not full.startswith(base + os.sep) and full != base:
+            self._send_json({'error': 'Forbidden'}, 403)
+            return True
+
+        if not os.path.isfile(full):
+            full = os.path.join(base, 'index.html')
+            if not os.path.isfile(full):
+                self._set_headers(503, 'text/html; charset=utf-8')
+                self.wfile.write(
+                    b'<html><body><h1>Panel no construido</h1>'
+                    b'<p>Ejecut&aacute; scripts/build_admin.sh</p></body></html>'
+                )
+                return True
+
+        ctype = mimetypes.guess_type(full)[0] or 'application/octet-stream'
+        if ctype.startswith('text/') or ctype in (
+            'application/javascript',
+            'application/json',
+            'image/svg+xml',
+        ):
+            ctype = f'{ctype}; charset=utf-8'
+
+        with open(full, 'rb') as f:
+            data = f.read()
+        self._set_headers(200, ctype)
+        self.wfile.write(data)
+        return True
+
     def do_OPTIONS(self):
         """Handle CORS preflight."""
         self._set_headers(200)
@@ -207,101 +199,11 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         """Handle GET requests."""
         path = self.path.split('?')[0]
         
-        if path == '/' or path == '/status':
-            ip = self.manager.get_local_ip()
-            port = self.manager.server_port
-            clients = self.manager.get_clients()
-            active = len([c for c in clients if c.get('is_active')])
-            
-            html = f'''<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CiberMonday Server</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-               background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-               min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }}
-        .container {{ max-width: 600px; margin: 0 auto; }}
-        .card {{ background: white; border-radius: 16px; padding: 24px; margin-bottom: 16px; 
-                box-shadow: 0 4px 20px rgba(0,0,0,0.15); }}
-        .status {{ display: flex; align-items: center; gap: 12px; }}
-        .status-dot {{ width: 16px; height: 16px; background: #22c55e; border-radius: 50%; 
-                      animation: pulse 2s infinite; }}
-        @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} }}
-        h1 {{ margin: 0 0 8px 0; color: #1f2937; font-size: 24px; }}
-        .subtitle {{ color: #6b7280; margin: 0; }}
-        .info {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }}
-        .info-item {{ background: #f3f4f6; padding: 16px; border-radius: 12px; text-align: center; }}
-        .info-value {{ font-size: 28px; font-weight: bold; color: #1f2937; }}
-        .info-label {{ color: #6b7280; font-size: 14px; }}
-        .endpoint {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; 
-                    padding: 12px; margin: 8px 0; font-family: monospace; font-size: 14px; }}
-        .method {{ background: #3b82f6; color: white; padding: 2px 8px; border-radius: 4px; 
-                  font-size: 12px; margin-right: 8px; }}
-        .method.post {{ background: #22c55e; }}
-        .method.delete {{ background: #ef4444; }}
-        h2 {{ color: #1f2937; font-size: 18px; margin: 0 0 12px 0; }}
-        .clients {{ margin-top: 16px; }}
-        .client {{ background: #f9fafb; padding: 12px; border-radius: 8px; margin: 8px 0; }}
-        .client-header {{ display: flex; justify-content: space-between; align-items: center; }}
-        .client-name {{ font-weight: 500; }}
-        .client-status {{ font-size: 12px; padding: 4px 8px; border-radius: 4px; }}
-        .client-status.active {{ background: #dcfce7; color: #166534; }}
-        .client-status.inactive {{ background: #f3f4f6; color: #6b7280; }}
-        .client-session {{ font-size: 13px; margin-top: 6px; }}
-        .client-session.expired {{ color: #ef4444; font-weight: 600; }}
-        .client-session.running {{ color: #166534; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="card">
-            <div class="status">
-                <div class="status-dot"></div>
-                <div>
-                    <h1>CiberMonday Server</h1>
-                    <p class="subtitle">Servidor activo en {ip}:{port}</p>
-                </div>
-            </div>
-            <div class="info">
-                <div class="info-item">
-                    <div class="info-value">{len(clients)}</div>
-                    <div class="info-label">Clientes Totales</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-value">{active}</div>
-                    <div class="info-label">Sesiones Activas</div>
-                </div>
-            </div>
-        </div>
+        if not path.startswith('/api/'):
+            self._serve_admin_static(path)
+            return
         
-        <div class="card">
-            <h2>Clientes Registrados</h2>
-            <div class="clients">
-                {self._render_clients_html(clients)}
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>API Endpoints</h2>
-            <div class="endpoint"><span class="method">GET</span>/api/health</div>
-            <div class="endpoint"><span class="method">GET</span>/api/clients</div>
-            <div class="endpoint"><span class="method post">POST</span>/api/register</div>
-            <div class="endpoint"><span class="method">GET</span>/api/client/&lt;id&gt;/status</div>
-            <div class="endpoint"><span class="method post">POST</span>/api/client/&lt;id&gt;/set-time</div>
-            <div class="endpoint"><span class="method post">POST</span>/api/client/&lt;id&gt;/stop</div>
-            <div class="endpoint"><span class="method delete">DELETE</span>/api/client/&lt;id&gt;</div>
-        </div>
-    </div>
-    <script>setTimeout(() => location.reload(), 10000);</script>
-</body>
-</html>'''
-            self._set_headers(200, 'text/html')
-            self.wfile.write(html.encode('utf-8'))
-        
-        elif path == '/api/health':
+        if path == '/api/health':
             stats = self.manager.get_stats()
             self._send_json({
                 'status': 'ok',
@@ -456,12 +358,16 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         
         elif path == '/api/sync-servers':
             servers_list = data.get('servers', [])
-            
+            clients_list = data.get('clients', [])
+
             known_servers = self.manager.sync_servers(servers_list)
-            
+            if clients_list:
+                self.manager.sync_clients_from_remote(clients_list)
+
             self._send_json({
                 'success': True,
-                'known_servers': known_servers
+                'known_servers': known_servers,
+                'known_clients': self.manager.get_clients_sync_payload(),
             }, 200)
         
         elif path == '/api/force-sync':
@@ -471,7 +377,7 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                     'success': True,
                     'message': 'Sincronización forzada completada',
                     'known_servers': self.manager.get_servers(),
-                    'known_clients': self.manager.get_clients()
+                    'known_clients': self.manager.get_clients_sync_payload(),
                 }, 200)
             except Exception as e:
                 self._send_json({
@@ -543,9 +449,12 @@ def start_server(host='0.0.0.0', port=5000, data_dir=None):
     try:
         print(f"[CiberMonday] Iniciando servidor HTTP en {host}:{port}")
         
-        # Crear manager con el puerto correcto
+        # Reutilizar manager si ya existe (no borrar clientes al volver a primer plano)
         with _manager_lock:
-            _manager_instance = ClientManager(server_port=port)
+            if _manager_instance is None:
+                _manager_instance = ClientManager(server_port=port)
+            else:
+                _manager_instance.server_port = port
         
         CiberMondayHandler.manager = get_manager()
         
@@ -570,9 +479,17 @@ def stop_server():
     """Detiene el servidor HTTP."""
     global _server, _server_running
     _server_running = False
-    if _server:
-        _server.shutdown()
-        _server = None
+    srv = _server
+    _server = None
+    if srv:
+        try:
+            srv.shutdown()
+        except Exception:
+            pass
+        try:
+            srv.server_close()
+        except Exception:
+            pass
     print("[CiberMonday] Servidor detenido")
 
 

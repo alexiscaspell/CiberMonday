@@ -20,11 +20,11 @@ Servidor central que gestiona los clientes del cibercafé. Provee una API REST p
 | Archivo | Descripción |
 |---------|-------------|
 | `app.py` | Aplicación Flask: rutas API, broadcast UDP, control de acceso |
-| `templates/index.html` | Panel web de administración (HTML/CSS/JS single-page) |
+| `static/` | Panel Expo (generado con `scripts/build_admin.sh`) |
 | `start_server.sh` | Script de inicio para Linux/macOS |
 | `start_server.bat` | Script de inicio para Windows |
 
-La lógica de negocio está en `server/core/client_manager.py` (compartida con la app Android).
+La UI vive en [`server/admin/`](../admin/) (Expo). La lógica de negocio está en `server/core/client_manager.py` (compartida con la app Android).
 
 ## Instalación
 
@@ -113,7 +113,7 @@ curl -X DELETE http://localhost:5000/api/client/<id>
 
 ## Panel Web
 
-El panel de administración (`templates/index.html`) es una single-page application que permite:
+El panel de administración es la app Expo en `server/admin/`, exportada a `static/`. Permite:
 
 - Ver todos los clientes registrados con su estado en tiempo real.
 - Asignar tiempo a cada cliente (minutos u horas).

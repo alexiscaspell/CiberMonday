@@ -695,51 +695,116 @@ class ClientManager:
     
     def sync_clients_from_remote(self, clients_list):
         """
-        Registra clientes recibidos de otros servidores si no existen localmente.
-        
-        Args:
-            clients_list: Lista de clientes de otro servidor
+        Fusiona clientes recibidos de otros servidores (registro + sesión activa).
         """
+        if not clients_list:
+            return
+
         for client_data in clients_list:
             client_id = client_data.get('id')
-            if client_id and client_id not in self.clients_db:
+            if not client_id:
+                continue
+
+            name = client_data.get('name') or 'Cliente Remoto'
+            if client_id not in self.clients_db:
                 self.clients_db[client_id] = {
                     'id': client_id,
-                    'name': client_data.get('name', 'Cliente Remoto'),
-                    'registered_at': datetime.now().isoformat(),
-                    'total_time_used': 0,
-                    'is_active': False
+                    'name': name,
+                    'registered_at': client_data.get('registered_at', datetime.now().isoformat()),
+                    'total_time_used': client_data.get('total_time_used', 0),
+                    'is_active': False,
+                    'last_seen': client_data.get('last_seen', datetime.now().isoformat()),
                 }
+            else:
+                if name:
+                    self.clients_db[client_id]['name'] = name
+                remote_seen = client_data.get('last_seen')
+                if remote_seen:
+                    local_seen = self.clients_db[client_id].get('last_seen') or ''
+                    if remote_seen > local_seen:
+                        self.clients_db[client_id]['last_seen'] = remote_seen
+                if client_data.get('client_ip'):
+                    self.clients_db[client_id]['client_ip'] = client_data['client_ip']
+                if client_data.get('diagnostic_port'):
+                    self.clients_db[client_id]['diagnostic_port'] = client_data['diagnostic_port']
+
+            remote_config = client_data.get('config')
+            if isinstance(remote_config, dict):
                 if client_id not in self.client_configs:
                     self.client_configs[client_id] = self.DEFAULT_CONFIG.copy()
-    
+                for key in (
+                    'sync_interval',
+                    'alert_thresholds',
+                    'custom_name',
+                    'max_server_timeouts',
+                    'lock_recheck_interval',
+                ):
+                    if key in remote_config and remote_config[key] is not None:
+                        self.client_configs[client_id][key] = remote_config[key]
+
+            session = client_data.get('current_session') or client_data.get('session')
+            if not session:
+                continue
+
+            remaining = int(session.get('remaining_seconds') or 0)
+            time_limit = int(session.get('time_limit') or session.get('time_limit_seconds') or remaining)
+            if remaining <= 0:
+                continue
+
+            local_remaining = 0
+            if client_id in self.client_sessions:
+                try:
+                    end_time = datetime.fromisoformat(self.client_sessions[client_id]['end_time'])
+                    local_remaining = max(0, int((end_time - datetime.now()).total_seconds()))
+                except Exception:
+                    local_remaining = 0
+
+            # Adoptar sesión remota si es más nueva / tiene más tiempo
+            if remaining >= local_remaining:
+                end_time = datetime.now() + timedelta(seconds=remaining)
+                start_time = end_time - timedelta(seconds=max(time_limit, remaining))
+                self.client_sessions[client_id] = {
+                    'time_limit': time_limit if time_limit > 0 else remaining,
+                    'start_time': session.get('start_time') or start_time.isoformat(),
+                    'end_time': end_time.isoformat(),
+                }
+                self.clients_db[client_id]['is_active'] = True
+
+    def get_clients_sync_payload(self):
+        """Clientes + config para sync entre servidores."""
+        payload = []
+        for client in self.get_clients():
+            entry = client.copy()
+            entry['config'] = self.get_client_config(client['id']) or self.DEFAULT_CONFIG.copy()
+            payload.append(entry)
+        return payload
+
     def _sync_with_other_servers(self):
         """
-        Sincroniza la lista de servidores conocidos con otros servidores.
-        Solo sincroniza SERVIDORES, no clientes. Los clientes son la fuente
-        de verdad de su propia sesión y la propagan a cada server al sincronizar.
+        Sincroniza servidores conocidos y clientes con otros servidores.
         """
         my_url = self.local_server_url
         if not my_url:
             return
-        
+
         sync_data = {
-            'servers': self.get_servers()
+            'servers': self.get_servers(),
+            'clients': self.get_clients_sync_payload(),
         }
-        
+
         for server_id, server_data in list(self.servers_db.items()):
             server_url = server_data.get('url')
             if not server_url or server_url == my_url:
                 continue
-            
+
             try:
                 req = urllib.request.Request(
                     f"{server_url}/api/sync-servers",
                     data=json.dumps(sync_data).encode('utf-8'),
                     headers={'Content-Type': 'application/json'}
                 )
-                
-                with urllib.request.urlopen(req, timeout=3) as response:
+
+                with urllib.request.urlopen(req, timeout=5) as response:
                     if response.status == 200:
                         response_data = json.loads(response.read().decode('utf-8'))
                         if response_data.get('known_servers'):
@@ -750,8 +815,11 @@ class ClientManager:
                                         other_server.get('ip'),
                                         other_server.get('port')
                                     )
-            except Exception:
-                pass
+                        remote_clients = response_data.get('known_clients') or response_data.get('clients')
+                        if remote_clients:
+                            self.sync_clients_from_remote(remote_clients)
+            except Exception as e:
+                print(f"[Sync] Error con {server_url}: {e}")
     
     # ==================== SERVER CONFIG ====================
     

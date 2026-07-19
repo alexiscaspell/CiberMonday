@@ -15,7 +15,11 @@ import java.util.Collections
 
 class ApiClient(private val store: SessionStore) {
 
-    fun register(serverUrl: String? = null, existingClientId: String? = null): String? {
+    fun register(
+        serverUrl: String? = null,
+        existingClientId: String? = null,
+        setAsPrimary: Boolean = true,
+    ): String? {
         val target = (serverUrl ?: findAvailableServer()) ?: return null
         val clientId = existingClientId ?: store.ensureClientId()
         val body = JSONObject().apply {
@@ -50,7 +54,9 @@ class ApiClient(private val store: SessionStore) {
         val newId = json.optString("client_id", clientId)
         store.clientId = newId
         store.markServerOk(target)
-        store.serverUrl = target
+        if (setAsPrimary || store.serverUrl.isBlank()) {
+            store.serverUrl = target
+        }
 
         val known = json.optJSONArray("known_servers")
         if (known != null) {
@@ -147,7 +153,8 @@ class ApiClient(private val store: SessionStore) {
     }
 
     /**
-     * Sync con servidores. @return true si se adoptó una sesión nueva del servidor.
+     * Sync con servidores. Registra el cliente en cada uno y reporta sesión.
+     * @return true si se adoptó una sesión nueva del servidor.
      */
     fun syncAllServers(clientId: String): Boolean {
         val servers = store.loadServers().map { it.url }.toMutableSet()
@@ -160,6 +167,12 @@ class ApiClient(private val store: SessionStore) {
             if (url.isBlank()) continue
             try {
                 if (!health(url)) {
+                    failed.add(url)
+                    continue
+                }
+                // Asegurar registro en cada servidor (multi-server)
+                val primary = store.serverUrl.trimEnd('/')
+                if (register(url, clientId, setAsPrimary = url == primary) == null) {
                     failed.add(url)
                     continue
                 }

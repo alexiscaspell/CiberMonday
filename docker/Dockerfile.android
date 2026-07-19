@@ -43,7 +43,6 @@ WORKDIR /app
 
 COPY server/android/ ./
 COPY server/core/ ./app/src/main/python/core/
-COPY server/web/templates/index.html ./app/src/main/python/templates/
 
 RUN echo "sdk.dir=${ANDROID_HOME}" > local.properties
 RUN gradle wrapper && chmod +x ./gradlew

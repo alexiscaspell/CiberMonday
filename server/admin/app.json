@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "CiberMonday Admin",
+    "slug": "cibermonday-admin",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.cibermonday.admin"
+    },
+    "android": {
+      "package": "com.cibermonday.admin",
+      "adaptiveIcon": {
+        "backgroundColor": "#1565C0",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single"
+    }
+  }
+}

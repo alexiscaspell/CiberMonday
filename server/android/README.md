@@ -80,22 +80,18 @@ adb install dist/CiberMondayServer.apk
 server/android/
 ├── app/src/main/
 │   ├── java/com/cibermonday/server/
-│   │   ├── MainActivity.kt            # WebView + gestión de permisos
-│   │   ├── FlaskServerService.kt      # Servicio que ejecuta Flask
-│   │   └── ClientAdapter.kt           # Adaptador de lista de clientes
+│   │   ├── MainActivity.kt            # WebView del panel Expo
+│   │   └── FlaskServerService.kt      # Servicio HTTP + wake lock
 │   ├── python/
-│   │   ├── cibermonday_android.py      # Servidor HTTP + API (usa ClientManager de server/core/)
-│   │   └── templates/index.html        # Panel web (copia del servidor)
+│   │   ├── cibermonday_android.py      # Servidor HTTP + API
+│   │   └── admin_static/              # Panel Expo (vía build_admin.sh)
 │   ├── res/
-│   │   ├── layout/                     # Layouts XML
-│   │   ├── mipmap-*/                   # Íconos del launcher (todas las densidades)
-│   │   ├── drawable/                   # Drawables, ícono de notificación
-│   │   └── values/                     # Strings, temas
+│   │   ├── mipmap-*/                   # Íconos
+│   │   ├── drawable/
+│   │   └── values/
 │   └── AndroidManifest.xml
-├── build.gradle                        # Config de Gradle + Chaquopy
-├── settings.gradle
-├── gradle.properties
-└── README.md                           # Este archivo
+├── build.gradle
+└── README.md
 ```
 
 ## Permisos
@@ -111,5 +107,5 @@ server/android/
 ## Notas
 
 - El servidor usa el puerto **5000** por defecto.
+- El panel se construye con `./scripts/build_admin.sh` (incluido en `build_android.sh`).
 - El servidor consume batería; es recomendable conectar el dispositivo a la corriente.
-- Los templates HTML se copian desde `server/web/templates/` al compilar.

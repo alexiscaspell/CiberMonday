@@ -40,6 +40,12 @@ client/android/.gradle/
 client/android/app/build/
 server/android/app/build/
 
+# Admin Expo
+server/admin/node_modules/
+server/admin/dist/
+server/admin/.expo/
+server/admin/.claude/
+
 # IDE
 .vscode/
 .idea/

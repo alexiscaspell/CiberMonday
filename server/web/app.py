@@ -5,7 +5,7 @@ import functools
 # Agregar el directorio padre al path para poder importar core
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, send_from_directory, abort
 from flask_cors import CORS
 from datetime import datetime
 import json
@@ -14,7 +14,10 @@ import urllib.error
 
 from core import ClientManager
 
-app = Flask(__name__, template_folder='templates')
+_WEB_DIR = os.path.dirname(os.path.abspath(__file__))
+_STATIC_DIR = os.path.join(_WEB_DIR, 'static')
+
+app = Flask(__name__, static_folder=None)
 CORS(app)
 
 # Instancia única del gestor de clientes/servidores
@@ -307,18 +310,20 @@ def get_servers_endpoint():
 @app.route('/api/sync-servers', methods=['POST'])
 def sync_servers_endpoint():
     """
-    Sincroniza la lista de servidores entre servidores o con el cliente.
-    Solo sincroniza SERVIDORES. Los clientes son su propia fuente de verdad
-    y propagan su estado directamente a cada server.
+    Sincroniza servidores (y opcionalmente clientes) entre servidores o con el cliente.
     """
-    data = request.json
+    data = request.json or {}
     servers_list = data.get('servers', [])
-    
+    clients_list = data.get('clients', [])
+
     known_servers = manager.sync_servers(servers_list)
-    
+    if clients_list:
+        manager.sync_clients_from_remote(clients_list)
+
     return jsonify({
         'success': True,
-        'known_servers': known_servers
+        'known_servers': known_servers,
+        'known_clients': manager.get_clients_sync_payload(),
     }), 200
 
 
@@ -332,7 +337,7 @@ def force_sync_endpoint():
             'success': True,
             'message': 'Sincronización forzada completada',
             'known_servers': manager.get_servers(),
-            'known_clients': manager.get_clients()
+            'known_clients': manager.get_clients_sync_payload(),
         }), 200
     except Exception as e:
         return jsonify({
@@ -341,13 +346,36 @@ def force_sync_endpoint():
         }), 500
 
 
-# ==================== WEB UI ====================
+# ==================== WEB UI (Expo SPA) ====================
 
 @app.route('/', methods=['GET'])
 @admin_only
 def index():
-    """Interfaz web del panel de control."""
-    return render_template('index.html')
+    """Panel de control (Expo export en static/)."""
+    index_path = os.path.join(_STATIC_DIR, 'index.html')
+    if not os.path.isfile(index_path):
+        return (
+            '<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2rem">'
+            '<h1>CiberMonday</h1>'
+            '<p>Panel no construido. Ejecutá <code>scripts/build_admin.sh</code>.</p>'
+            '</body></html>'
+        ), 503
+    return send_from_directory(_STATIC_DIR, 'index.html')
+
+
+@app.route('/<path:path>', methods=['GET'])
+@admin_only
+def spa_assets(path):
+    """Sirve assets del SPA; rutas desconocidas no-API vuelven al index."""
+    if path.startswith('api/'):
+        abort(404)
+    full = os.path.join(_STATIC_DIR, path)
+    if os.path.isfile(full):
+        return send_from_directory(_STATIC_DIR, path)
+    index_path = os.path.join(_STATIC_DIR, 'index.html')
+    if os.path.isfile(index_path):
+        return send_from_directory(_STATIC_DIR, 'index.html')
+    abort(404)
 
 
 # ==================== PLATFORM-SPECIFIC FUNCTIONS ====================

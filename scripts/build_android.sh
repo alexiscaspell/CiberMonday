@@ -29,8 +29,13 @@ if [ ! -f "docker/Dockerfile.android" ] || [ ! -d "server/android" ]; then
     echo -e "${RED}Estructura del proyecto incompleta (docker/Dockerfile.android, server/android).${NC}"
     exit 1
 fi
-if [ ! -f "server/web/templates/index.html" ]; then
-    echo -e "${RED}No se encontró server/web/templates/index.html${NC}"
+
+echo -e "${YELLOW}Construyendo panel admin (Expo)...${NC}"
+chmod +x scripts/build_admin.sh
+./scripts/build_admin.sh
+
+if [ ! -f "server/android/app/src/main/python/admin_static/index.html" ]; then
+    echo -e "${RED}Falta admin_static/index.html tras build_admin${NC}"
     exit 1
 fi
 

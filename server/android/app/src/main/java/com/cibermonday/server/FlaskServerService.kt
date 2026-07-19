@@ -42,25 +42,27 @@ class FlaskServerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (isRunning) {
-            return START_STICKY
+            // No reiniciar en background: solo mientras la Activity lo pide
+            return START_NOT_STICKY
         }
         
         // Iniciar como servicio foreground
         val notification = createNotification("Servidor activo en puerto 5000")
         startForeground(NOTIFICATION_ID, notification)
 
-        // Adquirir wake lock para mantener el servidor activo
+        // Wake lock solo mientras el servidor corre (se libera al salir de primer plano)
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "CiberMonday::ServerWakeLock"
-        )
-        wakeLock?.acquire(10 * 60 * 60 * 1000L) // 10 horas máximo
+        if (wakeLock?.isHeld != true) {
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "CiberMonday::ServerWakeLock"
+            )
+            wakeLock?.acquire(60 * 60 * 1000L) // máximo 1h por sesión en primer plano
+        }
 
-        // Iniciar servidor en un thread separado
         startServer()
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startServer() {
@@ -78,15 +80,14 @@ class FlaskServerService : Service() {
                 val localIp = getLocalIpAddress()
                 android.util.Log.d("CiberMonday", "IP local detectada: $localIp")
                 
-                android.util.Log.d("CiberMonday", "Módulo Python cargado, llamando start_server...")
+                android.util.Log.i("CiberMonday", "Módulo Python cargado, llamando start_server...")
                 
-                // Iniciar el servidor en la IP local específica (no 0.0.0.0)
-                // Esto permite que otros dispositivos en la red puedan conectarse
-                val host = if (localIp.isNotEmpty() && localIp != "127.0.0.1") localIp else "0.0.0.0"
-                android.util.Log.d("CiberMonday", "Iniciando servidor en $host:5000")
+                // Siempre 0.0.0.0: accesible por LAN y por 127.0.0.1 (WebView / health check)
+                val host = "0.0.0.0"
+                android.util.Log.i("CiberMonday", "Iniciando servidor en $host:5000 (wifi=$localIp)")
                 module.callAttr("start_server", host, 5000, filesDir.absolutePath)
                 
-                android.util.Log.d("CiberMonday", "start_server terminó (no debería pasar)")
+                android.util.Log.i("CiberMonday", "start_server terminó (no debería pasar)")
                 
             } catch (e: Exception) {
                 android.util.Log.e("CiberMonday", "Error al iniciar servidor: ${e.message}", e)
@@ -101,26 +102,21 @@ class FlaskServerService : Service() {
         
         // Verificar que el servidor realmente esté escuchando
         thread {
-            Thread.sleep(3000) // Dar más tiempo a Flask para iniciar
+            Thread.sleep(2000)
             
             if (isRunning) {
-                // Obtener la IP donde se inició el servidor
-                val localIp = getLocalIpAddress()
-                val host = if (localIp.isNotEmpty() && localIp != "127.0.0.1") localIp else "127.0.0.1"
-                
-                // Intentar conectar al servidor
                 var serverReady = false
-                for (attempt in 1..10) {
+                for (attempt in 1..15) {
                     try {
-                        android.util.Log.d("CiberMonday", "Verificando servidor en $host, intento $attempt...")
+                        android.util.Log.i("CiberMonday", "Verificando servidor en 127.0.0.1:5000, intento $attempt...")
                         val socket = java.net.Socket()
-                        socket.connect(java.net.InetSocketAddress(host, 5000), 1000)
+                        socket.connect(java.net.InetSocketAddress("127.0.0.1", 5000), 1000)
                         socket.close()
                         serverReady = true
-                        android.util.Log.d("CiberMonday", "Servidor respondiendo correctamente en $host")
+                        android.util.Log.i("CiberMonday", "Servidor respondiendo en 127.0.0.1:5000")
                         break
                     } catch (e: Exception) {
-                        android.util.Log.d("CiberMonday", "Servidor no listo aún: ${e.message}")
+                        android.util.Log.w("CiberMonday", "Servidor no listo aún: ${e.message}")
                         Thread.sleep(1000)
                     }
                 }
@@ -129,7 +125,7 @@ class FlaskServerService : Service() {
                     sendBroadcast(Intent(ACTION_SERVER_STARTED))
                     updateNotification("Servidor activo en puerto 5000")
                 } else {
-                    android.util.Log.e("CiberMonday", "Servidor no respondió después de 10 intentos")
+                    android.util.Log.e("CiberMonday", "Servidor no respondió después de 15 intentos")
                     val errorIntent = Intent(ACTION_SERVER_ERROR)
                     errorIntent.putExtra("error", "El servidor no respondió")
                     sendBroadcast(errorIntent)
@@ -149,6 +145,16 @@ class FlaskServerService : Service() {
         }
         serverThread?.interrupt()
         serverThread = null
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let { lock ->
+                if (lock.isHeld) lock.release()
+            }
+        } catch (_: Exception) {
+        }
+        wakeLock = null
     }
 
     private fun createNotificationChannel() {
@@ -192,10 +198,10 @@ class FlaskServerService : Service() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         stopServer()
-        wakeLock?.release()
+        releaseWakeLock()
         sendBroadcast(Intent(ACTION_SERVER_STOPPED))
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

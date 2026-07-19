@@ -10,6 +10,7 @@ on:
       - 'docker/Dockerfile.android'
       - 'docker/docker-compose.yml'
       - 'scripts/build_android.sh'
+      - 'scripts/build_admin.sh'
       - 'scripts/start_server.sh'
       - 'requirements.txt'
       - '.github/workflows/build-server.yml'
@@ -20,6 +21,7 @@ on:
       - 'docker/Dockerfile.android'
       - 'docker/docker-compose.yml'
       - 'scripts/build_android.sh'
+      - 'scripts/build_admin.sh'
       - 'scripts/start_server.sh'
       - 'requirements.txt'
       - '.github/workflows/build-server.yml'
@@ -38,6 +40,10 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Build Docker image
         run: docker build -t cibermonday-server:ci -f docker/Dockerfile.server .
+      - name: Build admin static for package
+        run: |
+          chmod +x scripts/build_admin.sh
+          ./scripts/build_admin.sh
       - name: Package
         run: |
           mkdir -p cibermonday-server
@@ -61,10 +67,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/admin/package-lock.json
       - uses: docker/setup-buildx-action@v3
       - name: Build
         run: |
-          chmod +x scripts/build_android.sh
+          chmod +x scripts/build_android.sh scripts/build_admin.sh
           ./scripts/build_android.sh
       - uses: actions/upload-artifact@v4
         with:

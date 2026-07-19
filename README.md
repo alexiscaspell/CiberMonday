@@ -18,8 +18,9 @@ CiberMonday/
 ├── docker/                 # Dockerfiles y docker-compose
 ├── scripts/                # Build, start y diagnóstico
 ├── server/
-│   ├── web/                # API Flask + panel
-│   ├── android/            # App Android (servidor portátil)
+│   ├── web/                # API Flask + panel (static Expo)
+│   ├── admin/              # Panel Expo (web + estilo Android)
+│   ├── android/            # App Android (servidor portátil + WebView)
 │   └── core/               # Lógica de negocio compartida
 ├── client/
 │   ├── windows/            # Cliente Windows
@@ -34,7 +35,8 @@ CiberMonday/
 
 | Componente | Descripción | Docs |
 |------------|-------------|------|
-| **Servidor Web** | API REST + panel | [`server/web/README.md`](server/web/README.md) |
+| **Servidor Web** | API REST + panel Expo | [`server/web/README.md`](server/web/README.md) |
+| **Panel Admin** | UI Expo (web / WebView) | [`server/admin/README.md`](server/admin/README.md) |
 | **Servidor Android** | Servidor en el teléfono | [`server/android/README.md`](server/android/README.md) |
 | **Cliente Windows** | Agente PC | [`client/windows/README.md`](client/windows/README.md) |
 | **Cliente Linux** | Agente Linux / systemd | [`client/linux/README.md`](client/linux/README.md) |
@@ -57,6 +59,7 @@ Panel: `http://localhost:5000`
 ### Servidor sin Docker
 
 ```bash
+./scripts/build_admin.sh   # genera server/web/static
 ./server/web/start_server.sh
 ```
 
