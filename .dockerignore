@@ -1,4 +1,4 @@
-# Archivos a ignorar en Docker
+# Archivos a ignorar en Docker (context = raíz del repo)
 venv/
 env/
 ENV/
@@ -13,10 +13,8 @@ __pycache__/
 *.egg
 *.egg-info
 dist/
-build/
 .git/
 .gitignore
-*.md
 .vscode/
 .idea/
 *.swp
@@ -24,27 +22,20 @@ build/
 *~
 .DS_Store
 Thumbs.db
-
-# Cliente (no necesario para el servidor)
-client/
-build_scripts/
-.github/
-
-# Logs
 logs/
 *.log
-
-# Archivos temporales
 *.tmp
 *.bak
 *.cache
-
-# Archivos de compilación PyInstaller
 *.spec
-client/build/
-client/dist/
-
-# Variables de entorno
 .env
 .env.local
 .env.*.local
+.github/
+
+# Artefactos de build locales
+**/build/
+**/.gradle/
+client/windows/dist/
+server/android/app/build/
+client/android/app/build/

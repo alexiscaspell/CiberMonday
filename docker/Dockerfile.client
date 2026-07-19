@@ -1,0 +1,17 @@
+# Dockerfile para compilar el cliente Windows CiberMonday como .exe
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY client/windows/ ./client/windows/
+COPY requirements.txt .
+COPY scripts/build_windows_client.sh ./build_windows_client.sh
+
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install pyinstaller
+RUN chmod +x /app/build_windows_client.sh

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CiberMonday Client</string>
+    <string name="accessibility_service_description">Mantiene el bloqueo de sesión cuando el tiempo se agota. Necesario para que CiberMonday funcione como control de tiempo.</string>
+    <string name="device_admin_description">Permite bloquear el dispositivo cuando termina la sesión de CiberMonday.</string>
+    <string name="notification_channel_name">Sesión CiberMonday</string>
+    <string name="notification_channel_alerts">Alertas de tiempo</string>
+    <string name="notification_running">CiberMonday activo</string>
+    <string name="lock_title">Tiempo agotado</string>
+    <string name="lock_message">La sesión ha terminado. Contactá al administrador para más tiempo.</string>
+</resources>

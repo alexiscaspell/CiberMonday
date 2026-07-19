@@ -1,0 +1,20 @@
+# Dockerfile para el servidor CiberMonday
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+COPY server/core/ ./server/core/
+COPY server/web/ ./server/web/
+
+RUN pip install -r requirements.txt
+RUN rm requirements.txt
+
+EXPOSE 5000
+
+ENV FLASK_APP=server/web/app.py
+ENV FLASK_ENV=production
+ENV PORT=5000
+ENV HOST=0.0.0.0
+
+CMD ["python", "server/web/app.py"]

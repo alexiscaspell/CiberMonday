@@ -1,0 +1,133 @@
+name: Build clients
+
+# Cliente Android, Windows y Linux
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - 'docker/Dockerfile.android-client'
+      - 'scripts/build_android_client.sh'
+      - '.github/workflows/build-clients.yml'
+  pull_request:
+    paths:
+      - 'client/**'
+      - 'docker/Dockerfile.android-client'
+      - 'scripts/build_android_client.sh'
+      - '.github/workflows/build-clients.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: build-clients-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-client:
+    name: Android Client APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        run: |
+          chmod +x scripts/build_android_client.sh
+          ./scripts/build_android_client.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-client-apk
+          path: dist/CiberMondayClient.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-client:
+    name: Windows Client
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pywin32 pyinstaller
+      - name: Build with PyInstaller
+        working-directory: ./client/windows
+        run: |
+          pyinstaller --onefile `
+            --name "CiberMondayClient" `
+            --hidden-import "client_base" `
+            --hidden-import "client_windows" `
+            --hidden-import "winreg" `
+            --hidden-import "win32serviceutil" `
+            --hidden-import "win32service" `
+            --hidden-import "win32event" `
+            --hidden-import "servicemanager" `
+            --hidden-import "win32timezone" `
+            --hidden-import "protection" `
+            --hidden-import "registry_manager" `
+            --hidden-import "config_gui" `
+            --hidden-import "tkinter" `
+            --hidden-import "tkinter.ttk" `
+            --hidden-import "tkinter.messagebox" `
+            --hidden-import "requests" `
+            --hidden-import "ctypes" `
+            --hidden-import "ctypes.wintypes" `
+            client.py
+          pyinstaller --onefile `
+            --name "CiberMondayService" `
+            --hidden-import "winreg" `
+            --hidden-import "win32serviceutil" `
+            --hidden-import "win32service" `
+            --hidden-import "win32event" `
+            --hidden-import "servicemanager" `
+            --hidden-import "win32timezone" `
+            --hidden-import "protection" `
+            --hidden-import "firewall_manager" `
+            --hidden-import "ctypes" `
+            --hidden-import "ctypes.wintypes" `
+            service.py
+          pyinstaller --onefile `
+            --name "CiberMondayWatchdog" `
+            --hidden-import "winreg" `
+            --hidden-import "subprocess" `
+            --hidden-import "protection" `
+            --hidden-import "ctypes" `
+            --hidden-import "ctypes.wintypes" `
+            watchdog.py
+      - name: Stage files
+        shell: cmd
+        run: |
+          mkdir release-windows
+          copy client\windows\dist\CiberMondayClient.exe release-windows\
+          copy client\windows\dist\CiberMondayService.exe release-windows\
+          copy client\windows\dist\CiberMondayWatchdog.exe release-windows\
+          copy client\windows\install_exe_service.bat release-windows\
+          copy client\windows\uninstall_exe_service.bat release-windows\
+          copy client\windows\show_logs.bat release-windows\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-client
+          path: release-windows/*
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-client:
+    name: Linux Client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package
+        run: |
+          mkdir -p cibermonday-linux
+          cp client/linux/client.py client/linux/client_base.py client/linux/client_linux.py \
+             client/linux/config_gui.py client/linux/install_linux.sh client/linux/uninstall_linux.sh \
+             client/linux/cibermonday-client.service cibermonday-linux/
+          chmod +x cibermonday-linux/install_linux.sh cibermonday-linux/uninstall_linux.sh
+          tar czf CiberMondayClient-Linux.tar.gz cibermonday-linux/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-client
+          path: CiberMondayClient-Linux.tar.gz
+          if-no-files-found: error
+          retention-days: 14

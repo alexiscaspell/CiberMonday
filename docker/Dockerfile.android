@@ -1,0 +1,50 @@
+FROM --platform=linux/amd64 ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    openjdk-17-jdk \
+    python3 \
+    python3-pip \
+    wget \
+    unzip \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV PATH=$JAVA_HOME/bin:$PATH:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools
+
+RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
+    && wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip \
+    && unzip commandlinetools-linux-9477386_latest.zip -d ${ANDROID_HOME}/cmdline-tools \
+    && mv ${ANDROID_HOME}/cmdline-tools/cmdline-tools ${ANDROID_HOME}/cmdline-tools/latest \
+    && rm commandlinetools-linux-9477386_latest.zip
+
+RUN yes | sdkmanager --licenses && \
+    sdkmanager "platform-tools" \
+    "platforms;android-34" \
+    "build-tools;34.0.0" \
+    "ndk;25.2.9519653"
+
+ENV ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/25.2.9519653
+
+RUN wget --no-check-certificate https://services.gradle.org/distributions/gradle-8.0-bin.zip \
+    && unzip gradle-8.0-bin.zip \
+    && mv gradle-8.0 /opt/gradle \
+    && rm gradle-8.0-bin.zip
+
+ENV PATH=/opt/gradle/bin:$PATH
+
+WORKDIR /app
+
+COPY server/android/ ./
+COPY server/core/ ./app/src/main/python/core/
+COPY server/web/templates/index.html ./app/src/main/python/templates/
+
+RUN echo "sdk.dir=${ANDROID_HOME}" > local.properties
+RUN gradle wrapper && chmod +x ./gradlew
+RUN ./gradlew assembleDebug --stacktrace --no-daemon

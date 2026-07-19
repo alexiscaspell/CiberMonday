@@ -1,0 +1,23 @@
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    container_name: cibermonday-server
+    # host network: el broadcast UDP 5001 llega a la Wi‑Fi (bridge Docker no lo reenvía)
+    network_mode: host
+    environment:
+      - FLASK_ENV=production
+      - PORT=5000
+      - HOST=0.0.0.0
+      - HOST_IP=${HOST_IP:-192.168.1.38}
+      - ADMIN_ALLOW_LAN=${ADMIN_ALLOW_LAN:-true}
+    volumes:
+      - ../logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:5000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

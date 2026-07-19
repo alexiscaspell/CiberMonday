@@ -1,0 +1,74 @@
+name: Build server
+
+# Servidor web (Docker + tarball) y servidor Android APK
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'docker/Dockerfile.server'
+      - 'docker/Dockerfile.android'
+      - 'docker/docker-compose.yml'
+      - 'scripts/build_android.sh'
+      - 'scripts/start_server.sh'
+      - 'requirements.txt'
+      - '.github/workflows/build-server.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'docker/Dockerfile.server'
+      - 'docker/Dockerfile.android'
+      - 'docker/docker-compose.yml'
+      - 'scripts/build_android.sh'
+      - 'scripts/start_server.sh'
+      - 'requirements.txt'
+      - '.github/workflows/build-server.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: build-server-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-web:
+    name: Server Web (Docker + package)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Docker image
+        run: docker build -t cibermonday-server:ci -f docker/Dockerfile.server .
+      - name: Package
+        run: |
+          mkdir -p cibermonday-server
+          cp -r server/core cibermonday-server/
+          cp -r server/web cibermonday-server/
+          cp requirements.txt cibermonday-server/
+          cp docker/docker-compose.yml cibermonday-server/
+          cp docker/Dockerfile.server cibermonday-server/
+          cp scripts/start_server.sh cibermonday-server/
+          chmod +x cibermonday-server/start_server.sh
+          tar czf CiberMondayServer-Web.tar.gz cibermonday-server/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-web
+          path: CiberMondayServer-Web.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  android-server:
+    name: Android Server APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        run: |
+          chmod +x scripts/build_android.sh
+          ./scripts/build_android.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-server-apk
+          path: dist/CiberMondayServer.apk
+          if-no-files-found: error
+          retention-days: 14

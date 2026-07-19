@@ -26,16 +26,19 @@ wheels/
 *.egg
 
 # Cliente
-client/client_id.txt
-client/build/
-client/dist/
-client/*.spec
+client/**/client_id.txt
+client/windows/build/
+client/windows/dist/
+client/windows/*.spec
+client/linux/**/*.spec
 
 # Servidor
-server/__pycache__/
-
-# Android - módulo core/ copiado por Gradle desde la raíz del repo
-android/app/src/main/python/core/
+server/**/__pycache__/
+server/android/app/src/main/python/core/
+server/android/.gradle/
+client/android/.gradle/
+client/android/app/build/
+server/android/app/build/
 
 # IDE
 .vscode/
