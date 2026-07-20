@@ -157,7 +157,11 @@ class DiscoveryListener(
         broadcastCount += 1
         lastBroadcastFrom = fromIp
         store.addServer(url)
-        store.serverUrl = url
+        // No pisar el primario en discovery continuo (teléfono vs web).
+        // Solo fijar si aún no hay URL configurada.
+        if (store.serverUrl.isBlank()) {
+            store.serverUrl = url
+        }
         onServerFound?.invoke(url)
         Log.i(TAG, "Discovered server: $url")
     }
@@ -290,5 +294,64 @@ class DiscoveryListener(
     companion object {
         private const val TAG = "DiscoveryListener"
         const val DISCOVERY_PORT = 5001
+
+        /**
+         * Barrido rápido de la LAN buscando /api/health (multi-servidor).
+         * No cambia el primario; solo devuelve URLs encontradas.
+         */
+        fun quickLanScan(timeoutMs: Long = 4_000L): List<String> {
+            val candidates = linkedSetOf<String>()
+            val localIp = try {
+                Collections.list(NetworkInterface.getNetworkInterfaces()).flatMap { ni ->
+                    Collections.list(ni.inetAddresses)
+                }.firstOrNull { addr ->
+                    !addr.isLoopbackAddress && addr is Inet4Address
+                }?.hostAddress
+            } catch (_: Exception) {
+                null
+            }
+            val prefix = localIp?.substringBeforeLast('.')
+            if (prefix != null) {
+                listOf(1, 38, 100, 101, 10, 20, 23, 50).forEach { n ->
+                    candidates.add("http://$prefix.$n:5000")
+                }
+                for (n in 1..254) {
+                    candidates.add("http://$prefix.$n:5000")
+                }
+            }
+            val found = java.util.Collections.synchronizedSet(linkedSetOf<String>())
+            val executor = Executors.newFixedThreadPool(32)
+            try {
+                val futures = candidates.map { base ->
+                    executor.submit {
+                        if (found.size >= 4) return@submit
+                        try {
+                            val conn = (URL("$base/api/health").openConnection() as HttpURLConnection).apply {
+                                connectTimeout = 200
+                                readTimeout = 200
+                                requestMethod = "GET"
+                            }
+                            if (conn.responseCode == 200) {
+                                found.add(base.trimEnd('/'))
+                            }
+                            conn.disconnect()
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+                val deadline = System.currentTimeMillis() + timeoutMs
+                while (System.currentTimeMillis() < deadline && found.size < 4) {
+                    Thread.sleep(50)
+                }
+                futures.forEach { it.cancel(true) }
+            } finally {
+                executor.shutdownNow()
+                try {
+                    executor.awaitTermination(1, TimeUnit.SECONDS)
+                } catch (_: Exception) {
+                }
+            }
+            return found.toList()
+        }
     }
 }

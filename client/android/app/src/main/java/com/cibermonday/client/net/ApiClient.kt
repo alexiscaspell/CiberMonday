@@ -29,14 +29,13 @@ class ApiClient(private val store: SessionStore) {
             put("diagnostic_port", DIAGNOSTIC_PORT)
             put("platform", "android")
             store.getSessionInfo()?.let { info ->
-                if (!info.isExpired && info.remainingSeconds > 0) {
-                    put(
-                        "session",
-                        JSONObject()
-                            .put("remaining_seconds", info.remainingSeconds)
-                            .put("time_limit_seconds", info.timeLimitSeconds)
-                    )
-                }
+                // Incluir sesión aunque esté expirada (paridad Linux → panel muestra EXPIRADO)
+                put(
+                    "session",
+                    JSONObject()
+                        .put("remaining_seconds", info.remainingSeconds.coerceAtLeast(0))
+                        .put("time_limit_seconds", info.timeLimitSeconds)
+                )
             }
             put(
                 "config",
@@ -94,11 +93,15 @@ class ApiClient(private val store: SessionStore) {
             .put("remaining_seconds", 0)
             .put("time_limit_seconds", session?.timeLimitSeconds ?: 0)
         val response = postJson("$serverUrl/api/client/$clientId/report-session", body) ?: return false
-        if (response.code != 200) return false
-        store.markServerOk(serverUrl)
-        // Si el admin ya asignó tiempo nuevo, el servidor lo devuelve aquí
-        adoptSessionFromJson(response.json?.optJSONObject("session"))
-        return true
+        if (response.code == 200) {
+            store.markServerOk(serverUrl)
+            adoptSessionFromJson(response.json?.optJSONObject("session"))
+            return true
+        }
+        if (response.code == 404) {
+            register(serverUrl, clientId, setAsPrimary = false)
+        }
+        return false
     }
 
     /**
@@ -157,12 +160,14 @@ class ApiClient(private val store: SessionStore) {
      * @return true si se adoptó una sesión nueva del servidor.
      */
     fun syncAllServers(clientId: String): Boolean {
+        ensureLanServersKnown()
         val servers = store.loadServers().map { it.url }.toMutableSet()
         servers.add(store.serverUrl.trimEnd('/'))
         val failed = mutableListOf<String>()
         val before = store.getSessionInfo()?.remainingSeconds ?: -1
         val info = store.getSessionInfo()
         val localExpired = info == null || info.isExpired || info.remainingSeconds <= 0
+        var anyOk = false
         for (url in servers) {
             if (url.isBlank()) continue
             try {
@@ -170,7 +175,6 @@ class ApiClient(private val store: SessionStore) {
                     failed.add(url)
                     continue
                 }
-                // Asegurar registro en cada servidor (multi-server)
                 val primary = store.serverUrl.trimEnd('/')
                 if (register(url, clientId, setAsPrimary = url == primary) == null) {
                     failed.add(url)
@@ -178,17 +182,61 @@ class ApiClient(private val store: SessionStore) {
                 }
                 if (!localExpired && info != null && info.remainingSeconds > 0) {
                     if (!reportSession(clientId, url)) failed.add(url)
+                    else anyOk = true
                 } else {
                     if (!reportZero(clientId, url)) failed.add(url)
+                    else anyOk = true
                     pullSession(clientId, url)
                 }
+                // Propagar lista de servidores (y que otros servidores nos vean)
+                postSyncServers(url)
             } catch (_: Exception) {
                 failed.add(url)
             }
         }
         store.incrementServerTimeouts(failed)
+        // Si ningún servidor respondió, barrer LAN otra vez e intentar una pasada
+        if (!anyOk) {
+            val discovered = DiscoveryListener.quickLanScan()
+            discovered.forEach { store.addServer(it) }
+            for (url in discovered) {
+                try {
+                    if (!health(url)) continue
+                    if (register(url, clientId, setAsPrimary = false) == null) continue
+                    if (localExpired) reportZero(clientId, url) else reportSession(clientId, url)
+                    postSyncServers(url)
+                    anyOk = true
+                } catch (_: Exception) {
+                }
+            }
+        }
         val after = store.getSessionInfo()?.remainingSeconds ?: -1
         return after > 0 && after != before
+    }
+
+    /** Avisa a un servidor de los demás conocidos (paridad Linux/Windows). */
+    private fun postSyncServers(serverUrl: String) {
+        try {
+            val body = JSONObject().put("servers", serversToJson(store.loadServers()))
+            val response = postJson("$serverUrl/api/sync-servers", body) ?: return
+            if (response.code != 200) return
+            val known = response.json?.optJSONArray("known_servers")
+            if (known != null) {
+                store.mergeServers(jsonArrayToMaps(known))
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Si solo conocemos un servidor caído, buscar otros en la LAN. */
+    private fun ensureLanServersKnown() {
+        val known = store.loadServers().map { it.url.trimEnd('/') }.toMutableSet()
+        val primary = store.serverUrl.trimEnd('/')
+        if (primary.isNotBlank()) known.add(primary)
+        val anyHealthy = known.any { it.isNotBlank() && health(it) }
+        // Un solo servidor o ninguno sano → barrer LAN (p.ej. teléfono apagado, web vivo)
+        if (anyHealthy && known.size > 1) return
+        DiscoveryListener.quickLanScan().forEach { store.addServer(it) }
     }
 
     /** @return true si se aplicó una sesión con remaining > 0 */

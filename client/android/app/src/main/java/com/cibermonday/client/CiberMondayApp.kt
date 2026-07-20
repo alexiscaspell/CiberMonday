@@ -23,27 +23,20 @@ class CiberMondayApp : Application() {
     }
 
     /**
-     * Si hay sesión activa o expirada, el proceso debe vigilar/bloquear.
-     * Cubre revive tras crash de Accesibilidad / MIUI.
+     * Si hay end_time local (activa o expirada), el proceso debe vigilar/bloquear
+     * aunque no haya red ni servidor (paridad con SessionData de Windows).
      */
     fun recoverIfNeeded() {
-        if (!store.setupComplete) return
+        if (!store.shouldKeepAlive()) return
         val info = store.getSessionInfo()
         val expired = info != null && (info.isExpired || info.remainingSeconds <= 0)
-        val active = info != null && !info.isExpired && info.remainingSeconds > 0
-        if (!expired && !active && !store.serviceEnabled) return
-
-        if (expired || active) {
-            store.serviceEnabled = true
-        }
+        store.serviceEnabled = true
         try {
             SessionAlarmScheduler.rescheduleAll(this, store)
         } catch (e: Exception) {
             Log.w(TAG, "reschedule: ${e.message}")
         }
-        if (expired || store.serviceEnabled) {
-            ClientService.start(this, enable = expired || active)
-        }
+        ClientService.start(this, enable = true)
         if (expired) {
             try {
                 LockController(this).lockWorkstation(forceSystemLock = true)

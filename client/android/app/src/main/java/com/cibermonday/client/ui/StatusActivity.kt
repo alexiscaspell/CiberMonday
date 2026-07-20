@@ -57,6 +57,9 @@ class StatusActivity : AppCompatActivity() {
             )
         }
 
+        // Mientras la UI está abierta, el servicio recibe push.
+        // Si hay end_time local y cierras la app, el watchdog reabre el FGS.
+        // Tras Detener (sin sesión), onTaskRemoved deja el cliente cerrado.
         ClientService.start(this, enable = true)
         store.addListener(storeListener)
         refreshUi()

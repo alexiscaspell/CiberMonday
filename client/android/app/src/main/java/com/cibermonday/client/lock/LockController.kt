@@ -12,6 +12,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import com.cibermonday.client.CiberMondayApp
+import com.cibermonday.client.net.ConnectivityRestorer
 import com.cibermonday.client.ui.LockActivity
 
 class LockController(private val context: Context) {
@@ -59,12 +60,18 @@ class LockController(private val context: Context) {
     }
 
     /**
-     * Al expirar: apaga/bloquea el sistema (pantalla off, bajo consumo).
-     * La UI de "tiempo agotado" solo se muestra al desbloquear ([onUserUnlocked]).
+     * Al expirar: reactivar red (para poder recibir tiempo nuevo) y bloquear pantalla.
      */
     fun lockWorkstation(forceSystemLock: Boolean = false) {
         if (!isLockNeeded()) return
-        Log.i(TAG, "Session lock → screen off (no UI yet)")
+        Log.i(TAG, "Session lock → ensure network, then screen off")
+
+        // Si apagaron Wi‑Fi/datos al vencer, reactivar antes del bloqueo
+        try {
+            ConnectivityRestorer.ensureOnline(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "ensureOnline: ${e.message}")
+        }
 
         // Quitar overlay/activity que puedan mantener o despertar la pantalla
         LockOverlayService.stop(context)

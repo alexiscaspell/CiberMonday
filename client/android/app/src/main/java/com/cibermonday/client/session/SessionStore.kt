@@ -104,8 +104,20 @@ class SessionStore(context: Context) {
     var serviceEnabled: Boolean
         get() = prefs.getBoolean(KEY_SERVICE_ENABLED, true)
         set(value) {
-            prefs.edit().putBoolean(KEY_SERVICE_ENABLED, value).apply()
+            prefs.edit().putBoolean(KEY_SERVICE_ENABLED, value).commit()
         }
+
+    /**
+     * Hay countdown/bloqueo local (equivalente a SessionData en el registro de Windows).
+     * Independiente de red: basta con end_time en SharedPreferences.
+     */
+    fun hasWatchableSession(): Boolean = getSessionInfo() != null
+
+    /**
+     * Mantener FGS/watchdog vivos: sesión local activa o expirada pendiente de bloqueo.
+     * Tras "Detener" no hay sesión → false (el cliente puede quedar cerrado).
+     */
+    fun shouldKeepAlive(): Boolean = setupComplete && hasWatchableSession()
 
     fun getAlertThresholds(): List<Int> {
         val raw = prefs.getString(KEY_ALERT_THRESHOLDS, null) ?: return DEFAULT_ALERT_THRESHOLDS
@@ -125,11 +137,12 @@ class SessionStore(context: Context) {
     }
 
     fun saveSession(timeLimitSeconds: Int, startTimeIso: String, endTimeIso: String) {
+        // commit(): debe quedar en disco antes de un kill OEM / cierre desde recientes
         prefs.edit()
             .putInt(KEY_TIME_LIMIT, timeLimitSeconds)
             .putString(KEY_START_TIME, startTimeIso)
             .putString(KEY_END_TIME, endTimeIso)
-            .apply()
+            .commit()
         notifyChanged()
     }
 
@@ -138,7 +151,7 @@ class SessionStore(context: Context) {
             .remove(KEY_TIME_LIMIT)
             .remove(KEY_START_TIME)
             .remove(KEY_END_TIME)
-            .apply()
+            .commit()
         notifyChanged()
     }
 
@@ -179,6 +192,9 @@ class SessionStore(context: Context) {
     }
 
     fun applySessionFromPush(timeLimitSeconds: Int, remainingSeconds: Int) {
+        // Antes de saveSession (que notifica listeners): habilitar vigilancia
+        // para que no se cancelen las alarmas de expiry/watchdog.
+        serviceEnabled = true
         val now = Instant.now()
         val end = now.plusSeconds(remainingSeconds.toLong())
         val start = now.minusSeconds((timeLimitSeconds - remainingSeconds).toLong().coerceAtLeast(0))
@@ -248,11 +264,13 @@ class SessionStore(context: Context) {
     fun incrementServerTimeouts(failedUrls: List<String>) {
         if (failedUrls.isEmpty()) return
         val max = maxServerTimeouts
+        val primary = serverUrl.trimEnd('/')
         val servers = loadServers()
         val remaining = servers.mapNotNull { server ->
             if (server.url in failedUrls) {
                 server.timeoutCount += 1
-                if (server.timeoutCount >= max) null else server
+                // Nunca borrar el servidor primario configurado (p.ej. web caído temporalmente)
+                if (server.timeoutCount >= max && server.url != primary) null else server
             } else {
                 server
             }

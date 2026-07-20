@@ -70,20 +70,17 @@ class BootReceiver : BroadcastReceiver() {
                 Log.i(TAG, "Setup incomplete — skip ($reason)")
                 return
             }
-            // Tras "Detener" en el panel no reiniciar solo (ahorro batería),
-            // salvo que haya sesión activa/expirada que haya que vigilar.
-            val info = store.getSessionInfo()
-            val needsLock = info != null && (info.isExpired || info.remainingSeconds <= 0)
-            val hasActive = info != null && !info.isExpired && info.remainingSeconds > 0
-            if (!store.serviceEnabled && !needsLock && !hasActive) {
-                Log.i(TAG, "Service disabled by admin stop — skip ($reason)")
+            // Tras "Detener" no hay end_time local → no reiniciar.
+            // Con sesión local (activa/expirada) → revivir aunque no haya red.
+            if (!store.shouldKeepAlive()) {
+                Log.i(TAG, "No local session — skip restore ($reason)")
                 SessionAlarmScheduler.cancelAll(context)
                 return
             }
-            Log.i(TAG, "Restoring client after boot ($reason)")
+            Log.i(TAG, "Restoring client after boot ($reason) — local end_time")
             store.serviceEnabled = true
             SessionAlarmScheduler.rescheduleAll(context, store)
-            ClientService.start(context)
+            ClientService.start(context, enable = true)
 
             val lock = LockController(context)
             if (lock.isLockNeeded()) {

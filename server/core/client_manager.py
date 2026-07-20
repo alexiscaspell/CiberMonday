@@ -748,7 +748,17 @@ class ClientManager:
 
             remaining = int(session.get('remaining_seconds') or 0)
             time_limit = int(session.get('time_limit') or session.get('time_limit_seconds') or remaining)
+            # Sesión expirada remota: crear entrada EXPIRADO en este servidor
             if remaining <= 0:
+                if time_limit > 0 and client_id not in self.client_sessions:
+                    now = datetime.now()
+                    self.client_sessions[client_id] = {
+                        'time_limit': time_limit,
+                        'start_time': session.get('start_time') or (now - timedelta(seconds=time_limit)).isoformat(),
+                        'end_time': session.get('end_time') or now.isoformat(),
+                        'expired_at': now.isoformat(),
+                    }
+                    self.clients_db[client_id]['is_active'] = False
                 continue
 
             local_remaining = 0

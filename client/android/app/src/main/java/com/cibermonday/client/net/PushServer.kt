@@ -72,8 +72,8 @@ class PushServer(
                 Response.Status.BAD_REQUEST
             )
         }
+        // applySessionFromPush ya pone serviceEnabled=true y persiste end_time local
         store.applySessionFromPush(tl, rem)
-        store.serviceEnabled = true
         Log.i(TAG, "Push session: ${rem}s remaining (${tl}s total)")
         onSessionChanged()
         propagateAsync()

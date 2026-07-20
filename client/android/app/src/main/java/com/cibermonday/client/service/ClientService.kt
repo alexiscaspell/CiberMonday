@@ -18,6 +18,7 @@ import com.cibermonday.client.R
 import com.cibermonday.client.lock.LockController
 import com.cibermonday.client.lock.UnlockReceiver
 import com.cibermonday.client.net.ApiClient
+import com.cibermonday.client.net.ConnectivityRestorer
 import com.cibermonday.client.net.DiscoveryListener
 import com.cibermonday.client.net.PushServer
 import com.cibermonday.client.session.SessionStore
@@ -56,7 +57,7 @@ class ClientService : Service() {
     }
 
     private val sessionListener: () -> Unit = {
-        if (store.serviceEnabled) {
+        if (store.shouldKeepAlive()) {
             SessionAlarmScheduler.rescheduleAll(this, store)
             handleSessionStateChange()
         } else {
@@ -69,9 +70,16 @@ class ClientService : Service() {
             shutdownAfterAdminStop()
             return START_NOT_STICKY
         }
-        // No reactivar serviceEnabled aquí: solo Setup/Status o push de sesión nueva
-        if (!store.serviceEnabled && !lockController.isLockNeeded()) {
-            Log.i(TAG, "Start ignored — service disabled and no lock needed")
+        // Sesión local (activa/expirada) o serviceEnabled; tras Detener no hay sesión → salir
+        if (!store.shouldKeepAlive() && !store.serviceEnabled) {
+            Log.i(TAG, "Start ignored — no local session and service disabled")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (store.hasWatchableSession()) {
+            store.serviceEnabled = true
+        } else if (!store.serviceEnabled) {
+            Log.i(TAG, "Start ignored — waiting mode disabled")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -92,12 +100,20 @@ class ClientService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        if (!store.serviceEnabled) return
-        Log.w(TAG, "Task removed — scheduling restart")
-        SessionAlarmScheduler.rescheduleAll(this, store)
-        if (store.setupComplete) {
-            start(this)
+        // 1) Tiempo asignado → reabrir FGS en background (countdown local)
+        // 2) Detener / sin tiempo → quedar cerrado
+        if (!store.shouldKeepAlive()) {
+            Log.i(TAG, "Task removed — no local session, shutting down service")
+            store.serviceEnabled = false
+            SessionAlarmScheduler.cancelAll(this)
+            stopSelf()
+            return
         }
+
+        Log.w(TAG, "Task removed — restarting (local end_time still watchable)")
+        store.serviceEnabled = true
+        SessionAlarmScheduler.rescheduleAll(this, store)
+        start(this, enable = true)
     }
 
     override fun onDestroy() {
@@ -111,9 +127,14 @@ class ClientService : Service() {
         pushServer?.stopServer()
         releaseWakeLock()
         releaseWifiLock()
-        // Solo reprogramar watchdog si el admin no apagó el cliente a propósito
-        if (store.serviceEnabled && store.setupComplete) {
-            SessionAlarmScheduler.scheduleWatchdog(this, true)
+        // Reprogramar watchdog solo si queda countdown/bloqueo local
+        if (store.shouldKeepAlive()) {
+            store.serviceEnabled = true
+            SessionAlarmScheduler.scheduleWatchdog(
+                this,
+                true,
+                expiredInterval = store.getSessionInfo()?.let { it.isExpired || it.remainingSeconds <= 0 } == true
+            )
         } else {
             SessionAlarmScheduler.cancelAll(this)
         }
@@ -229,16 +250,20 @@ class ClientService : Service() {
 
                     if (expired) {
                         val firstExpiry = lastRemaining == null || (lastRemaining ?: 0) > 0
+                        // Mantener red activa para recibir tiempo nuevo (no soltar WifiLock)
+                        try {
+                            ConnectivityRestorer.ensureOnline(this@ClientService)
+                        } catch (_: Exception) {
+                        }
+                        if (wifiLock?.isHeld != true) {
+                            acquireWifiLock()
+                        }
                         if (firstExpiry) {
-                            Log.i(TAG, "Session expired — lock screen off")
-                            // Sin notificación heads-up: despertaría la pantalla
+                            Log.i(TAG, "Session expired — restore network + lock")
                             lockController.lockWorkstation(forceSystemLock = true)
-                            releaseWifiLock()
                         } else if (lockController.isScreenInteractive()) {
                             lockController.enforceLock()
                         } else {
-                            // Pantalla apagada: bajo consumo
-                            releaseWifiLock()
                             lockController.onScreenOff()
                         }
                         lastRemaining = remaining
@@ -276,19 +301,17 @@ class ClientService : Service() {
             while (running.get()) {
                 try {
                     val clientId = store.ensureClientId()
-                    if (!registered) {
-                        val id = api.register(existingClientId = clientId)
-                        registered = id != null
-                        if (registered) {
-                            Log.i(TAG, "Registered as ${id?.take(8)}…")
-                            updateNotification()
-                        }
-                    } else {
-                        if (api.syncAllServers(clientId)) {
-                            Log.i(TAG, "Adopted session from server sync")
-                            handleSessionStateChange()
-                        }
+                    val info = store.getSessionInfo()
+                    val expired = info != null && (info.isExpired || info.remainingSeconds <= 0)
+                    if (expired) {
+                        ConnectivityRestorer.ensureOnline(this@ClientService)
                     }
+                    // Siempre syncAllServers: registra en todos + barrido LAN si el primario cayó
+                    if (api.syncAllServers(clientId)) {
+                        Log.i(TAG, "Adopted session from server sync")
+                        handleSessionStateChange()
+                    }
+                    registered = true
                 } catch (e: Exception) {
                     Log.w(TAG, "Sync error: ${e.message}")
                     registered = false
@@ -460,13 +483,12 @@ class ClientService : Service() {
             if (app != null) {
                 if (enable) {
                     app.store.serviceEnabled = true
+                } else if (app.store.hasWatchableSession()) {
+                    // Countdown/bloqueo local offline → siempre revivir (como Windows SessionData)
+                    app.store.serviceEnabled = true
                 } else if (!app.store.serviceEnabled) {
-                    val info = app.store.getSessionInfo()
-                    val needsLock = info != null && (info.isExpired || info.remainingSeconds <= 0)
-                    if (!needsLock) {
-                        Log.i(TAG, "Skip start — disabled by admin stop")
-                        return
-                    }
+                    Log.i(TAG, "Skip start — disabled by admin stop and no local session")
+                    return
                 }
             }
             val intent = Intent(context, ClientService::class.java)

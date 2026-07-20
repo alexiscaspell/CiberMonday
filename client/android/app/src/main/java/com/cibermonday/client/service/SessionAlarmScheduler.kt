@@ -19,17 +19,21 @@ object SessionAlarmScheduler {
 
     private const val REQ_EXPIRED = 4101
     private const val REQ_WATCHDOG = 4102
-    private const val WATCHDOG_INTERVAL_MS = 45_000L
-    private const val WATCHDOG_EXPIRED_MS = 180_000L
+    /** Watchdog agresivo con sesión activa (paridad con Windows ~3s, acotado por batería). */
+    private const val WATCHDOG_ACTIVE_MS = 15_000L
+    private const val WATCHDOG_EXPIRED_MS = 60_000L
     private const val TAG = "SessionAlarm"
 
     fun rescheduleAll(context: Context, store: SessionStore) {
-        if (!store.serviceEnabled) {
+        // Solo vigilar si hay end_time local (activa o expirada). Tras Detener → cancelar.
+        if (!store.shouldKeepAlive()) {
             cancelAll(context)
             return
         }
-        val expired = store.getSessionInfo()?.let { it.isExpired || it.remainingSeconds <= 0 } == true
-        scheduleWatchdog(context, store.setupComplete, expiredInterval = expired)
+        store.serviceEnabled = true
+        val info = store.getSessionInfo()
+        val expired = info != null && (info.isExpired || info.remainingSeconds <= 0)
+        scheduleWatchdog(context, true, expiredInterval = expired)
         val endMs = store.endTimeMillis()
         if (endMs == null) {
             cancelExpiry(context)
@@ -88,16 +92,12 @@ object SessionAlarmScheduler {
             am.cancel(pi)
             return
         }
-        val interval = if (expiredInterval) WATCHDOG_EXPIRED_MS else WATCHDOG_INTERVAL_MS
+        val interval = if (expiredInterval) WATCHDOG_EXPIRED_MS else WATCHDOG_ACTIVE_MS
         val triggerAt = System.currentTimeMillis() + interval
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                if (expiredInterval) {
-                    // Menos agresivo con batería cuando ya expiró
-                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
-                } else {
-                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
-                }
+                // Exacto también tras expirar: reabrir cliente y re-bloquear offline
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
             } else {
                 @Suppress("DEPRECATION")
                 am.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pi)

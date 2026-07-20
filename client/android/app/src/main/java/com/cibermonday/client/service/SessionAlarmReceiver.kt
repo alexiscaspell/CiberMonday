@@ -29,32 +29,46 @@ class SessionAlarmReceiver : BroadcastReceiver() {
             }
             if (!store.setupComplete) return
 
-            val lock = LockController(appContext)
-            // No despertar el servicio si el admin lo apagó y no hay que bloquear
-            if (!store.serviceEnabled && !lock.isLockNeeded()) {
+            // Revivir si hay end_time local (activa o expirada), aunque el proceso haya muerto
+            if (!store.shouldKeepAlive()) {
+                SessionAlarmScheduler.cancelAll(appContext)
                 return
             }
 
-            ClientService.start(appContext)
+            store.serviceEnabled = true
+            val lock = LockController(appContext)
+            if (lock.isLockNeeded()) {
+                try {
+                    com.cibermonday.client.net.ConnectivityRestorer.ensureOnline(appContext)
+                } catch (_: Exception) {
+                }
+            }
+            ClientService.start(appContext, enable = true)
             val expired = lock.isLockNeeded()
             SessionAlarmScheduler.scheduleWatchdog(appContext, true, expiredInterval = expired)
 
             when (action) {
                 SessionAlarmScheduler.ACTION_SESSION_EXPIRED -> {
-                    Log.i(TAG, "Session expiry alarm → screen off")
+                    Log.i(TAG, "Session expiry alarm → restore network + lock")
                     if (lock.isLockNeeded()) {
                         lock.lockWorkstation(forceSystemLock = true)
                     }
                 }
                 SessionAlarmScheduler.ACTION_WATCHDOG -> {
-                    if (!store.serviceEnabled && !lock.isLockNeeded()) {
+                    if (!store.shouldKeepAlive()) {
                         SessionAlarmScheduler.cancelAll(appContext)
                         return
                     }
-                    Log.d(TAG, "Watchdog tick")
+                    Log.d(TAG, "Watchdog tick — keep client alive offline")
                     SessionAlarmScheduler.rescheduleAll(appContext, store)
-                    if (lock.isLockNeeded() && lock.isScreenInteractive()) {
-                        lock.enforceLock()
+                    if (lock.isLockNeeded()) {
+                        try {
+                            com.cibermonday.client.net.ConnectivityRestorer.ensureOnline(appContext)
+                        } catch (_: Exception) {
+                        }
+                        if (lock.isScreenInteractive()) {
+                            lock.enforceLock()
+                        }
                     }
                 }
             }

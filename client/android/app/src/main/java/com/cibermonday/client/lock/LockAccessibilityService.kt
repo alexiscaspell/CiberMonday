@@ -7,7 +7,9 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import com.cibermonday.client.CiberMondayApp
+import com.cibermonday.client.net.ConnectivityRestorer
 import com.cibermonday.client.service.ClientService
 import com.cibermonday.client.service.SessionAlarmScheduler
 
@@ -19,21 +21,113 @@ class LockAccessibilityService : AccessibilityService() {
 
     private lateinit var lockController: LockController
     private var lastEnforceMs = 0L
+    private var lastNetworkRestoreMs = 0L
     private var unlockReceiver: UnlockReceiver? = null
     private val handler = Handler(Looper.getMainLooper())
     private val softWatch = object : Runnable {
         override fun run() {
             try {
-                if (::lockController.isInitialized && lockController.isLockNeeded()) {
-                    ClientService.start(this@LockAccessibilityService, enable = true)
-                    if (lockController.isScreenInteractive()) {
-                        lockController.enforceLock()
+                if (::lockController.isInitialized) {
+                    val store = try {
+                        CiberMondayApp.instance.store
+                    } catch (_: Exception) {
+                        null
+                    }
+                    // Sesión activa offline: reabrir FGS; expirada: re-bloquear
+                    if (store != null && store.shouldKeepAlive()) {
+                        ClientService.start(this@LockAccessibilityService, enable = true)
+                    }
+                    if (lockController.isLockNeeded()) {
+                        maybeRestoreNetwork()
+                        if (lockController.isScreenInteractive()) {
+                            lockController.enforceLock()
+                        }
                     }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "softWatch: ${e.message}")
             }
             handler.postDelayed(this, 3_000L)
+        }
+    }
+
+    private fun maybeRestoreNetwork() {
+        val now = System.currentTimeMillis()
+        if (now - lastNetworkRestoreMs < 15_000L) return
+        lastNetworkRestoreMs = now
+        Thread({
+            try {
+                if (ConnectivityRestorer.hasUsableNetwork(this)) return@Thread
+                ConnectivityRestorer.ensureOnline(this)
+                if (!ConnectivityRestorer.hasUsableNetwork(this) &&
+                    !ConnectivityRestorer.isWifiEnabled(this) &&
+                    lockController.isScreenInteractive()
+                ) {
+                    handler.post { tryEnableWifiViaQuickSettings() }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "maybeRestoreNetwork: ${e.message}")
+            }
+        }, "cibermonday-net-restore").start()
+    }
+
+    /**
+     * Fallback OEM: abrir ajustes rápidos y pulsar el tile Wi‑Fi si está apagado.
+     * Requiere Accesibilidad (ya activa para el bloqueo).
+     */
+    private fun tryEnableWifiViaQuickSettings() {
+        try {
+            if (ConnectivityRestorer.isWifiEnabled(this)) return
+            Log.i(TAG, "Trying Wi‑Fi via Quick Settings")
+            performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
+            handler.postDelayed({
+                try {
+                    clickWifiTileIfOff(rootInActiveWindow)
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                } catch (e: Exception) {
+                    Log.w(TAG, "QS wifi click: ${e.message}")
+                }
+            }, 900L)
+        } catch (e: Exception) {
+            Log.w(TAG, "tryEnableWifiViaQuickSettings: ${e.message}")
+        }
+    }
+
+    private fun clickWifiTileIfOff(root: AccessibilityNodeInfo?): Boolean {
+        if (root == null) return false
+        val keywords = listOf(
+            "wi-fi", "wifi", "wlan", "wireless", "internet",
+            "red", "conexión", "conexion"
+        )
+        val nodes = ArrayList<AccessibilityNodeInfo>()
+        collectClickable(root, nodes)
+        for (node in nodes) {
+            val text = buildString {
+                append(node.text ?: "")
+                append(' ')
+                append(node.contentDescription ?: "")
+                append(' ')
+                append(node.viewIdResourceName ?: "")
+            }.lowercase()
+            if (keywords.none { text.contains(it) }) continue
+            // Si parece un switch apagado / tile desactivado, pulsar
+            val looksOff = text.contains("off") || text.contains("apagad") ||
+                text.contains("desactiv") || !node.isChecked
+            if (node.isCheckable && node.isChecked) continue
+            if (looksOff || node.isCheckable) {
+                Log.i(TAG, "Clicking Wi‑Fi tile: $text")
+                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun collectClickable(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>) {
+        if (node.isClickable || node.isCheckable) out.add(node)
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectClickable(child, out)
         }
     }
 
@@ -49,14 +143,10 @@ class LockAccessibilityService : AccessibilityService() {
             } catch (_: Exception) {
                 null
             }
-            if (store != null) {
-                if (lockController.isLockNeeded()) {
-                    store.serviceEnabled = true
-                }
-                if (store.serviceEnabled || lockController.isLockNeeded()) {
-                    SessionAlarmScheduler.rescheduleAll(this, store)
-                    ClientService.start(this, enable = lockController.isLockNeeded())
-                }
+            if (store != null && store.shouldKeepAlive()) {
+                store.serviceEnabled = true
+                SessionAlarmScheduler.rescheduleAll(this, store)
+                ClientService.start(this, enable = true)
             }
             if (lockController.isLockNeeded()) {
                 // Al conectar: imponer bloqueo (pantalla off o UI si ya está encendida)

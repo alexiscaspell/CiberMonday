@@ -148,7 +148,12 @@ export function ClientCard({ client, onChanged }: Props) {
   };
 
   const onStop = async () => {
-    if (!(await confirm(`¿Detener sesión de ${client.name}?`))) return;
+    // En WebView Android, window.confirm a veces falla; no bloquear Detener
+    const ok =
+      Platform.OS === 'web'
+        ? true
+        : await confirm(`¿Detener sesión de ${client.name}?`);
+    if (!ok) return;
     setBusy(true);
     try {
       await api.stopClient(client.id);

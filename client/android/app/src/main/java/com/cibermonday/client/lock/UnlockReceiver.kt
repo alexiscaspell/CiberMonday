@@ -40,8 +40,8 @@ class UnlockReceiver : BroadcastReceiver() {
             }
             Intent.ACTION_USER_PRESENT,
             Intent.ACTION_USER_UNLOCKED -> {
-                if (!store.serviceEnabled && !lock.isLockNeeded()) return
-                ClientService.start(appContext)
+                if (!store.shouldKeepAlive()) return
+                ClientService.start(appContext, enable = true)
                 SessionAlarmScheduler.rescheduleAll(appContext, store)
                 if (!lock.isLockNeeded()) return
                 Log.i(TAG, "User unlocked while expired — lock UI ($action)")
