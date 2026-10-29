@@ -152,6 +152,68 @@ class CiberMondayClient(ABC):
         """Retorna dict con is_expired, remaining_seconds, time_limit_seconds, etc. o None."""
         ...
 
+    # Internet session (opcional; plataformas lo implementan)
+    def save_internet_session(self, time_limit_seconds, start_time_iso, end_time_iso):
+        return False
+
+    def get_internet_session(self):
+        return None
+
+    def clear_internet_session(self):
+        return None
+
+    def get_internet_session_info(self):
+        try:
+            from network_policy import internet_session_info_from_data
+            return internet_session_info_from_data(self.get_internet_session())
+        except Exception:
+            data = self.get_internet_session()
+            if not data:
+                return None
+            try:
+                end = datetime.fromisoformat(data['end_time'])
+                remaining = max(0, int((end - datetime.now()).total_seconds()))
+                return {
+                    'time_limit_seconds': data.get('time_limit_seconds', 0),
+                    'start_time': data.get('start_time'),
+                    'end_time': data['end_time'],
+                    'remaining_seconds': remaining,
+                    'is_expired': remaining == 0,
+                }
+            except Exception:
+                return None
+
+    def refresh_network_policy(self):
+        """Aplica allowlist / corte de internet según config y sesiones locales."""
+        try:
+            from network_policy import compute_policy_mode, apply_network_policy, clear_network_policy
+        except ImportError as e:
+            print(f"[NetPolicy] Módulo no disponible: {e}")
+            return
+
+        cfg = self.load_config() or {}
+        filter_on = bool(cfg.get('network_filter_enabled', False))
+        allowlist = cfg.get('allowlist') or []
+        session_info = self.get_session_info()
+        device_active = bool(
+            session_info and not session_info.get('is_expired') and session_info.get('remaining_seconds', 0) > 0
+        )
+        inet_info = self.get_internet_session_info()
+
+        if not device_active:
+            mode = 'unrestricted'
+        else:
+            mode = compute_policy_mode(filter_on, allowlist, inet_info, device_active)
+
+        server_url = cfg.get('server_url') or getattr(self, 'server_url', None)
+        try:
+            if mode == 'unrestricted':
+                clear_network_policy()
+            else:
+                apply_network_policy(mode, allowlist, server_url)
+        except Exception as e:
+            print(f"[NetPolicy] Error aplicando política: {e}")
+
     @abstractmethod
     def save_client_id(self, client_id):
         ...
@@ -442,7 +504,17 @@ class CiberMondayClient(ABC):
                 data['config'] = {
                     'sync_interval': config_data.get('sync_interval', 30),
                     'alert_thresholds': config_data.get('alert_thresholds', [600, 300, 120, 60]),
-                    'custom_name': custom_name
+                    'custom_name': custom_name,
+                    'network_filter_enabled': bool(config_data.get('network_filter_enabled', False)),
+                    'allowlist': config_data.get('allowlist') or [],
+                }
+
+            inet_info = self.get_internet_session_info()
+            inet_data = self.get_internet_session()
+            if inet_info is not None and inet_data:
+                data['internet_session'] = {
+                    'remaining_seconds': inet_info['remaining_seconds'],
+                    'time_limit_seconds': inet_data.get('time_limit_seconds', inet_info['remaining_seconds']),
                 }
 
             data['known_servers'] = self.load_servers()
@@ -547,8 +619,23 @@ class CiberMondayClient(ABC):
                         current['lock_recheck_interval'] = val
                     self.lock_recheck_interval = val
 
+            if 'network_filter_enabled' in server_config:
+                val = bool(server_config['network_filter_enabled'])
+                if val != bool(current.get('network_filter_enabled', False)):
+                    print(f"[Config] Filtro de red: {current.get('network_filter_enabled', False)} -> {val}")
+                current['network_filter_enabled'] = val
+
+            if 'allowlist' in server_config:
+                val = server_config['allowlist'] if isinstance(server_config['allowlist'], list) else []
+                current['allowlist'] = val
+                print(f"[Config] Allowlist: {len(val)} entradas")
+
             current['server_url'] = current.get('server_url', self.server_url)
             self.save_config(current)
+            try:
+                self.refresh_network_policy()
+            except Exception as e:
+                print(f"[NetPolicy] Error tras config: {e}")
         except Exception as e:
             print(f"[Config] Error al aplicar configuración del servidor: {e}")
 
@@ -570,12 +657,20 @@ class CiberMondayClient(ABC):
             server_url = available
 
         try:
-            r = requests.post(
-                f"{server_url}/api/client/{client_id}/report-session",
-                json={
+            payload = {
                     'remaining_seconds': session_info['remaining_seconds'],
                     'time_limit_seconds': session_data.get('time_limit_seconds', session_info['remaining_seconds'])
-                },
+                }
+            inet_info = self.get_internet_session_info()
+            inet_data = self.get_internet_session()
+            if inet_info is not None and inet_data:
+                payload['internet_remaining_seconds'] = inet_info['remaining_seconds']
+                payload['internet_time_limit_seconds'] = inet_data.get(
+                    'time_limit_seconds', inet_info['remaining_seconds']
+                )
+            r = requests.post(
+                f"{server_url}/api/client/{client_id}/report-session",
+                json=payload,
                 timeout=10
             )
             return r.status_code == 200
@@ -661,6 +756,23 @@ class CiberMondayClient(ABC):
                         start_local = now - timedelta(seconds=tl - rem)
                         self.save_session(tl, start_local.isoformat(), end_local.isoformat())
                         self.last_known_remaining = rem
+
+                if success_count == 0:
+                    inet = client_data.get('internet_session')
+                    if inet and inet.get('remaining_seconds', 0) >= 0 and inet.get('end_time'):
+                        tl = inet.get('time_limit_seconds') or inet.get('time_limit') or 0
+                        rem = inet.get('remaining_seconds', 0)
+                        now = datetime.now()
+                        end_local = now + timedelta(seconds=rem)
+                        start_local = now - timedelta(seconds=max(tl - rem, 0))
+                        self.save_internet_session(tl or rem, start_local.isoformat(), end_local.isoformat())
+                    elif inet is None and self.get_internet_session():
+                        # Servidor sin sesión de internet: no borrar si solo no vino el campo
+                        pass
+                    try:
+                        self.refresh_network_policy()
+                    except Exception:
+                        pass
 
                 if known_servers:
                     try:
@@ -894,6 +1006,14 @@ class CiberMondayClient(ABC):
                         print("[EXPIRACION] TIEMPO AGOTADO!", flush=True)
                         print("[EXPIRACION] Bloqueando PC.", flush=True)
                         print("=" * 50, flush=True)
+                        try:
+                            self.clear_internet_session()
+                        except Exception:
+                            pass
+                        try:
+                            self.refresh_network_policy()
+                        except Exception:
+                            pass
                         result = self.lock_workstation()
                         if not result:
                             print("[EXPIRACION] FALLO: No se pudo bloquear", flush=True)
@@ -905,6 +1025,12 @@ class CiberMondayClient(ABC):
                     last_remaining = remaining
                     time.sleep(self.lock_recheck_interval)
                     continue
+
+                # Refrescar política de red (internet timer / allowlist)
+                try:
+                    self.refresh_network_policy()
+                except Exception:
+                    pass
 
                 self.check_and_show_alerts(remaining, last_remaining)
 
@@ -1231,6 +1357,8 @@ def _make_diagnostic_handler(client):
                 self._handle_push_config()
             elif path == '/api/push/stop':
                 self._handle_push_stop()
+            elif path == '/api/push/internet':
+                self._handle_push_internet()
             else:
                 self._json({'error': 'Not found'}, 404)
 
@@ -1295,10 +1423,59 @@ def _make_diagnostic_handler(client):
         def _handle_push_stop(self):
             try:
                 client.clear_session()
+                try:
+                    client.clear_internet_session()
+                except Exception:
+                    pass
+                try:
+                    client.refresh_network_policy()
+                except Exception:
+                    pass
                 print("[Push] Sesión detenida por el servidor")
                 self._trigger_propagation()
                 self._json({'success': True, 'message': 'Sesión detenida'})
             except Exception as e:
+                self._json({'success': False, 'message': str(e)}, 500)
+
+        def _handle_push_internet(self):
+            try:
+                data = self._read_body()
+                if not data:
+                    self._json({'success': False, 'message': 'No data'}, 400)
+                    return
+                if data.get('cleared'):
+                    client.clear_internet_session()
+                    print("[Push] Sesión de internet detenida")
+                    try:
+                        client.refresh_network_policy()
+                    except Exception:
+                        pass
+                    self._trigger_propagation()
+                    self._json({'success': True, 'message': 'Internet detenido'})
+                    return
+
+                tl = data.get('time_limit_seconds', 0)
+                rem = data.get('remaining_seconds', 0)
+                if tl is None:
+                    self._json({'success': False, 'message': 'Datos incompletos'}, 400)
+                    return
+                now = datetime.now()
+                rem = max(0, int(rem))
+                tl = int(tl) if tl else rem
+                end_local = now + timedelta(seconds=rem)
+                start_local = now - timedelta(seconds=max(tl - rem, 0))
+                client.save_internet_session(tl, start_local.isoformat(), end_local.isoformat())
+                try:
+                    client.refresh_network_policy()
+                except Exception:
+                    pass
+                print(f"[Push] Internet: {rem}s restantes ({tl}s total)")
+                self._trigger_propagation()
+                self._json({'success': True, 'message': f'Internet actualizado: {rem}s'})
+            except json.JSONDecodeError:
+                self._json({'success': False, 'message': 'Invalid JSON'}, 400)
+            except Exception as e:
+                print(f"[Push] Error internet: {e}")
                 self._json({'success': False, 'message': str(e)}, 500)
 
         def _trigger_propagation(self):

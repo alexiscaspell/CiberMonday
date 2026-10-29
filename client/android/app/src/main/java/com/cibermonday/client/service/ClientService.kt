@@ -20,6 +20,7 @@ import com.cibermonday.client.lock.UnlockReceiver
 import com.cibermonday.client.net.ApiClient
 import com.cibermonday.client.net.ConnectivityRestorer
 import com.cibermonday.client.net.DiscoveryListener
+import com.cibermonday.client.net.NetworkFilterVpnService
 import com.cibermonday.client.net.PushServer
 import com.cibermonday.client.session.SessionStore
 import com.cibermonday.client.ui.StatusActivity
@@ -252,6 +253,14 @@ class ClientService : Service() {
                         val firstExpiry = lastRemaining == null || (lastRemaining ?: 0) > 0
                         // Mantener red activa para recibir tiempo nuevo (no soltar WifiLock)
                         try {
+                            store.clearInternetSession()
+                        } catch (_: Exception) {
+                        }
+                        try {
+                            NetworkFilterVpnService.syncWithPolicy(this@ClientService)
+                        } catch (_: Exception) {
+                        }
+                        try {
                             ConnectivityRestorer.ensureOnline(this@ClientService)
                         } catch (_: Exception) {
                         }
@@ -275,6 +284,12 @@ class ClientService : Service() {
                     // Sesión activa: asegurar Wi‑Fi para sync
                     if (wifiLock?.isHeld != true) {
                         acquireWifiLock()
+                    }
+
+                    // Política de red (allowlist / internet timer)
+                    try {
+                        NetworkFilterVpnService.syncWithPolicy(this@ClientService)
+                    } catch (_: Exception) {
                     }
 
                     // Sesión válida (p.ej. push o pull): quitar bloqueo
@@ -340,12 +355,24 @@ class ClientService : Service() {
             lastRemaining = null
             alertsShown.clear()
             lockController.dismissLockIfNeeded()
+            try {
+                store.clearInternetSession()
+            } catch (_: Exception) {
+            }
         } else if (info.isExpired || info.remainingSeconds <= 0) {
+            try {
+                store.clearInternetSession()
+            } catch (_: Exception) {
+            }
             lockController.lockWorkstation(forceSystemLock = true)
         } else {
             resetAlerts(info.remainingSeconds)
             lastRemaining = info.remainingSeconds
             lockController.dismissLockIfNeeded()
+        }
+        try {
+            NetworkFilterVpnService.syncWithPolicy(this)
+        } catch (_: Exception) {
         }
         updateNotification()
     }

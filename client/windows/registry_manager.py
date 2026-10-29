@@ -12,6 +12,7 @@ import os
 # Clave del registro donde se almacena la información
 REGISTRY_KEY_PATH = r"SOFTWARE\CiberMonday"
 REGISTRY_VALUE_SESSION = "SessionData"
+REGISTRY_VALUE_INTERNET_SESSION = "InternetSessionData"
 REGISTRY_VALUE_CLIENT_ID = "ClientID"
 REGISTRY_VALUE_CONFIG = "Config"
 REGISTRY_VALUE_SERVERS = "KnownServers"
@@ -107,6 +108,62 @@ def clear_session_from_registry():
         return True
     except Exception as e:
         print(f"Error al limpiar registro: {e}")
+        return False
+
+
+def save_internet_session_to_registry(time_limit_seconds, start_time_iso, end_time_iso):
+    """Guarda la sesión de internet en el registro."""
+    try:
+        key = get_registry_key(create=True)
+        if key is None:
+            return False
+        session_data = {
+            'time_limit_seconds': time_limit_seconds,
+            'start_time': start_time_iso,
+            'end_time': end_time_iso,
+        }
+        winreg.SetValueEx(
+            key, REGISTRY_VALUE_INTERNET_SESSION, 0, winreg.REG_SZ, json.dumps(session_data)
+        )
+        winreg.CloseKey(key)
+        return True
+    except Exception as e:
+        print(f"Error al guardar internet session: {e}")
+        return False
+
+
+def get_internet_session_from_registry():
+    """Obtiene la sesión de internet del registro o None."""
+    try:
+        key = get_registry_key(create=False)
+        if key is None:
+            return None
+        try:
+            json_data, _ = winreg.QueryValueEx(key, REGISTRY_VALUE_INTERNET_SESSION)
+            winreg.CloseKey(key)
+            return json.loads(json_data)
+        except FileNotFoundError:
+            winreg.CloseKey(key)
+            return None
+    except Exception as e:
+        print(f"Error al leer internet session: {e}")
+        return None
+
+
+def clear_internet_session_from_registry():
+    """Elimina la sesión de internet del registro."""
+    try:
+        key = get_registry_key(create=False)
+        if key is None:
+            return False
+        try:
+            winreg.DeleteValue(key, REGISTRY_VALUE_INTERNET_SESSION)
+        except FileNotFoundError:
+            pass
+        winreg.CloseKey(key)
+        return True
+    except Exception as e:
+        print(f"Error al limpiar internet session: {e}")
         return False
 
 def save_client_id_to_registry(client_id):

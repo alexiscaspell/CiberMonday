@@ -83,9 +83,16 @@ export function ClientCard({ client, onChanged }: Props) {
   const session = client.current_session ?? null;
   const hasSession = session != null;
   const expired = hasSession && (session?.remaining_seconds ?? 0) <= 0;
+  const internetSession = client.internet_session ?? null;
+  const hasInternetSession = internetSession != null;
+  const internetExpired =
+    hasInternetSession && (internetSession?.remaining_seconds ?? 0) <= 0;
+  const deviceSessionActive = hasSession && !expired;
 
   const [time, setTime] = useState('60');
   const [unit, setUnit] = useState<TimeUnit>('minutes');
+  const [internetTime, setInternetTime] = useState('30');
+  const [internetUnit, setInternetUnit] = useState<TimeUnit>('minutes');
   const [showConfig, setShowConfig] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(client.name);
@@ -104,6 +111,12 @@ export function ClientCard({ client, onChanged }: Props) {
   );
   const [lockRecheck, setLockRecheck] = useState(
     String(client.config?.lock_recheck_interval ?? 1),
+  );
+  const [networkFilter, setNetworkFilter] = useState(
+    !!client.config?.network_filter_enabled,
+  );
+  const [allowlistText, setAllowlistText] = useState(
+    (client.config?.allowlist ?? []).join('\n'),
   );
   const [configStatus, setConfigStatus] = useState('');
 
@@ -160,6 +173,40 @@ export function ClientCard({ client, onChanged }: Props) {
       onChanged();
     } catch (e: any) {
       notify(e.message || 'Error al detener');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onSetInternetTime = async () => {
+    if (!deviceSessionActive) {
+      notify('Primero establecê una sesión de dispositivo activa');
+      return;
+    }
+    const value = parseInt(internetTime, 10);
+    if (!value || value < 1) {
+      notify('Ingresá un tiempo de internet válido');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api.setClientInternetTime(client.id, value, internetUnit);
+      if (!res.success) notify(res.message || 'Error');
+      onChanged();
+    } catch (e: any) {
+      notify(e.message || 'Error al establecer tiempo de internet');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onStopInternet = async () => {
+    setBusy(true);
+    try {
+      await api.stopClientInternet(client.id);
+      onChanged();
+    } catch (e: any) {
+      notify(e.message || 'Error al detener internet');
     } finally {
       setBusy(false);
     }
@@ -224,6 +271,11 @@ export function ClientCard({ client, onChanged }: Props) {
       return;
     }
 
+    const allowlist = allowlistText
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
     setBusy(true);
     try {
       const res = await api.setClientConfig(client.id, {
@@ -231,11 +283,19 @@ export function ClientCard({ client, onChanged }: Props) {
         alert_thresholds: alertThresholds,
         max_server_timeouts: maxT,
         lock_recheck_interval: lock,
+        network_filter_enabled: networkFilter,
+        allowlist,
       });
       if (res.success) {
         setConfigStatus('Guardado');
         if (res.config?.alert_thresholds) {
           setAlerts(res.config.alert_thresholds.map((s) => s / 60).join(', '));
+        }
+        if (res.config?.allowlist) {
+          setAllowlistText(res.config.allowlist.join('\n'));
+        }
+        if (typeof res.config?.network_filter_enabled === 'boolean') {
+          setNetworkFilter(res.config.network_filter_enabled);
         }
         setTimeout(() => setConfigStatus(''), 2500);
       } else {
@@ -329,6 +389,15 @@ export function ClientCard({ client, onChanged }: Props) {
         </View>
       )}
 
+      {hasInternetSession && internetSession && (
+        <View style={styles.session}>
+          <Text style={styles.sessionLabel}>Internet</Text>
+          <Text style={[styles.remainingInternet, internetExpired && styles.expired]}>
+            {formatTime(internetSession.remaining_seconds)}
+          </Text>
+        </View>
+      )}
+
       <View style={styles.timeRow}>
         <TextInput
           style={[styles.input, { flex: 1 }]}
@@ -352,6 +421,42 @@ export function ClientCard({ client, onChanged }: Props) {
           variant="secondary"
           onPress={onStop}
           disabled={busy}
+          style={{ flex: 1 }}
+        />
+      </View>
+
+      <Text style={[styles.fieldLabel, { marginTop: spacing.md }]}>
+        Tiempo de internet (opcional)
+      </Text>
+      <View style={styles.timeRow}>
+        <TextInput
+          style={[styles.input, { flex: 1 }]}
+          keyboardType="number-pad"
+          value={internetTime}
+          onChangeText={setInternetTime}
+          placeholder="Internet"
+          placeholderTextColor={colors.muted}
+          editable={deviceSessionActive}
+        />
+        <UnitDropdown
+          unit={internetUnit}
+          onChange={setInternetUnit}
+          options={unitOptions}
+        />
+      </View>
+      <View style={styles.primaryActions}>
+        <Button
+          title="Establecer internet"
+          onPress={onSetInternetTime}
+          loading={busy}
+          disabled={!deviceSessionActive}
+          style={{ flex: 1 }}
+        />
+        <Button
+          title="Detener internet"
+          variant="secondary"
+          onPress={onStopInternet}
+          disabled={busy || !hasInternetSession}
           style={{ flex: 1 }}
         />
       </View>
@@ -397,6 +502,28 @@ export function ClientCard({ client, onChanged }: Props) {
             value={lockRecheck}
             onChange={setLockRecheck}
             keyboard="number-pad"
+          />
+          <View style={styles.toggleRow}>
+            <Text style={styles.fieldLabel}>Filtrar internet (allowlist)</Text>
+            <Button
+              title={networkFilter ? 'Activado' : 'Desactivado'}
+              compact
+              variant={networkFilter ? 'primary' : 'ghost'}
+              onPress={() => setNetworkFilter((v) => !v)}
+            />
+          </View>
+          <Text style={styles.fieldLabel}>
+            Allowlist (dominios, IPs o CIDR; uno por línea)
+          </Text>
+          <TextInput
+            style={[styles.input, styles.allowlistInput]}
+            value={allowlistText}
+            onChangeText={setAllowlistText}
+            multiline
+            numberOfLines={5}
+            placeholder={'ejemplo.com\n*.google.com\n1.2.3.4\n10.0.0.0/8'}
+            placeholderTextColor={colors.muted}
+            editable={networkFilter}
           />
           <Button title="Guardar configuración" onPress={onSaveConfig} loading={busy} />
           {configStatus ? (
@@ -498,7 +625,30 @@ const styles = StyleSheet.create({
     color: colors.primary,
     marginVertical: spacing.xs,
   },
+  remainingInternet: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: colors.text,
+    marginVertical: spacing.xs,
+  },
   expired: { color: colors.danger },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  allowlistInput: {
+    minHeight: 110,
+    textAlignVertical: 'top',
+    marginBottom: spacing.md,
+    fontFamily: Platform.select({
+      ios: 'Menlo',
+      android: 'monospace',
+      default: 'monospace',
+    }),
+  },
   timeRow: {
     flexDirection: 'row',
     gap: spacing.sm,

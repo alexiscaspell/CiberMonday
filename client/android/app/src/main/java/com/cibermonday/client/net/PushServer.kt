@@ -46,6 +46,7 @@ class PushServer(
                 session.method == Method.POST && path == "/api/push/session" -> handlePushSession(session)
                 session.method == Method.POST && path == "/api/push/config" -> handlePushConfig(session)
                 session.method == Method.POST && path == "/api/push/stop" -> handlePushStop()
+                session.method == Method.POST && path == "/api/push/internet" -> handlePushInternet(session)
                 session.method == Method.GET && path == "/" -> newFixedLengthResponse(
                     Response.Status.OK,
                     "text/plain",
@@ -95,11 +96,39 @@ class PushServer(
     private fun handlePushStop(): Response {
         store.serviceEnabled = false
         store.clearSession()
+        store.clearInternetSession()
         Log.i(TAG, "Push stop: session cleared — shutting down client")
         onSessionChanged()
         onStoppedByAdmin?.invoke()
         // No sync/reportZero: renovaría last_seen y el panel seguiría en "conectado"
         return json(JSONObject().put("success", true).put("message", "Sesión detenida"))
+    }
+
+    private fun handlePushInternet(session: IHTTPSession): Response {
+        val data = readJsonBody(session) ?: return json(
+            JSONObject().put("success", false).put("message", "No data"),
+            Response.Status.BAD_REQUEST
+        )
+        if (data.optBoolean("cleared", false)) {
+            store.clearInternetSession()
+            Log.i(TAG, "Push internet cleared")
+            onSessionChanged()
+            propagateAsync()
+            return json(JSONObject().put("success", true).put("message", "Internet detenido"))
+        }
+        val tl = data.optInt("time_limit_seconds", 0)
+        val rem = data.optInt("remaining_seconds", 0).coerceAtLeast(0)
+        if (tl < 0) {
+            return json(
+                JSONObject().put("success", false).put("message", "Datos incompletos"),
+                Response.Status.BAD_REQUEST
+            )
+        }
+        store.applyInternetFromPush(if (tl > 0) tl else rem, rem)
+        Log.i(TAG, "Push internet: ${rem}s remaining")
+        onSessionChanged()
+        propagateAsync()
+        return json(JSONObject().put("success", true).put("message", "Internet actualizado: ${rem}s"))
     }
 
     private fun propagateAsync() {

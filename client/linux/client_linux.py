@@ -257,6 +257,31 @@ class LinuxClient(CiberMondayClient):
                 os.remove(path)
         except Exception:
             pass
+        path = self._json_path('internet_session.json')
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+    def save_internet_session(self, time_limit_seconds, start_time_iso, end_time_iso):
+        data = {
+            'time_limit_seconds': time_limit_seconds,
+            'start_time': start_time_iso,
+            'end_time': end_time_iso,
+        }
+        return self._write_json('internet_session.json', data)
+
+    def get_internet_session(self):
+        return self._read_json('internet_session.json')
+
+    def clear_internet_session(self):
+        path = self._json_path('internet_session.json')
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
 
     def get_remaining_seconds(self):
         data = self.get_session()

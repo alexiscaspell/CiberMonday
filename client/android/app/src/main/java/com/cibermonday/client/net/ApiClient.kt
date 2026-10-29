@@ -37,12 +37,22 @@ class ApiClient(private val store: SessionStore) {
                         .put("time_limit_seconds", info.timeLimitSeconds)
                 )
             }
+            store.getInternetSessionInfo()?.let { inet ->
+                put(
+                    "internet_session",
+                    JSONObject()
+                        .put("remaining_seconds", inet.remainingSeconds.coerceAtLeast(0))
+                        .put("time_limit_seconds", inet.timeLimitSeconds)
+                )
+            }
             put(
                 "config",
                 JSONObject()
                     .put("sync_interval", store.syncInterval)
                     .put("alert_thresholds", JSONArray(store.getAlertThresholds()))
                     .put("custom_name", store.customName ?: JSONObject.NULL)
+                    .put("network_filter_enabled", store.networkFilterEnabled)
+                    .put("allowlist", JSONArray(store.getAllowlist()))
             )
             put("known_servers", serversToJson(store.loadServers()))
         }
@@ -76,6 +86,10 @@ class ApiClient(private val store: SessionStore) {
         val body = JSONObject()
             .put("remaining_seconds", info.remainingSeconds)
             .put("time_limit_seconds", session.timeLimitSeconds)
+        store.getInternetSessionInfo()?.let { inet ->
+            body.put("internet_remaining_seconds", inet.remainingSeconds)
+            body.put("internet_time_limit_seconds", inet.timeLimitSeconds)
+        }
         val response = postJson("$target/api/client/$clientId/report-session", body) ?: return false
         if (response.code == 200) {
             store.markServerOk(target)
@@ -120,7 +134,10 @@ class ApiClient(private val store: SessionStore) {
             if (code != 200 || text.isNullOrBlank()) return false
             store.markServerOk(serverUrl)
             val json = JSONObject(text)
-            adoptSessionFromJson(json.optJSONObject("session"))
+            val client = json.optJSONObject("client") ?: json
+            client.optJSONObject("config")?.let { store.applyServerConfig(jsonObjectToMap(it)) }
+            adoptInternetFromJson(client.optJSONObject("internet_session"))
+            adoptSessionFromJson(client.optJSONObject("session") ?: json.optJSONObject("session"))
         } catch (_: Exception) {
             false
         }
@@ -251,6 +268,19 @@ class ApiClient(private val store: SessionStore) {
         }
         store.applySessionFromPush(timeLimit, remaining)
         return true
+    }
+
+    private fun adoptInternetFromJson(internet: JSONObject?) {
+        if (internet == null) {
+            return
+        }
+        val remaining = internet.optInt("remaining_seconds", -1)
+        if (remaining < 0) return
+        val timeLimit = internet.optInt(
+            "time_limit_seconds",
+            internet.optInt("time_limit", remaining)
+        )
+        store.applyInternetFromPush(timeLimit.coerceAtLeast(remaining), remaining)
     }
 
     private data class HttpResponse(val code: Int, val json: JSONObject?)

@@ -97,6 +97,18 @@ class SessionStore(context: Context) {
             prefs.edit().putBoolean(KEY_SETUP_COMPLETE, value).apply()
         }
 
+    var vpnConsentNeeded: Boolean
+        get() = prefs.getBoolean(KEY_VPN_CONSENT_NEEDED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_VPN_CONSENT_NEEDED, value).apply()
+        }
+
+    var vpnConsentGranted: Boolean
+        get() = prefs.getBoolean(KEY_VPN_CONSENT_GRANTED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_VPN_CONSENT_GRANTED, value).apply()
+        }
+
     /**
      * Si es false, el servicio no debe reiniciarse solo (admin detuvo la sesión).
      * Se vuelve a true al abrir la app o al recibir tiempo nuevo.
@@ -151,8 +163,100 @@ class SessionStore(context: Context) {
             .remove(KEY_TIME_LIMIT)
             .remove(KEY_START_TIME)
             .remove(KEY_END_TIME)
+            .remove(KEY_INET_TIME_LIMIT)
+            .remove(KEY_INET_START_TIME)
+            .remove(KEY_INET_END_TIME)
             .commit()
         notifyChanged()
+    }
+
+    var networkFilterEnabled: Boolean
+        get() = prefs.getBoolean(KEY_NETWORK_FILTER, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_NETWORK_FILTER, value).apply()
+        }
+
+    fun getAllowlist(): List<String> {
+        val raw = prefs.getString(KEY_ALLOWLIST, null) ?: return emptyList()
+        return try {
+            JSONArray(raw).let { arr ->
+                (0 until arr.length()).mapNotNull { i ->
+                    arr.optString(i)?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun setAllowlist(entries: List<String>) {
+        val arr = JSONArray()
+        entries.map { it.trim().lowercase() }.filter { it.isNotBlank() }.distinct().forEach { arr.put(it) }
+        prefs.edit().putString(KEY_ALLOWLIST, arr.toString()).apply()
+    }
+
+    fun saveInternetSession(timeLimitSeconds: Int, startTimeIso: String, endTimeIso: String) {
+        prefs.edit()
+            .putInt(KEY_INET_TIME_LIMIT, timeLimitSeconds)
+            .putString(KEY_INET_START_TIME, startTimeIso)
+            .putString(KEY_INET_END_TIME, endTimeIso)
+            .commit()
+        notifyChanged()
+    }
+
+    fun clearInternetSession() {
+        prefs.edit()
+            .remove(KEY_INET_TIME_LIMIT)
+            .remove(KEY_INET_START_TIME)
+            .remove(KEY_INET_END_TIME)
+            .commit()
+        notifyChanged()
+    }
+
+    fun getInternetSession(): SessionData? {
+        val limit = prefs.getInt(KEY_INET_TIME_LIMIT, -1)
+        val start = prefs.getString(KEY_INET_START_TIME, null)
+        val end = prefs.getString(KEY_INET_END_TIME, null)
+        if (limit < 0 || start.isNullOrBlank() || end.isNullOrBlank()) return null
+        return SessionData(limit, start, end)
+    }
+
+    fun getInternetSessionInfo(): SessionInfo? {
+        val session = getInternetSession() ?: return null
+        return try {
+            val endMs = Instant.parse(normalizeIso(session.endTimeIso)).toEpochMilli()
+            val remaining = ((endMs - System.currentTimeMillis()) / 1000L).toInt().coerceAtLeast(0)
+            SessionInfo(
+                remainingSeconds = remaining,
+                isExpired = remaining <= 0,
+                timeLimitSeconds = session.timeLimitSeconds
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun applyInternetFromPush(timeLimitSeconds: Int, remainingSeconds: Int) {
+        val now = Instant.now()
+        val rem = remainingSeconds.coerceAtLeast(0)
+        val end = now.plusSeconds(rem.toLong())
+        val start = now.minusSeconds((timeLimitSeconds - rem).toLong().coerceAtLeast(0))
+        saveInternetSession(timeLimitSeconds.coerceAtLeast(rem), start.toString(), end.toString())
+    }
+
+    /**
+     * unrestricted | allowlist | always_allowed_only
+     */
+    fun computeNetworkPolicyMode(): String {
+        val info = getSessionInfo()
+        val deviceActive = info != null && !info.isExpired && info.remainingSeconds > 0
+        if (!deviceActive) return MODE_UNRESTRICTED
+
+        val inet = getInternetSessionInfo()
+        if (inet != null && inet.remainingSeconds <= 0) return MODE_ALWAYS_ALLOWED
+
+        if (networkFilterEnabled) return MODE_ALLOWLIST
+        return MODE_UNRESTRICTED
     }
 
     fun getSession(): SessionData? {
@@ -296,6 +400,9 @@ class SessionStore(context: Context) {
         (config["alert_thresholds"] as? List<*>)?.mapNotNull { (it as? Number)?.toInt() }?.let {
             if (it.isNotEmpty()) setAlertThresholds(it)
         }
+        (config["network_filter_enabled"] as? Boolean)?.let { networkFilterEnabled = it }
+        @Suppress("UNCHECKED_CAST")
+        (config["allowlist"] as? List<*>)?.mapNotNull { it as? String }?.let { setAllowlist(it) }
         notifyChanged()
     }
 
@@ -325,9 +432,20 @@ class SessionStore(context: Context) {
         private const val KEY_ALERT_THRESHOLDS = "alert_thresholds"
         private const val KEY_SETUP_COMPLETE = "setup_complete"
         private const val KEY_SERVICE_ENABLED = "service_enabled"
+        private const val KEY_VPN_CONSENT_NEEDED = "vpn_consent_needed"
+        private const val KEY_VPN_CONSENT_GRANTED = "vpn_consent_granted"
         private const val KEY_TIME_LIMIT = "time_limit_seconds"
         private const val KEY_START_TIME = "start_time"
         private const val KEY_END_TIME = "end_time"
         private const val KEY_SERVERS = "known_servers"
+        private const val KEY_NETWORK_FILTER = "network_filter_enabled"
+        private const val KEY_ALLOWLIST = "allowlist"
+        private const val KEY_INET_TIME_LIMIT = "internet_time_limit_seconds"
+        private const val KEY_INET_START_TIME = "internet_start_time"
+        private const val KEY_INET_END_TIME = "internet_end_time"
+
+        const val MODE_UNRESTRICTED = "unrestricted"
+        const val MODE_ALLOWLIST = "allowlist"
+        const val MODE_ALWAYS_ALLOWED = "always_allowed_only"
     }
 }

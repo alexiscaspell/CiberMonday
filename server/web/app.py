@@ -99,7 +99,8 @@ def register_client():
         config=data.get('config'),
         known_servers=data.get('known_servers', []),
         client_ip=client_ip,
-        diagnostic_port=diagnostic_port
+        diagnostic_port=diagnostic_port,
+        internet_session_data=data.get('internet_session')
     )
     
     # Actualizar info de contacto del cliente (puede haber cambiado de IP)
@@ -182,6 +183,8 @@ def set_client_config(client_id):
         custom_name=data.get('custom_name'),
         max_server_timeouts=data.get('max_server_timeouts'),
         lock_recheck_interval=data.get('lock_recheck_interval'),
+        network_filter_enabled=data.get('network_filter_enabled'),
+        allowlist=data.get('allowlist'),
         notify_client=not from_client
     )
     
@@ -194,6 +197,50 @@ def report_client_session(client_id):
     """Permite al cliente reportar su sesión activa al servidor."""
     data = request.json
     result = manager.report_session(
+        client_id,
+        data.get('remaining_seconds', 0),
+        data.get('time_limit_seconds')
+    )
+    # Opcionalmente reportar internet en el mismo request
+    if result.get('success') and 'internet_remaining_seconds' in (data or {}):
+        inet = manager.report_internet_session(
+            client_id,
+            data.get('internet_remaining_seconds', 0),
+            data.get('internet_time_limit_seconds')
+        )
+        result['internet_session'] = inet.get('internet_session')
+    status = 200 if result['success'] else (404 if 'no encontrado' in result['message'] else 400)
+    return jsonify(result), status
+
+
+@app.route('/api/client/<client_id>/internet-time', methods=['POST'])
+@admin_only
+def set_client_internet_time(client_id):
+    """Establece el tiempo de internet para un cliente."""
+    data = request.json or {}
+    result = manager.set_client_internet_time(
+        client_id,
+        data.get('time', 0),
+        data.get('unit', 'minutes')
+    )
+    status = 200 if result['success'] else (404 if 'no encontrado' in result['message'] else 400)
+    return jsonify(result), status
+
+
+@app.route('/api/client/<client_id>/stop-internet', methods=['POST'])
+@admin_only
+def stop_client_internet_session(client_id):
+    """Detiene la sesión de internet de un cliente."""
+    result = manager.stop_client_internet_session(client_id)
+    status = 200 if result['success'] else 404
+    return jsonify(result), status
+
+
+@app.route('/api/client/<client_id>/report-internet', methods=['POST'])
+def report_client_internet_session(client_id):
+    """Permite al cliente reportar su sesión de internet."""
+    data = request.json or {}
+    result = manager.report_internet_session(
         client_id,
         data.get('remaining_seconds', 0),
         data.get('time_limit_seconds')

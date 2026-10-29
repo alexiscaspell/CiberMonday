@@ -28,6 +28,8 @@ class ClientManager:
         'custom_name': None,
         'max_server_timeouts': 10,
         'lock_recheck_interval': 1,
+        'network_filter_enabled': False,
+        'allowlist': [],
     }
     
     # Segundos durante los cuales un reporte del cliente es ignorado
@@ -41,6 +43,7 @@ class ClientManager:
     def __init__(self, server_port=5000):
         self.clients_db = {}
         self.client_sessions = {}
+        self.internet_sessions = {}
         self.client_configs = {}
         self.servers_db = {}
         self.server_config = {
@@ -51,6 +54,50 @@ class ClientManager:
         # Trackea cambios de admin pendientes para evitar que el sync del
         # cliente sobreescriba antes de que el push llegue
         self._pending_admin_changes = {}  # client_id -> datetime
+
+    @staticmethod
+    def _normalize_allowlist(entries):
+        """Normaliza y valida entradas de allowlist (dominios, IPs, CIDRs)."""
+        if entries is None:
+            return None
+        if not isinstance(entries, list):
+            raise ValueError('allowlist debe ser una lista de strings')
+        normalized = []
+        seen = set()
+        for raw in entries:
+            if raw is None:
+                continue
+            item = str(raw).strip().lower()
+            if not item:
+                continue
+            if item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        return normalized
+
+    def _internet_session_info(self, client_id):
+        """Info de sesión de internet para respuestas API, o None."""
+        if client_id not in self.internet_sessions:
+            return None
+        session = self.internet_sessions[client_id]
+        end_time = datetime.fromisoformat(session['end_time'])
+        remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
+        return {
+            'time_limit': session['time_limit'],
+            'time_limit_seconds': session['time_limit'],
+            'start_time': session['start_time'],
+            'end_time': session['end_time'],
+            'remaining_seconds': remaining_seconds,
+            'is_expired': remaining_seconds == 0,
+        }
+
+    def _clear_internet_session(self, client_id, notify=False):
+        """Elimina la sesión de internet del cliente."""
+        if client_id in self.internet_sessions:
+            del self.internet_sessions[client_id]
+        if notify:
+            self._notify_client(client_id, 'internet', {'cleared': True})
     
     @property
     def local_server_url(self):
@@ -74,7 +121,8 @@ class ClientManager:
     
     def register_client(self, name='Cliente Sin Nombre', client_id=None, 
                         session_data=None, config=None, known_servers=None,
-                        client_ip=None, diagnostic_port=None):
+                        client_ip=None, diagnostic_port=None,
+                        internet_session_data=None):
         """
         Registra un nuevo cliente o re-registra uno existente.
         
@@ -86,6 +134,7 @@ class ClientManager:
             known_servers: Lista de servidores conocidos por el cliente (opcional)
             client_ip: IP del cliente para notificaciones push (opcional)
             diagnostic_port: Puerto de diagnóstico del cliente (opcional)
+            internet_session_data: Sesión de internet a restaurar (opcional)
             
         Returns:
             dict con success, client_id, message, session_restored, config, known_servers
@@ -113,16 +162,30 @@ class ClientManager:
         
         # Configuración
         if config:
+            allowlist = config.get('allowlist', self.DEFAULT_CONFIG['allowlist'])
+            try:
+                allowlist = self._normalize_allowlist(allowlist) or []
+            except ValueError:
+                allowlist = []
             self.client_configs[client_id] = {
                 'sync_interval': config.get('sync_interval', self.DEFAULT_CONFIG['sync_interval']),
                 'alert_thresholds': config.get('alert_thresholds', self.DEFAULT_CONFIG['alert_thresholds']),
                 'custom_name': config.get('custom_name'),
                 'max_server_timeouts': config.get('max_server_timeouts', self.DEFAULT_CONFIG['max_server_timeouts']),
+                'lock_recheck_interval': config.get(
+                    'lock_recheck_interval', self.DEFAULT_CONFIG['lock_recheck_interval']
+                ),
+                'network_filter_enabled': bool(
+                    config.get('network_filter_enabled', self.DEFAULT_CONFIG['network_filter_enabled'])
+                ),
+                'allowlist': allowlist,
             }
             if self.client_configs[client_id]['custom_name']:
                 self.clients_db[client_id]['name'] = self.client_configs[client_id]['custom_name']
         elif client_id not in self.client_configs:
-            self.client_configs[client_id] = self.DEFAULT_CONFIG.copy()
+            cfg = self.DEFAULT_CONFIG.copy()
+            cfg['allowlist'] = list(self.DEFAULT_CONFIG['allowlist'])
+            self.client_configs[client_id] = cfg
         
         # Restaurar sesión si se proporcionó (activa o expirada)
         session_restored = False
@@ -153,6 +216,22 @@ class ClientManager:
                     'expired_at': now.isoformat()
                 }
                 self.clients_db[client_id]['is_active'] = False
+
+        # Restaurar sesión de internet (solo con sesión de dispositivo activa)
+        inet = internet_session_data
+        if inet is None and session_data:
+            inet = session_data.get('internet')
+        if inet and client_id in self.client_sessions and self.clients_db[client_id].get('is_active'):
+            inet_remaining = inet.get('remaining_seconds', 0)
+            inet_limit = inet.get('time_limit_seconds', inet_remaining)
+            if inet_remaining > 0 and inet_limit > 0:
+                inet_end = datetime.now() + timedelta(seconds=inet_remaining)
+                inet_start = inet_end - timedelta(seconds=inet_limit)
+                self.internet_sessions[client_id] = {
+                    'time_limit': inet_limit,
+                    'start_time': inet_start.isoformat(),
+                    'end_time': inet_end.isoformat()
+                }
         
         # Registrar servidores conocidos del cliente
         if known_servers:
@@ -218,9 +297,10 @@ class ClientManager:
                 end_time = datetime.fromisoformat(session['end_time'])
                 remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
                 
-                # Si la sesión expiró, limpiarla
+                # Si la sesión expiró, marcar inactiva y limpiar internet
                 if remaining_seconds == 0:
                     self.clients_db[client_id]['is_active'] = False
+                    self._clear_internet_session(client_id)
                 
                 client_info['current_session'] = {
                     'time_limit': session['time_limit'],
@@ -230,7 +310,9 @@ class ClientManager:
                 }
             else:
                 client_info['current_session'] = None
-            
+                self._clear_internet_session(client_id)
+
+            client_info['internet_session'] = self._internet_session_info(client_id)
             client_info['config'] = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
             clients_list.append(client_info)
         
@@ -258,6 +340,9 @@ class ClientManager:
             end_time = datetime.fromisoformat(session['end_time'])
             remaining_seconds = max(0, int((end_time - datetime.now()).total_seconds()))
             
+            if remaining_seconds == 0:
+                self._clear_internet_session(client_id)
+
             client_data['session'] = {
                 'time_limit_seconds': session['time_limit'],
                 'start_time': session['start_time'],
@@ -267,7 +352,9 @@ class ClientManager:
             }
         else:
             client_data['session'] = None
-        
+            self._clear_internet_session(client_id)
+
+        client_data['internet_session'] = self._internet_session_info(client_id)
         client_data['config'] = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
         return client_data
     
@@ -337,6 +424,8 @@ class ClientManager:
             
             self.clients_db[client_id]['total_time_used'] += time_used
             del self.client_sessions[client_id]
+
+        self._clear_internet_session(client_id)
         
         self.clients_db[client_id]['is_active'] = False
         # Marcar desconectado de inmediato (no esperar el timeout de last_seen).
@@ -349,6 +438,76 @@ class ClientManager:
         self._notify_client(client_id, 'stop', {'message': 'Sesión detenida por el administrador'})
         
         return {'success': True, 'message': 'Sesión detenida'}
+
+    def set_client_internet_time(self, client_id, time_value, time_unit='minutes'):
+        """
+        Establece el tiempo de internet (wall-clock) para un cliente.
+        Requiere una sesión de dispositivo activa.
+        """
+        if client_id not in self.clients_db:
+            return {'success': False, 'message': 'Cliente no encontrado'}
+
+        if client_id not in self.client_sessions:
+            return {'success': False, 'message': 'Se requiere una sesión de dispositivo activa'}
+
+        try:
+            end_time = datetime.fromisoformat(self.client_sessions[client_id]['end_time'])
+            device_remaining = max(0, int((end_time - datetime.now()).total_seconds()))
+        except Exception:
+            device_remaining = 0
+
+        if device_remaining <= 0:
+            self._clear_internet_session(client_id)
+            return {'success': False, 'message': 'Se requiere una sesión de dispositivo activa'}
+
+        if time_unit == 'hours':
+            total_seconds = time_value * 3600
+        else:
+            total_seconds = time_value * 60
+
+        if total_seconds <= 0:
+            return {'success': False, 'message': 'El tiempo debe ser mayor a 0'}
+
+        # Internet no puede superar el tiempo restante de la sesión de dispositivo
+        total_seconds = min(int(total_seconds), device_remaining)
+
+        start_time = datetime.now()
+        end_time = start_time + timedelta(seconds=total_seconds)
+
+        self.internet_sessions[client_id] = {
+            'time_limit': total_seconds,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat()
+        }
+
+        session_info = {
+            'time_limit_seconds': total_seconds,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'remaining_seconds': total_seconds,
+            'is_expired': False,
+        }
+
+        self._notify_client(client_id, 'internet', session_info)
+
+        return {
+            'success': True,
+            'message': f'Tiempo de internet establecido: {time_value} {time_unit}',
+            'internet_session': session_info
+        }
+
+    def stop_client_internet_session(self, client_id):
+        """Detiene la sesión de internet (corta a always-allowed vía cliente)."""
+        if client_id not in self.clients_db:
+            return {'success': False, 'message': 'Cliente no encontrado'}
+
+        had = client_id in self.internet_sessions
+        self._clear_internet_session(client_id, notify=True)
+
+        return {
+            'success': True,
+            'message': 'Sesión de internet detenida' if had else 'No había sesión de internet'
+        }
     
     def delete_client(self, client_id):
         """
@@ -362,6 +521,8 @@ class ClientManager:
         
         if client_id in self.client_sessions:
             del self.client_sessions[client_id]
+        if client_id in self.internet_sessions:
+            del self.internet_sessions[client_id]
         if client_id in self.client_configs:
             del self.client_configs[client_id]
         del self.clients_db[client_id]
@@ -374,11 +535,18 @@ class ClientManager:
         """Obtiene la configuración de un cliente."""
         if client_id not in self.clients_db:
             return None
-        return self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
+        cfg = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
+        # Asegurar claves nuevas en configs antiguas en memoria
+        if 'network_filter_enabled' not in cfg:
+            cfg['network_filter_enabled'] = self.DEFAULT_CONFIG['network_filter_enabled']
+        if 'allowlist' not in cfg:
+            cfg['allowlist'] = list(self.DEFAULT_CONFIG['allowlist'])
+        return cfg
     
     def set_client_config(self, client_id, sync_interval=None, alert_thresholds=None,
                           custom_name=None, max_server_timeouts=None,
                           lock_recheck_interval=None,
+                          network_filter_enabled=None, allowlist=None,
                           notify_client=True):
         """
         Modifica la configuración de un cliente.
@@ -395,10 +563,10 @@ class ClientManager:
         
         # Si es reporte del cliente y hay un cambio de admin pendiente, ignorar
         if not notify_client and self._has_pending_admin_change(client_id):
-            current_config = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
+            current_config = self.get_client_config(client_id)
             return {'success': True, 'message': 'Cambio de admin pendiente', 'config': current_config}
         
-        current_config = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
+        current_config = self.get_client_config(client_id).copy()
         
         if sync_interval is not None:
             sync_interval = int(sync_interval)
@@ -435,6 +603,15 @@ class ClientManager:
             if lock_recheck_interval > 60:
                 return {'success': False, 'message': 'El intervalo de re-bloqueo no debe ser mayor a 60 segundos'}
             current_config['lock_recheck_interval'] = lock_recheck_interval
+
+        if network_filter_enabled is not None:
+            current_config['network_filter_enabled'] = bool(network_filter_enabled)
+
+        if allowlist is not None:
+            try:
+                current_config['allowlist'] = self._normalize_allowlist(allowlist) or []
+            except ValueError as e:
+                return {'success': False, 'message': str(e)}
         
         self.client_configs[client_id] = current_config
         
@@ -601,10 +778,12 @@ class ClientManager:
                 }
                 self.clients_db[client_id]['total_time_used'] += time_limit_seconds
             self.clients_db[client_id]['is_active'] = False
+            self._clear_internet_session(client_id)
             return {
                 'success': True,
                 'message': 'Sesión expirada',
-                'session': None
+                'session': None,
+                'internet_session': None
             }
         
         time_limit = time_limit_seconds or remaining_seconds
@@ -626,7 +805,74 @@ class ClientManager:
                 'start_time': start_time.isoformat(),
                 'end_time': end_time.isoformat(),
                 'remaining_seconds': remaining_seconds
+            },
+            'internet_session': self._internet_session_info(client_id)
+        }
+
+    def report_internet_session(self, client_id, remaining_seconds, time_limit_seconds=None):
+        """
+        Permite al cliente reportar su sesión de internet.
+        Si remaining <= 0, marca expirada pero mantiene entrada (remaining 0).
+        """
+        if client_id not in self.clients_db:
+            return {'success': False, 'message': 'Cliente no encontrado'}
+
+        self._touch_client(client_id)
+
+        if self._has_pending_admin_change(client_id):
+            return {
+                'success': True,
+                'message': 'Cambio de admin pendiente, reporte ignorado',
+                'internet_session': self._internet_session_info(client_id)
             }
+
+        # Sin sesión de dispositivo activa no hay internet timer
+        if client_id not in self.client_sessions:
+            self._clear_internet_session(client_id)
+            return {'success': True, 'message': 'Sin sesión de dispositivo', 'internet_session': None}
+
+        try:
+            device_end = datetime.fromisoformat(self.client_sessions[client_id]['end_time'])
+            device_remaining = max(0, int((device_end - datetime.now()).total_seconds()))
+        except Exception:
+            device_remaining = 0
+
+        if device_remaining <= 0:
+            self._clear_internet_session(client_id)
+            return {'success': True, 'message': 'Sesión de dispositivo expirada', 'internet_session': None}
+
+        if remaining_seconds <= 0:
+            # Mantener sesión de internet expirada (remaining 0) para política always-allowed
+            limit = time_limit_seconds or (
+                self.internet_sessions.get(client_id, {}).get('time_limit') or 0
+            )
+            now = datetime.now()
+            self.internet_sessions[client_id] = {
+                'time_limit': limit,
+                'start_time': (now - timedelta(seconds=limit)).isoformat() if limit else now.isoformat(),
+                'end_time': now.isoformat()
+            }
+            return {
+                'success': True,
+                'message': 'Sesión de internet expirada',
+                'internet_session': self._internet_session_info(client_id)
+            }
+
+        time_limit = time_limit_seconds or remaining_seconds
+        remaining_seconds = min(int(remaining_seconds), device_remaining)
+        end_time = datetime.now() + timedelta(seconds=remaining_seconds)
+        start_time = end_time - timedelta(seconds=time_limit)
+
+        self.internet_sessions[client_id] = {
+            'time_limit': time_limit,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat()
+        }
+
+        return {
+            'success': True,
+            'message': f'Sesión de internet reportada: {remaining_seconds}s restantes',
+            'internet_session': self._internet_session_info(client_id)
         }
     
     # ==================== SERVER MANAGEMENT ====================

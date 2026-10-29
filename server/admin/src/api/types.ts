@@ -4,6 +4,16 @@ export interface ClientSession {
   remaining_seconds: number;
   time_limit: number;
   start_time?: string;
+  end_time?: string;
+}
+
+export interface InternetSession {
+  remaining_seconds: number;
+  time_limit?: number;
+  time_limit_seconds?: number;
+  start_time?: string;
+  end_time?: string;
+  is_expired?: boolean;
 }
 
 export interface ClientConfig {
@@ -12,6 +22,8 @@ export interface ClientConfig {
   max_server_timeouts?: number;
   lock_recheck_interval?: number;
   custom_name?: string;
+  network_filter_enabled?: boolean;
+  allowlist?: string[];
 }
 
 export interface Client {
@@ -20,6 +32,7 @@ export interface Client {
   connected?: boolean;
   is_active?: boolean;
   current_session?: ClientSession | null;
+  internet_session?: InternetSession | null;
   config?: ClientConfig;
 }
 
@@ -48,4 +61,5 @@ export interface ApiResult {
   config?: ClientConfig;
   known_servers?: KnownServer[];
   known_clients?: Client[];
+  internet_session?: InternetSession;
 }

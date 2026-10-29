@@ -159,8 +159,27 @@ class WindowsClient(CiberMondayClient):
     def clear_session(self):
         if not self._registry_available:
             return
-        from registry_manager import clear_session_from_registry
+        from registry_manager import clear_session_from_registry, clear_internet_session_from_registry
         clear_session_from_registry()
+        clear_internet_session_from_registry()
+
+    def save_internet_session(self, time_limit_seconds, start_time_iso, end_time_iso):
+        if not self._registry_available:
+            return False
+        from registry_manager import save_internet_session_to_registry
+        return save_internet_session_to_registry(time_limit_seconds, start_time_iso, end_time_iso)
+
+    def get_internet_session(self):
+        if not self._registry_available:
+            return None
+        from registry_manager import get_internet_session_from_registry
+        return get_internet_session_from_registry()
+
+    def clear_internet_session(self):
+        if not self._registry_available:
+            return
+        from registry_manager import clear_internet_session_from_registry
+        clear_internet_session_from_registry()
 
     def get_remaining_seconds(self):
         if not self._registry_available:

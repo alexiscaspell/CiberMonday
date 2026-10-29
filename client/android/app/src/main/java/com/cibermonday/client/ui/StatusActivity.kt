@@ -1,6 +1,8 @@
 package com.cibermonday.client.ui
 
+import android.app.Activity
 import android.content.Intent
+import android.net.VpnService
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -10,6 +12,7 @@ import com.cibermonday.client.CiberMondayApp
 import com.cibermonday.client.R
 import com.cibermonday.client.lock.LockController
 import com.cibermonday.client.net.ApiClient
+import com.cibermonday.client.net.NetworkFilterVpnService
 import com.cibermonday.client.service.ClientService
 import com.cibermonday.client.session.SessionStore
 import com.google.android.material.button.MaterialButton
@@ -62,6 +65,7 @@ class StatusActivity : AppCompatActivity() {
         // Tras Detener (sin sesión), onTaskRemoved deja el cliente cerrado.
         ClientService.start(this, enable = true)
         store.addListener(storeListener)
+        maybeRequestVpnConsent()
         refreshUi()
     }
 
@@ -71,7 +75,37 @@ class StatusActivity : AppCompatActivity() {
             lockController.showLockActivity()
             return
         }
+        maybeRequestVpnConsent()
+        try {
+            NetworkFilterVpnService.syncWithPolicy(this)
+        } catch (_: Exception) {
+        }
         handler.post(ticker)
+    }
+
+    private fun maybeRequestVpnConsent() {
+        val need = store.computeNetworkPolicyMode() != SessionStore.MODE_UNRESTRICTED
+        if (!need) return
+        val prep = VpnService.prepare(this) ?: run {
+            store.vpnConsentGranted = true
+            store.vpnConsentNeeded = false
+            NetworkFilterVpnService.syncWithPolicy(this)
+            return
+        }
+        store.vpnConsentNeeded = true
+        startActivityForResult(prep, REQ_VPN)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_VPN) {
+            if (resultCode == Activity.RESULT_OK) {
+                store.vpnConsentGranted = true
+                store.vpnConsentNeeded = false
+                NetworkFilterVpnService.syncWithPolicy(this)
+            }
+        }
     }
 
     override fun onPause() {
@@ -104,14 +138,27 @@ class StatusActivity : AppCompatActivity() {
             }
         }
 
+        val inet = store.getInternetSessionInfo()
+        val netMode = store.computeNetworkPolicyMode()
         val servers = store.loadServers().joinToString("\n") { "• ${it.url}" }
         txtServerInfo.text = buildString {
             append("Servidor: ${store.serverUrl}\n")
             append("IP local: ${ApiClient.localIpAddress() ?: "?"}\n")
             append("Push: :${ApiClient.DIAGNOSTIC_PORT}\n")
+            append("Red: $netMode\n")
+            if (inet != null) {
+                append("Internet: ${ClientService.formatTime(inet.remainingSeconds)}\n")
+            }
+            if (store.vpnConsentNeeded) {
+                append("\nSe requiere permiso VPN para filtrar internet.\n")
+            }
             if (servers.isNotBlank()) {
                 append("\nConocidos:\n$servers")
             }
         }
+    }
+
+    companion object {
+        private const val REQ_VPN = 1001
     }
 }

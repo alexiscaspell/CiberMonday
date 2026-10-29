@@ -79,6 +79,23 @@ export async function stopClient(clientId: string): Promise<ApiResult> {
   return request<ApiResult>(`/api/client/${clientId}/stop`, { method: 'POST' });
 }
 
+export async function setClientInternetTime(
+  clientId: string,
+  time: number,
+  unit: TimeUnit,
+): Promise<ApiResult> {
+  return request<ApiResult>(`/api/client/${clientId}/internet-time`, {
+    method: 'POST',
+    body: JSON.stringify({ time, unit }),
+  });
+}
+
+export async function stopClientInternet(clientId: string): Promise<ApiResult> {
+  return request<ApiResult>(`/api/client/${clientId}/stop-internet`, {
+    method: 'POST',
+  });
+}
+
 export async function deleteClient(clientId: string): Promise<ApiResult> {
   return request<ApiResult>(`/api/client/${clientId}`, { method: 'DELETE' });
 }
