@@ -515,12 +515,31 @@ class ClientManager:
         if client_id not in self.clients_db:
             return {'success': False, 'message': 'Cliente no encontrado'}
 
-        had = client_id in self.internet_sessions
-        self._clear_internet_session(client_id, notify=True)
+        # Sin sesión de dispositivo: limpiar y avisar cleared (cliente abre red).
+        if client_id not in self.client_sessions:
+            had = client_id in self.internet_sessions
+            self._clear_internet_session(client_id, notify=True)
+            return {
+                'success': True,
+                'message': 'Sesión de internet detenida' if had else 'No había sesión de internet'
+            }
+
+        # Con dispositivo activo: expirar (remaining=0) para forzar always_allowed_only.
+        # No borrar la sesión — si se borra y el filtro está off, el cliente queda unrestricted.
+        now = datetime.now()
+        prev = self.internet_sessions.get(client_id) or {}
+        self.internet_sessions[client_id] = {
+            'time_limit': int(prev.get('time_limit') or 0),
+            'start_time': prev.get('start_time') or now.isoformat(),
+            'end_time': now.isoformat(),
+        }
+        session_info = self._internet_session_info(client_id)
+        self._notify_client(client_id, 'internet', session_info)
 
         return {
             'success': True,
-            'message': 'Sesión de internet detenida' if had else 'No había sesión de internet'
+            'message': 'Sesión de internet detenida (solo LAN/servidor)',
+            'internet_session': session_info,
         }
     
     def delete_client(self, client_id):

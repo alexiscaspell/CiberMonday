@@ -57,6 +57,7 @@ if %errorLevel% equ 0 (
 echo.
 echo [4/5] Eliminando reglas del firewall...
 python firewall_manager.py remove >nul 2>&1
+python -c "from network_policy import clear_network_policy; clear_network_policy()" >nul 2>&1
 netsh advfirewall firewall delete rule name="CiberMonday Client UDP Discovery" >nul 2>&1
 if %errorLevel% equ 0 (
     echo    Regla de descubrimiento UDP eliminada.
@@ -69,6 +70,11 @@ if %errorLevel% equ 0 (
 ) else (
     echo    Regla de push notifications no existia.
 )
+powershell -NoProfile -Command "Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'CiberMonday NetPolicy*' } | Remove-NetFirewallRule -ErrorAction SilentlyContinue" >nul 2>&1
+netsh advfirewall set domainprofile firewallpolicy blockinbound,allowoutbound >nul 2>&1
+netsh advfirewall set privateprofile firewallpolicy blockinbound,allowoutbound >nul 2>&1
+netsh advfirewall set publicprofile firewallpolicy blockinbound,allowoutbound >nul 2>&1
+echo    Politica de red CiberMonday limpiada.
 
 echo.
 echo [5/5] Rehabilitando Task Manager (si fue deshabilitado)...

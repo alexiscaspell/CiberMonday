@@ -75,6 +75,12 @@ if %errorLevel% equ 0 (
 ) else (
     echo    Regla de push notifications no existia.
 )
+REM Limpiar allowlist / corte de internet (CiberMonday NetPolicy*) y restaurar outbound
+powershell -NoProfile -Command "Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'CiberMonday NetPolicy*' } | Remove-NetFirewallRule -ErrorAction SilentlyContinue" >nul 2>&1
+netsh advfirewall set domainprofile firewallpolicy blockinbound,allowoutbound >nul 2>&1
+netsh advfirewall set privateprofile firewallpolicy blockinbound,allowoutbound >nul 2>&1
+netsh advfirewall set publicprofile firewallpolicy blockinbound,allowoutbound >nul 2>&1
+echo    Politica de red CiberMonday limpiada.
 
 echo.
 echo [5/5] Rehabilitando Task Manager (si fue deshabilitado)...

@@ -24,6 +24,21 @@ PRIVATE_NETWORKS = (
     "fe80::/10",
 )
 
+# Familias CDN (mismo criterio que Android AllowlistDomains)
+DOMAIN_FAMILIES = {
+    "youtube.com": (
+        "youtube.com", "youtu.be", "youtube-nocookie.com",
+        "googlevideo.com", "ytimg.com", "yt3.ggpht.com", "ggpht.com",
+        "googleusercontent.com", "googleapis.com", "gstatic.com", "google.com",
+    ),
+    "netflix.com": ("netflix.com", "nflxvideo.net", "nflxso.net", "nflximg.net", "fast.com"),
+    "twitch.tv": ("twitch.tv", "ttvnw.net", "jtvnw.net", "twitchcdn.net"),
+    "discord.com": ("discord.com", "discordapp.com", "discord.gg", "discord.media", "discordapp.net"),
+    "instagram.com": ("instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net", "facebook.net"),
+    "facebook.com": ("facebook.com", "fbcdn.net", "facebook.net", "instagram.com", "cdninstagram.com"),
+    "tiktok.com": ("tiktok.com", "tiktokv.com", "tiktokcdn.com", "musical.ly", "byteoversea.com"),
+}
+
 # Estado previo del perfil outbound para restaurar
 _saved_outbound_policy = None
 _last_fingerprint = None
@@ -113,6 +128,36 @@ def compute_policy_mode(network_filter_enabled, allowlist, internet_session_info
     return "unrestricted"
 
 
+def _expand_allowlist_domains(allowlist):
+    """Expande entradas a apex + CDNs conocidos + www/m."""
+    out = []
+    seen = set()
+    for entry in allowlist or []:
+        kind = classify_entry(entry)
+        if not kind:
+            continue
+        t, val = kind
+        if t in ("ip", "cidr"):
+            if val not in seen:
+                seen.add(val)
+                out.append(("ip_or_cidr", val))
+            continue
+        host = val[2:] if val.startswith("*.") else val
+        candidates = {host, f"www.{host}", f"m.{host}"}
+        apex = host
+        for fam_apex, family in DOMAIN_FAMILIES.items():
+            if apex == fam_apex or apex.endswith("." + fam_apex) or fam_apex in apex or apex in family:
+                candidates.update(family)
+                break
+        if "youtube" in apex or apex in ("youtu.be",) or "googlevideo" in apex:
+            candidates.update(DOMAIN_FAMILIES["youtube.com"])
+        for d in sorted(candidates):
+            if d not in seen:
+                seen.add(d)
+                out.append(("domain", d))
+    return out
+
+
 def build_allowed_remotes(mode, allowlist, server_url):
     """Lista de remoteip (IPs/CIDRs) a permitir en outbound."""
     remotes = set(PRIVATE_NETWORKS)
@@ -127,14 +172,10 @@ def build_allowed_remotes(mode, allowlist, server_url):
 
     if mode == "allowlist":
         domains = []
-        for entry in allowlist or []:
-            kind = classify_entry(entry)
-            if not kind:
-                continue
-            t, val = kind
-            if t in ("ip", "cidr"):
+        for kind, val in _expand_allowlist_domains(allowlist):
+            if kind == "ip_or_cidr":
                 remotes.add(val)
-            elif t == "domain":
+            else:
                 domains.append(val)
         remotes |= resolve_domains(domains)
 
@@ -210,9 +251,9 @@ def _set_outbound_block(enabled: bool):
         _saved_outbound_policy = None
 
 
-def _add_allow_rule(name_suffix: str, remoteip: str):
+def _add_allow_rule(name_suffix: str, remoteip: str) -> bool:
     name = f"{RULE_PREFIX} {name_suffix}"
-    _run(
+    r = _run(
         [
             "netsh",
             "advfirewall",
@@ -229,6 +270,11 @@ def _add_allow_rule(name_suffix: str, remoteip: str):
         ],
         timeout=10,
     )
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()
+        print(f"[NetPolicy] netsh add rule falló ({remoteip}): {err}")
+        return False
+    return True
 
 
 def apply_network_policy(mode, allowlist, server_url):
@@ -246,17 +292,22 @@ def apply_network_policy(mode, allowlist, server_url):
     _delete_our_rules()
     _set_outbound_block(True)
 
-    # Permitir loopback implícito vía CIDR; agregar cada remote
+    ok_count = 0
     for i, remote in enumerate(remotes):
-        _add_allow_rule(f"allow-{i}", remote)
+        if _add_allow_rule(f"allow-{i}", remote):
+            ok_count += 1
+
+    if ok_count == 0 and remotes:
+        print("[NetPolicy] Ninguna regla allow se aplicó (¿sin admin / netsh?)")
+        return False
 
     _last_fingerprint = fingerprint
     return True
 
 
-def clear_network_policy():
+def clear_network_policy(force: bool = False):
     global _last_fingerprint
-    if _last_fingerprint == "unrestricted":
+    if not force and _last_fingerprint == "unrestricted":
         return True
     print("[NetPolicy] Limpiando política (unrestricted)")
     _delete_our_rules()

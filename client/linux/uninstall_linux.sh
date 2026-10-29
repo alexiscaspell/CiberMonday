@@ -44,6 +44,16 @@ echo "  Archivo de servicio eliminado."
 # [3/4] Eliminar reglas de firewall
 echo
 echo "[3/4] Eliminando reglas de firewall..."
+# Política de corte CiberMonday (nft/iptables)
+if command -v nft &> /dev/null; then
+    nft delete table inet cibermonday 2>/dev/null || true
+    echo "  Tabla nft cibermonday eliminada (si existía)."
+fi
+if command -v iptables &> /dev/null; then
+    iptables -D OUTPUT -j CIBERMONDAY 2>/dev/null || true
+    iptables -F CIBERMONDAY 2>/dev/null || true
+    iptables -X CIBERMONDAY 2>/dev/null || true
+fi
 if command -v ufw &> /dev/null; then
     ufw delete allow 5001/udp 2>/dev/null || true
     ufw delete allow 5002/tcp 2>/dev/null || true

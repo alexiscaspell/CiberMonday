@@ -1444,8 +1444,21 @@ def _make_diagnostic_handler(client):
                     self._json({'success': False, 'message': 'No data'}, 400)
                     return
                 if data.get('cleared'):
-                    client.clear_internet_session()
-                    print("[Push] Sesión de internet detenida")
+                    # Si el dispositivo sigue con tiempo, cortar a always_allowed
+                    # (no borrar: sin sesión de internet + filtro off = unrestricted).
+                    session_info = client.get_session_info()
+                    device_active = bool(
+                        session_info
+                        and not session_info.get('is_expired')
+                        and session_info.get('remaining_seconds', 0) > 0
+                    )
+                    if device_active:
+                        now = datetime.now()
+                        client.save_internet_session(0, now.isoformat(), now.isoformat())
+                        print("[Push] Internet cortado (always_allowed)")
+                    else:
+                        client.clear_internet_session()
+                        print("[Push] Sesión de internet detenida")
                     try:
                         client.refresh_network_policy()
                     except Exception:
@@ -1593,6 +1606,17 @@ def _make_diagnostic_handler(client):
         def _send_diagnostic(self):
             cid = client.load_client_id()
             si = client.get_session_info()
+            inet = None
+            try:
+                inet = client.get_internet_session_info()
+            except Exception:
+                pass
+            net_policy_ok = False
+            try:
+                import network_policy  # noqa: F401
+                net_policy_ok = True
+            except Exception:
+                net_policy_ok = False
             servers = client.load_servers()
             for s in servers:
                 url = s.get('url')
@@ -1607,7 +1631,10 @@ def _make_diagnostic_handler(client):
                 'success': True, 'client_id': cid,
                 'server_url': client.server_url,
                 'registry_available': True,
-                'session': si, 'known_servers': servers,
+                'session': si,
+                'internet_session': inet,
+                'network_policy_module': net_policy_ok,
+                'known_servers': servers,
                 'discovery': {
                     'listener_active': ds['listener_started'],
                     'broadcast_count': ds['broadcast_count'],

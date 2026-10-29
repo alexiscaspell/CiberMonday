@@ -38,6 +38,8 @@ pyinstaller --onefile ^
     --hidden-import "protection" ^
     --hidden-import "registry_manager" ^
     --hidden-import "config_gui" ^
+    --hidden-import "network_policy" ^
+    --hidden-import "firewall_manager" ^
     --hidden-import "requests" ^
     client.py
 

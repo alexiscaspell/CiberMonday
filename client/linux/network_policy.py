@@ -21,6 +21,21 @@ PRIVATE_NETWORKS = (
     "169.254.0.0/16",
 )
 
+# Familias CDN (alineado con Android / Windows)
+DOMAIN_FAMILIES = {
+    "youtube.com": (
+        "youtube.com", "youtu.be", "youtube-nocookie.com",
+        "googlevideo.com", "ytimg.com", "yt3.ggpht.com", "ggpht.com",
+        "googleusercontent.com", "googleapis.com", "gstatic.com", "google.com",
+    ),
+    "netflix.com": ("netflix.com", "nflxvideo.net", "nflxso.net", "nflximg.net", "fast.com"),
+    "twitch.tv": ("twitch.tv", "ttvnw.net", "jtvnw.net", "twitchcdn.net"),
+    "discord.com": ("discord.com", "discordapp.com", "discord.gg", "discord.media", "discordapp.net"),
+    "instagram.com": ("instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net", "facebook.net"),
+    "facebook.com": ("facebook.com", "fbcdn.net", "facebook.net", "instagram.com", "cdninstagram.com"),
+    "tiktok.com": ("tiktok.com", "tiktokv.com", "tiktokcdn.com", "musical.ly", "byteoversea.com"),
+}
+
 _last_fingerprint = None
 _backend = None  # 'nft' | 'iptables' | None
 
@@ -129,7 +144,14 @@ def build_allowed_remotes(mode, allowlist, server_url):
                 except ValueError:
                     pass
             elif t == "domain":
-                domains.append(val)
+                host = val[2:] if val.startswith("*.") else val
+                domains.extend([host, f"www.{host}", f"m.{host}"])
+                for fam_apex, family in DOMAIN_FAMILIES.items():
+                    if host == fam_apex or host.endswith("." + fam_apex) or fam_apex in host or host in family:
+                        domains.extend(family)
+                        break
+                if "youtube" in host or host in ("youtu.be",) or "googlevideo" in host:
+                    domains.extend(DOMAIN_FAMILIES["youtube.com"])
         remotes |= resolve_domains(domains)
 
     return sorted(remotes)

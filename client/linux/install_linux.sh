@@ -48,6 +48,13 @@ mkdir -p "$CONFIG_DIR"
 cp "$SCRIPT_DIR/client.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/client_base.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/client_linux.py" "$INSTALL_DIR/"
+# Allowlist / corte de internet (nft/iptables) — obligatorio para el timer
+if [ -f "$SCRIPT_DIR/network_policy.py" ]; then
+    cp "$SCRIPT_DIR/network_policy.py" "$INSTALL_DIR/"
+else
+    echo "  ERROR: falta network_policy.py (corte de internet no funcionará)."
+    exit 1
+fi
 # config_gui es opcional en modo servicio, copiar si existe
 [ -f "$SCRIPT_DIR/config_gui.py" ] && cp "$SCRIPT_DIR/config_gui.py" "$INSTALL_DIR/"
 
