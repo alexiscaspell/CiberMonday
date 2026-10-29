@@ -10,7 +10,7 @@ services:
       - FLASK_ENV=production
       - PORT=5000
       - HOST=0.0.0.0
-      - HOST_IP=${HOST_IP:-192.168.1.38}
+      - HOST_IP=${HOST_IP:-192.168.68.107}
       - ADMIN_ALLOW_LAN=${ADMIN_ALLOW_LAN:-true}
     volumes:
       - ../logs:/app/logs

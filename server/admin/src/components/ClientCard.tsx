@@ -515,13 +515,17 @@ export function ClientCard({ client, onChanged }: Props) {
           <Text style={styles.fieldLabel}>
             Allowlist (dominios, IPs o CIDR; uno por línea)
           </Text>
+          <Text style={styles.hint}>
+            Ej: youtube.com también habilita CDNs (googlevideo, ytimg, …) y la app
+            YouTube en Android.
+          </Text>
           <TextInput
             style={[styles.input, styles.allowlistInput]}
             value={allowlistText}
             onChangeText={setAllowlistText}
             multiline
             numberOfLines={5}
-            placeholder={'ejemplo.com\n*.google.com\n1.2.3.4\n10.0.0.0/8'}
+            placeholder={'youtube.com\n*.google.com\n1.2.3.4'}
             placeholderTextColor={colors.muted}
             editable={networkFilter}
           />
@@ -638,6 +642,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: spacing.md,
     gap: spacing.sm,
+  },
+  hint: {
+    fontSize: 12,
+    color: colors.muted,
+    marginBottom: spacing.sm,
   },
   allowlistInput: {
     minHeight: 110,

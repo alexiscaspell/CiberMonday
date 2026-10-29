@@ -7,78 +7,133 @@ import android.content.Intent
 import android.net.IpPrefix
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import com.cibermonday.client.CiberMondayApp
 import com.cibermonday.client.R
 import com.cibermonday.client.session.SessionStore
 import com.cibermonday.client.ui.StatusActivity
 import java.io.FileInputStream
 import java.net.InetAddress
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * VPN local sin servidor remoto (CGNAT-safe).
+ * VPN local (CGNAT-safe).
  *
- * - Esta app se excluye del túnel → sync/push al servidor CiberMonday siguen.
- * - Se enrutan rangos públicos al VPN; LAN (RFC1918) queda fuera → siempre accesible.
- * - Paquetes capturados se descartan (corte de internet).
- * - En allowlist (API 33+): se excluyen IPs resueltas del allowlist del túnel
- *   para que esos destinos usen la red normal. En APIs viejas el allowlist
- *   actúa como corte total de internet público (más estricto).
+ * Allowlist: captura internet público y excluye IPs de dominios permitidos (+ CDNs
+ * expandidos). DNS públicos / Private DNS (1.1.1.1, 8.8.8.8, …) se excluyen para
+ * que la resolución no se rompa (DoT). Apps nativas (YouTube, etc.) salen del túnel.
  */
 class NetworkFilterVpnService : VpnService() {
 
     private val running = AtomicBoolean(false)
     private var tunInterface: ParcelFileDescriptor? = null
     private var worker: Thread? = null
+    private var resolverThread: Thread? = null
+    private var activeFingerprint: String? = null
+    private var activeMode: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var rebuildScheduled = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopFilter()
+                tearDown()
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
             }
-            else -> startFilter()
+            ACTION_REBUILD -> {
+                val store = CiberMondayApp.instance.store
+                if (!hasActiveTimedSession(store)) {
+                    stopVpn(this)
+                    return START_NOT_STICKY
+                }
+                val mode = store.computeNetworkPolicyMode()
+                activeFingerprint = null
+                ensureTunnel(mode, policyFingerprint(store, mode) + "|ips:${seededIps.size}")
+                return START_STICKY
+            }
+            else -> {
+                val mode = intent?.getStringExtra(EXTRA_MODE)
+                    ?: CiberMondayApp.instance.store.computeNetworkPolicyMode()
+                val fingerprint = intent?.getStringExtra(EXTRA_FINGERPRINT)
+                    ?: policyFingerprint(CiberMondayApp.instance.store, mode)
+                ensureTunnel(mode, fingerprint)
+            }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        stopFilter()
+        tearDown()
         super.onDestroy()
     }
 
-    private fun startFilter() {
-        if (!running.compareAndSet(false, true)) return
-        startForeground(NOTIFICATION_ID, buildNotification())
-        try {
-            val store = CiberMondayApp.instance.store
-            val mode = store.computeNetworkPolicyMode()
-            val builder = Builder()
-                .setSession("CiberMonday Filter")
-                .setMtu(1500)
-                .addAddress("10.255.0.2", 32)
+    private fun ensureTunnel(mode: String, fingerprint: String) {
+        if (running.get() && activeFingerprint == fingerprint) {
+            try {
+                startForeground(NOTIFICATION_ID, buildNotification(mode))
+            } catch (_: Exception) {
+            }
+            return
+        }
 
-            // Enrutar internet público (dejar LAN fuera del túnel)
-            addPublicRoutes(builder)
+        // Resolver allowlist ANTES de bajar el túnel viejo (DNS sigue vivo).
+        val store = CiberMondayApp.instance.store
+        if (mode == SessionStore.MODE_ALLOWLIST) {
+            refreshSeedIps(store)
+        }
+
+        if (running.get()) {
+            tearDown()
+        }
+        if (!running.compareAndSet(false, true)) return
+
+        startForeground(NOTIFICATION_ID, buildNotification(mode))
+        try {
+            val builder = Builder()
+                .setSession("CiberMonday")
+                .setMtu(1500)
+                .addAddress(VPN_ADDR, 32)
 
             try {
                 builder.addDisallowedApplication(packageName)
             } catch (_: Exception) {
             }
 
-            // API 33+: excluir allowlist del túnel para acceso completo a esos destinos
-            if (mode == SessionStore.MODE_ALLOWLIST && Build.VERSION.SDK_INT >= 33) {
-                for (ip in resolveAllowlistIps(store)) {
-                    try {
-                        val addr = InetAddress.getByName(ip)
-                        if (addr.address.size == 4) {
-                            builder.excludeRoute(IpPrefix(addr, 32))
+            when (mode) {
+                SessionStore.MODE_UNRESTRICTED -> {
+                    builder.addRoute("198.18.0.1", 32)
+                }
+                else -> {
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        builder.addRoute("0.0.0.0", 0)
+                        for (cidr in PRIVATE_V4) {
+                            excludeIpPrefix(builder, cidr)
                         }
-                    } catch (_: Exception) {
+                        // Private DNS / resolvers públicos — si se capturan, no hay DNS
+                        for (dns in PUBLIC_DNS) {
+                            excludeIpPrefix(builder, "$dns/32")
+                        }
+                        if (mode == SessionStore.MODE_ALLOWLIST) {
+                            for (ip in seededIps) {
+                                excludeIpPrefix(builder, "$ip/32")
+                            }
+                            for (pkg in relatedPackages(store)) {
+                                try {
+                                    builder.addDisallowedApplication(pkg)
+                                } catch (_: Exception) {
+                                }
+                            }
+                        }
+                    } else {
+                        addPublicRoutes(builder)
                     }
                 }
             }
@@ -87,38 +142,64 @@ class NetworkFilterVpnService : VpnService() {
             if (tunInterface == null) {
                 Log.e(TAG, "VPN establish() null — ¿permiso VPN?")
                 running.set(false)
+                activeFingerprint = null
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return
             }
-            worker = Thread({ dropLoop() }, "cm-vpn-drop").also {
+            activeFingerprint = fingerprint
+            activeMode = mode
+            worker = Thread({ drainLoop() }, "cm-vpn-drain").also {
                 it.isDaemon = true
                 it.start()
             }
-            Log.i(TAG, "Filter VPN on mode=$mode")
+            if (mode == SessionStore.MODE_ALLOWLIST) {
+                startResolverLoop()
+            }
+            Log.i(TAG, "VPN ready mode=$mode seedIps=${seededIps.size}")
         } catch (e: Exception) {
-            Log.e(TAG, "startFilter: ${e.message}")
+            Log.e(TAG, "ensureTunnel: ${e.message}", e)
             running.set(false)
+            activeFingerprint = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
     }
 
-    private fun stopFilter() {
+    private fun excludeIpPrefix(builder: Builder, cidr: String) {
+        try {
+            val (ip, prefix) = cidr.split("/", limit = 2)
+            val addr = InetAddress.getByName(ip)
+            if (addr.address.size == 4) {
+                builder.excludeRoute(IpPrefix(addr, prefix.toInt()))
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun tearDown() {
         running.set(false)
+        activeFingerprint = null
+        activeMode = null
         try {
             worker?.interrupt()
         } catch (_: Exception) {
         }
         worker = null
         try {
+            resolverThread?.interrupt()
+        } catch (_: Exception) {
+        }
+        resolverThread = null
+        try {
             tunInterface?.close()
         } catch (_: Exception) {
         }
         tunInterface = null
-        Log.i(TAG, "Filter VPN off")
+        Log.i(TAG, "VPN torn down")
     }
 
-    /** Lee y descarta — tráfico público capturado no sale. */
-    private fun dropLoop() {
+    private fun drainLoop() {
         val tun = tunInterface ?: return
         val input = FileInputStream(tun.fileDescriptor)
         val buf = ByteArray(32767)
@@ -126,24 +207,69 @@ class NetworkFilterVpnService : VpnService() {
             try {
                 val n = input.read(buf)
                 if (n < 0) break
-                // drop
             } catch (_: InterruptedException) {
                 break
             } catch (e: Exception) {
-                if (running.get()) Log.d(TAG, "dropLoop: ${e.message}")
+                if (running.get()) Log.d(TAG, "drainLoop: ${e.message}")
             }
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun startResolverLoop() {
+        resolverThread = Thread({
+            var first = true
+            while (running.get() && activeMode == SessionStore.MODE_ALLOWLIST) {
+                try {
+                    Thread.sleep(if (first) 5_000 else 20_000)
+                    first = false
+                    if (!running.get()) break
+                    val before = seededIps.toSet()
+                    refreshSeedIps(CiberMondayApp.instance.store)
+                    if (seededIps != before) {
+                        Log.i(TAG, "Allowlist IPs changed ${before.size}→${seededIps.size}, rebuild")
+                        scheduleRebuild()
+                    }
+                } catch (_: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    Log.d(TAG, "resolver: ${e.message}")
+                }
+            }
+        }, "cm-vpn-resolve").also {
+            it.isDaemon = true
+            it.start()
+        }
+    }
+
+    private fun scheduleRebuild() {
+        if (rebuildScheduled) return
+        rebuildScheduled = true
+        mainHandler.postDelayed({
+            rebuildScheduled = false
+            if (!running.get()) return@postDelayed
+            if (activeMode != SessionStore.MODE_ALLOWLIST) return@postDelayed
+            val app = applicationContext
+            val i = Intent(app, NetworkFilterVpnService::class.java).setAction(ACTION_REBUILD)
+            if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i)
+            else app.startService(i)
+        }, 500)
+    }
+
+    private fun buildNotification(mode: String): Notification {
         val open = Intent(this, StatusActivity::class.java)
         val pending = PendingIntent.getActivity(
             this, 0, open,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val text = when (mode) {
+            SessionStore.MODE_UNRESTRICTED -> "VPN listo (internet normal)"
+            SessionStore.MODE_ALWAYS_ALLOWED -> "Internet cortado (solo LAN/servidor)"
+            SessionStore.MODE_ALLOWLIST -> "Filtro allowlist activo"
+            else -> "VPN activo"
+        }
         return NotificationCompat.Builder(this, CiberMondayApp.CHANNEL_SERVICE)
             .setContentTitle("CiberMonday")
-            .setContentText("Filtro de internet activo")
+            .setContentText(text)
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentIntent(pending)
             .setOngoing(true)
@@ -153,32 +279,161 @@ class NetworkFilterVpnService : VpnService() {
     companion object {
         private const val TAG = "NetworkFilterVpn"
         private const val NOTIFICATION_ID = 42
+        private const val CONSENT_NOTIFICATION_ID = 43
+        private const val VPN_ADDR = "10.255.0.2"
         const val ACTION_STOP = "com.cibermonday.client.STOP_NET_FILTER"
+        const val ACTION_REBUILD = "com.cibermonday.client.REBUILD_NET_FILTER"
+        const val EXTRA_MODE = "mode"
+        const val EXTRA_FINGERPRINT = "fingerprint"
+        const val EXTRA_REQUEST_VPN = "request_vpn"
+
+        private val PRIVATE_V4 = listOf(
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "127.0.0.0/8",
+            "169.254.0.0/16",
+        )
+
+        /** Resolvers / Private DNS — deben quedar fuera del túnel o no hay DNS. */
+        private val PUBLIC_DNS = listOf(
+            "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1",
+            "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220"
+        )
+
+        private val seededIps = ConcurrentHashMap.newKeySet<String>()
+
+        fun hasActiveTimedSession(store: SessionStore): Boolean {
+            val info = store.getSessionInfo() ?: return false
+            return !info.isExpired && info.remainingSeconds > 0
+        }
+
+        fun needsVpnPreparation(store: SessionStore): Boolean = hasActiveTimedSession(store)
+
+        private fun policyFingerprint(store: SessionStore, mode: String): String {
+            val allow = if (mode == SessionStore.MODE_ALLOWLIST) {
+                store.getAllowlist().sorted().joinToString(",")
+            } else ""
+            return "$mode|$allow"
+        }
 
         fun syncWithPolicy(context: Context) {
             val store = CiberMondayApp.instance.store
-            val needVpn = store.computeNetworkPolicyMode() != SessionStore.MODE_UNRESTRICTED
             val app = context.applicationContext
-            if (needVpn) {
-                val prep = prepare(app)
-                if (prep != null) {
-                    store.vpnConsentNeeded = true
-                    Log.i(TAG, "VPN consent required")
-                    return
-                }
+
+            if (!hasActiveTimedSession(store)) {
                 store.vpnConsentNeeded = false
-                val i = Intent(app, NetworkFilterVpnService::class.java)
-                if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i)
-                else app.startService(i)
-            } else {
+                cancelConsentNotification(app)
+                seededIps.clear()
+                stopVpn(app)
+                Log.i(TAG, "No active timed session — VPN off")
+                return
+            }
+
+            val mode = store.computeNetworkPolicyMode()
+            if (mode != SessionStore.MODE_ALLOWLIST) {
+                seededIps.clear()
+            }
+            val fingerprint = policyFingerprint(store, mode)
+
+            val prep = prepare(app)
+            if (prep != null) {
+                store.vpnConsentNeeded = true
+                store.vpnConsentGranted = false
+                Log.i(TAG, "VPN consent required (want mode=$mode)")
+                postConsentNotification(app)
+                return
+            }
+            store.vpnConsentNeeded = false
+            store.vpnConsentGranted = true
+            cancelConsentNotification(app)
+
+            val i = Intent(app, NetworkFilterVpnService::class.java)
+                .putExtra(EXTRA_MODE, mode)
+                .putExtra(EXTRA_FINGERPRINT, fingerprint)
+            if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i)
+            else app.startService(i)
+        }
+
+        fun stopVpn(context: Context) {
+            val app = context.applicationContext
+            try {
                 app.startService(
                     Intent(app, NetworkFilterVpnService::class.java).setAction(ACTION_STOP)
                 )
+            } catch (e: Exception) {
+                Log.w(TAG, "stopVpn: ${e.message}")
+            }
+        }
+
+        private fun refreshSeedIps(store: SessionStore) {
+            for (entry in AllowlistDomains.expand(store.getAllowlist())) {
+                if (entry.contains("/")) continue
+                if (entry.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
+                    seededIps.add(entry)
+                    continue
+                }
+                if (entry.startsWith("*.")) continue
+                try {
+                    InetAddress.getAllByName(entry).forEach { addr ->
+                        if (addr.address.size == 4) {
+                            seededIps.add(addr.hostAddress ?: return@forEach)
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        private fun relatedPackages(store: SessionStore): List<String> {
+            val expanded = AllowlistDomains.expand(store.getAllowlist())
+            val pkgs = mutableListOf<String>()
+            if (expanded.any { it.contains("youtube") || it == "youtu.be" || it.contains("googlevideo") }) {
+                pkgs += listOf(
+                    "com.google.android.youtube",
+                    "com.google.android.apps.youtube.kids",
+                    "com.google.android.apps.youtube.music"
+                )
+            }
+            if (expanded.any { it.contains("netflix") }) pkgs += "com.netflix.mediaclient"
+            if (expanded.any { it.contains("instagram") }) pkgs += "com.instagram.android"
+            if (expanded.any { it.contains("tiktok") }) {
+                pkgs += listOf("com.zhiliaoapp.musically", "com.ss.android.ugc.trill")
+            }
+            return pkgs
+        }
+
+        private fun postConsentNotification(context: Context) {
+            val open = Intent(context, StatusActivity::class.java)
+                .putExtra(EXTRA_REQUEST_VPN, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            val pending = PendingIntent.getActivity(
+                context, 1, open,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(context, CiberMondayApp.CHANNEL_ALERTS)
+                .setContentTitle("CiberMonday")
+                .setContentText("Tocá para permitir VPN (control de internet)")
+                .setSmallIcon(R.drawable.ic_launcher)
+                .setContentIntent(pending)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .build()
+            try {
+                NotificationManagerCompat.from(context).notify(CONSENT_NOTIFICATION_ID, notification)
+            } catch (e: Exception) {
+                Log.w(TAG, "consent notify: ${e.message}")
+            }
+        }
+
+        private fun cancelConsentNotification(context: Context) {
+            try {
+                NotificationManagerCompat.from(context).cancel(CONSENT_NOTIFICATION_ID)
+            } catch (_: Exception) {
             }
         }
 
         private fun addPublicRoutes(builder: Builder) {
-            // Rangos públicos aproximados (excluye 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16)
             for (cidr in listOf(
                 "0.0.0.0/5", "8.0.0.0/7", "11.0.0.0/8", "12.0.0.0/6", "16.0.0.0/4",
                 "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/3", "160.0.0.0/5",
@@ -188,7 +443,6 @@ class NetworkFilterVpnService : VpnService() {
                 "192.170.0.0/15", "192.172.0.0/14", "192.176.0.0/12", "192.192.0.0/10",
                 "193.0.0.0/8", "194.0.0.0/7", "196.0.0.0/6", "200.0.0.0/5", "208.0.0.0/4"
             )) {
-                // 172.0.0.0/12 overlaps private 172.16/12 — skip and use neighbors only
                 if (cidr == "172.0.0.0/12") continue
                 try {
                     val (ip, prefix) = cidr.split("/", limit = 2)
@@ -196,27 +450,6 @@ class NetworkFilterVpnService : VpnService() {
                 } catch (_: Exception) {
                 }
             }
-        }
-
-        private fun resolveAllowlistIps(store: SessionStore): Set<String> {
-            val out = linkedSetOf<String>()
-            for (entry in store.getAllowlist()) {
-                val e = entry.trim().lowercase()
-                if (e.isBlank()) continue
-                if (e.contains("/")) continue
-                if (e.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
-                    out.add(e)
-                    continue
-                }
-                val host = if (e.startsWith("*.")) e.substring(2) else e
-                try {
-                    InetAddress.getAllByName(host).forEach { addr ->
-                        if (addr.address.size == 4) out.add(addr.hostAddress ?: return@forEach)
-                    }
-                } catch (_: Exception) {
-                }
-            }
-            return out
         }
     }
 }

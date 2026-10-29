@@ -70,7 +70,12 @@ class ClientManager:
             item = str(raw).strip().lower()
             if not item:
                 continue
-            if item in seen:
+            item = item.removeprefix('http://').removeprefix('https://')
+            item = item.split('/')[0].split(':')[0]
+            # *youtube.com → *.youtube.com
+            if item.startswith('*') and not item.startswith('*.') and len(item) > 1:
+                item = '*.' + item[1:]
+            if not item or item in seen:
                 continue
             seen.add(item)
             normalized.append(item)
@@ -161,12 +166,23 @@ class ClientManager:
         self.clients_db[client_id] = client_data
         
         # Configuración
+        # allowlist / network_filter: si ya hay config de admin en servidor, no
+        # dejar que el re-registro del cliente la pise (evita *youtube.com stale).
+        existing_cfg = self.client_configs.get(client_id) or {}
         if config:
-            allowlist = config.get('allowlist', self.DEFAULT_CONFIG['allowlist'])
             try:
-                allowlist = self._normalize_allowlist(allowlist) or []
+                allowlist = self._normalize_allowlist(
+                    config.get('allowlist', self.DEFAULT_CONFIG['allowlist'])
+                ) or []
             except ValueError:
                 allowlist = []
+            if 'allowlist' in existing_cfg:
+                allowlist = list(existing_cfg.get('allowlist') or [])
+            network_filter = bool(
+                config.get('network_filter_enabled', self.DEFAULT_CONFIG['network_filter_enabled'])
+            )
+            if 'network_filter_enabled' in existing_cfg:
+                network_filter = bool(existing_cfg.get('network_filter_enabled'))
             self.client_configs[client_id] = {
                 'sync_interval': config.get('sync_interval', self.DEFAULT_CONFIG['sync_interval']),
                 'alert_thresholds': config.get('alert_thresholds', self.DEFAULT_CONFIG['alert_thresholds']),
@@ -175,9 +191,7 @@ class ClientManager:
                 'lock_recheck_interval': config.get(
                     'lock_recheck_interval', self.DEFAULT_CONFIG['lock_recheck_interval']
                 ),
-                'network_filter_enabled': bool(
-                    config.get('network_filter_enabled', self.DEFAULT_CONFIG['network_filter_enabled'])
-                ),
+                'network_filter_enabled': network_filter,
                 'allowlist': allowlist,
             }
             if self.client_configs[client_id]['custom_name']:

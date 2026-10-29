@@ -69,6 +69,14 @@ class StatusActivity : AppCompatActivity() {
         refreshUi()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(NetworkFilterVpnService.EXTRA_REQUEST_VPN, false)) {
+            maybeRequestVpnConsent()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         if (lockController.isLockNeeded()) {
@@ -84,8 +92,12 @@ class StatusActivity : AppCompatActivity() {
     }
 
     private fun maybeRequestVpnConsent() {
-        val need = store.computeNetworkPolicyMode() != SessionStore.MODE_UNRESTRICTED
-        if (!need) return
+        // VPN solo con sesión/tiempo activo — pedir permiso en ese momento.
+        if (!NetworkFilterVpnService.needsVpnPreparation(store)) {
+            store.vpnConsentNeeded = false
+            NetworkFilterVpnService.syncWithPolicy(this)
+            return
+        }
         val prep = VpnService.prepare(this) ?: run {
             store.vpnConsentGranted = true
             store.vpnConsentNeeded = false
@@ -150,7 +162,11 @@ class StatusActivity : AppCompatActivity() {
                 append("Internet: ${ClientService.formatTime(inet.remainingSeconds)}\n")
             }
             if (store.vpnConsentNeeded) {
-                append("\nSe requiere permiso VPN para filtrar internet.\n")
+                append("\nSe requiere permiso VPN (internet control).\n")
+            } else if (NetworkFilterVpnService.hasActiveTimedSession(store) && store.vpnConsentGranted) {
+                append("VPN: activa\n")
+            } else {
+                append("VPN: apagada (sin tiempo)\n")
             }
             if (servers.isNotBlank()) {
                 append("\nConocidos:\n$servers")

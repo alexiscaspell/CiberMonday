@@ -94,6 +94,11 @@ class ClientService : Service() {
         } else {
             handleSessionStateChange()
         }
+        // VPN siempre arriba (passthrough si no hay filtro/timer)
+        try {
+            NetworkFilterVpnService.syncWithPolicy(this)
+        } catch (_: Exception) {
+        }
         return START_STICKY
     }
 
@@ -138,6 +143,10 @@ class ClientService : Service() {
             )
         } else {
             SessionAlarmScheduler.cancelAll(this)
+            try {
+                NetworkFilterVpnService.stopVpn(this)
+            } catch (_: Exception) {
+            }
         }
         super.onDestroy()
     }
@@ -211,6 +220,10 @@ class ClientService : Service() {
         pushServer = null
         releaseWakeLock()
         releaseWifiLock()
+        try {
+            NetworkFilterVpnService.stopVpn(this)
+        } catch (_: Exception) {
+        }
         try {
             NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
             NotificationManagerCompat.from(this).cancel(ALERT_NOTIFICATION_ID)
