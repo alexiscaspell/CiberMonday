@@ -186,13 +186,19 @@ class CiberMondayClient(ABC):
     def refresh_network_policy(self):
         """Aplica allowlist / corte de internet según config y sesiones locales."""
         try:
-            from network_policy import compute_policy_mode, apply_network_policy, clear_network_policy
+            from network_policy import (
+                compute_policy_mode,
+                apply_network_policy,
+                clear_network_policy,
+                set_denied_callback,
+            )
         except ImportError as e:
             print(f"[NetPolicy] Módulo no disponible: {e}")
             return
 
         cfg = self.load_config() or {}
         filter_on = bool(cfg.get('network_filter_enabled', False))
+        request_on = bool(cfg.get('internet_request_enabled', False))
         allowlist = cfg.get('allowlist') or []
         session_info = self.get_session_info()
         device_active = bool(
@@ -205,14 +211,97 @@ class CiberMondayClient(ABC):
         else:
             mode = compute_policy_mode(filter_on, allowlist, inet_info, device_active)
 
+        # Pedidos de acceso solo en allowlist + flag server
+        if mode == 'allowlist' and request_on:
+            set_denied_callback(self._on_dns_denied)
+        else:
+            set_denied_callback(None)
+
         server_url = cfg.get('server_url') or getattr(self, 'server_url', None)
         try:
             if mode == 'unrestricted':
                 clear_network_policy()
             else:
-                apply_network_policy(mode, allowlist, server_url)
+                apply_network_policy(
+                    mode,
+                    allowlist,
+                    server_url,
+                    on_denied=self._on_dns_denied if (mode == 'allowlist' and request_on) else None,
+                )
         except Exception as e:
             print(f"[NetPolicy] Error aplicando política: {e}")
+
+    def _on_dns_denied(self, qname: str):
+        """Callback DnsLearner: dominio bloqueado → pedido a servidores (debounce)."""
+        try:
+            self.request_access_for_domain(qname)
+        except Exception as e:
+            print(f"[AccessReq] Error: {e}")
+
+    def request_access_for_domain(self, domain: str):
+        """POST /access-request a todos los servidores conocidos (debounce 10 min)."""
+        import re
+        import threading
+        import time
+
+        name = (domain or '').strip().lower().rstrip('.')
+        if not name or len(name) > 253:
+            return
+        if name in ('localhost',) or name.endswith('.local') or name.endswith('.lan'):
+            return
+        if re.fullmatch(r'\d+\.\d+\.\d+\.\d+', name):
+            return
+        if not re.search(r'[a-z]', name):
+            return
+
+        cfg = self.load_config() or {}
+        if not bool(cfg.get('internet_request_enabled', False)):
+            return
+        if not bool(cfg.get('network_filter_enabled', False)):
+            return
+
+        try:
+            from domain_match import name_is_allowed
+            if name_is_allowed(name, cfg.get('allowlist') or []):
+                return
+        except Exception:
+            pass
+
+        if not hasattr(self, '_access_req_cooldown'):
+            self._access_req_cooldown = {}
+            self._access_req_lock = threading.Lock()
+
+        now = time.time()
+        with self._access_req_lock:
+            last = self._access_req_cooldown.get(name, 0)
+            if now - last < 600:
+                return
+            self._access_req_cooldown[name] = now
+
+        client_id = self.load_client_id()
+        if not client_id:
+            return
+
+        def _fanout():
+            payload = {'domain': name}
+            for srv in self.get_available_servers():
+                url = (srv.get('url') if isinstance(srv, dict) else srv) or ''
+                if not url:
+                    continue
+                try:
+                    if requests.get(f"{url}/api/health", timeout=3).status_code != 200:
+                        continue
+                    r = requests.post(
+                        f"{url}/api/client/{client_id}/access-request",
+                        json=payload,
+                        timeout=5,
+                    )
+                    if r.status_code == 200:
+                        print(f"[AccessReq] {name} → {url}")
+                except Exception as e:
+                    print(f"[AccessReq] falló {url}: {e}")
+
+        threading.Thread(target=_fanout, name="cm-access-req", daemon=True).start()
 
     @abstractmethod
     def save_client_id(self, client_id):
@@ -506,6 +595,7 @@ class CiberMondayClient(ABC):
                     'alert_thresholds': config_data.get('alert_thresholds', [600, 300, 120, 60]),
                     'custom_name': custom_name,
                     'network_filter_enabled': bool(config_data.get('network_filter_enabled', False)),
+                    'internet_request_enabled': bool(config_data.get('internet_request_enabled', False)),
                     'allowlist': config_data.get('allowlist') or [],
                 }
 
@@ -624,6 +714,12 @@ class CiberMondayClient(ABC):
                 if val != bool(current.get('network_filter_enabled', False)):
                     print(f"[Config] Filtro de red: {current.get('network_filter_enabled', False)} -> {val}")
                 current['network_filter_enabled'] = val
+
+            if 'internet_request_enabled' in server_config:
+                val = bool(server_config['internet_request_enabled'])
+                if val != bool(current.get('internet_request_enabled', False)):
+                    print(f"[Config] Pedir acceso: {current.get('internet_request_enabled', False)} -> {val}")
+                current['internet_request_enabled'] = val
 
             if 'allowlist' in server_config:
                 val = server_config['allowlist'] if isinstance(server_config['allowlist'], list) else []

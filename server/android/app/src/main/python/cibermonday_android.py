@@ -69,7 +69,8 @@ def get_servers_json():
 
 def set_client_config(client_id, sync_interval=None, alert_thresholds=None,
                       max_server_timeouts=None, lock_recheck_interval=None,
-                      network_filter_enabled=None, allowlist=None):
+                      network_filter_enabled=None, internet_request_enabled=None,
+                      allowlist=None):
     """Actualiza la configuración de un cliente."""
     if alert_thresholds is not None:
         if isinstance(alert_thresholds, (list, tuple)):
@@ -92,6 +93,9 @@ def set_client_config(client_id, sync_interval=None, alert_thresholds=None,
     if network_filter_enabled is not None:
         network_filter_enabled = bool(network_filter_enabled)
 
+    if internet_request_enabled is not None:
+        internet_request_enabled = bool(internet_request_enabled)
+
     if allowlist is not None and not isinstance(allowlist, list):
         allowlist = None
     
@@ -102,6 +106,7 @@ def set_client_config(client_id, sync_interval=None, alert_thresholds=None,
         max_server_timeouts=max_server_timeouts,
         lock_recheck_interval=lock_recheck_interval,
         network_filter_enabled=network_filter_enabled,
+        internet_request_enabled=internet_request_enabled,
         allowlist=allowlist
     )
     return json.dumps(result)
@@ -340,10 +345,31 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 max_server_timeouts=data.get('max_server_timeouts'),
                 lock_recheck_interval=data.get('lock_recheck_interval'),
                 network_filter_enabled=data.get('network_filter_enabled'),
+                internet_request_enabled=data.get('internet_request_enabled'),
                 allowlist=data.get('allowlist'),
                 notify_client=not from_client
             )
             self._send_json(result, 200 if result['success'] else 400)
+
+        elif '/access-request/' in path and path.endswith('/approve'):
+            # /api/client/<id>/access-request/<rid>/approve
+            parts = path.strip('/').split('/')
+            client_id = parts[2] if len(parts) > 2 else ''
+            request_id = parts[4] if len(parts) > 4 else ''
+            result = self.manager.approve_access_request(client_id, request_id)
+            self._send_json(result, 200 if result.get('success') else 400)
+
+        elif '/access-request/' in path and path.endswith('/deny'):
+            parts = path.strip('/').split('/')
+            client_id = parts[2] if len(parts) > 2 else ''
+            request_id = parts[4] if len(parts) > 4 else ''
+            result = self.manager.deny_access_request(client_id, request_id)
+            self._send_json(result, 200 if result.get('success') else 400)
+
+        elif path.startswith('/api/client/') and path.endswith('/access-request'):
+            client_id = path.split('/')[3]
+            result = self.manager.create_access_request(client_id, data.get('domain'))
+            self._send_json(result, 200 if result.get('success') else 400)
         
         elif path.startswith('/api/client/') and path.endswith('/report-session'):
             client_id = path.split('/')[3]
@@ -422,13 +448,8 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         
         elif path == '/api/force-sync':
             try:
-                self.manager._sync_with_other_servers()
-                self._send_json({
-                    'success': True,
-                    'message': 'Sincronización forzada completada',
-                    'known_servers': self.manager.get_servers(),
-                    'known_clients': self.manager.get_clients_sync_payload(),
-                }, 200)
+                result = self.manager.force_refresh()
+                self._send_json(result, 200)
             except Exception as e:
                 self._send_json({
                     'success': False,

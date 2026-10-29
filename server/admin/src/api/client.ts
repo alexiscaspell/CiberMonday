@@ -60,8 +60,8 @@ export async function registerServer(url: string, ip?: string, port?: number): P
   });
 }
 
-export async function forceSync(): Promise<ApiResult> {
-  return request<ApiResult>('/api/force-sync', { method: 'POST' });
+export async function forceSync(signal?: AbortSignal): Promise<ApiResult> {
+  return request<ApiResult>('/api/force-sync', { method: 'POST', signal });
 }
 
 export async function setClientTime(
@@ -108,6 +108,26 @@ export async function setClientConfig(
     method: 'POST',
     body: JSON.stringify(config),
   });
+}
+
+export async function approveAccessRequest(
+  clientId: string,
+  requestId: string,
+): Promise<ApiResult> {
+  return request<ApiResult>(
+    `/api/client/${clientId}/access-request/${requestId}/approve`,
+    { method: 'POST', body: '{}' },
+  );
+}
+
+export async function denyAccessRequest(
+  clientId: string,
+  requestId: string,
+): Promise<ApiResult> {
+  return request<ApiResult>(
+    `/api/client/${clientId}/access-request/${requestId}/deny`,
+    { method: 'POST', body: '{}' },
+  );
 }
 
 export async function healthCheck(): Promise<boolean> {

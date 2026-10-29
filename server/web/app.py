@@ -184,11 +184,45 @@ def set_client_config(client_id):
         max_server_timeouts=data.get('max_server_timeouts'),
         lock_recheck_interval=data.get('lock_recheck_interval'),
         network_filter_enabled=data.get('network_filter_enabled'),
+        internet_request_enabled=data.get('internet_request_enabled'),
         allowlist=data.get('allowlist'),
         notify_client=not from_client
     )
     
     status = 200 if result['success'] else (404 if 'no encontrado' in result['message'] else 400)
+    return jsonify(result), status
+
+
+@app.route('/api/client/<client_id>/access-request', methods=['POST'])
+def create_access_request(client_id):
+    """Cliente reporta dominio bloqueado (pedido de acceso)."""
+    data = request.json or {}
+    result = manager.create_access_request(client_id, data.get('domain'))
+    status = 200 if result.get('success') else (
+        404 if 'no encontrado' in result.get('message', '') else 400
+    )
+    return jsonify(result), status
+
+
+@app.route('/api/client/<client_id>/access-request/<request_id>/approve', methods=['POST'])
+@admin_only
+def approve_access_request(client_id, request_id):
+    """Admin aprueba: agrega dominio a allowlist permanente."""
+    result = manager.approve_access_request(client_id, request_id)
+    status = 200 if result.get('success') else (
+        404 if 'no encontrado' in result.get('message', '') else 400
+    )
+    return jsonify(result), status
+
+
+@app.route('/api/client/<client_id>/access-request/<request_id>/deny', methods=['POST'])
+@admin_only
+def deny_access_request(client_id, request_id):
+    """Admin rechaza pedido de acceso."""
+    result = manager.deny_access_request(client_id, request_id)
+    status = 200 if result.get('success') else (
+        404 if 'no encontrado' in result.get('message', '') else 400
+    )
     return jsonify(result), status
 
 
@@ -377,15 +411,10 @@ def sync_servers_endpoint():
 @app.route('/api/force-sync', methods=['POST'])
 @admin_only
 def force_sync_endpoint():
-    """Fuerza una sincronización completa con todos los servidores conocidos."""
+    """Fuerza sync entre servidores + sondeo en vivo de clientes (botón Actualizar)."""
     try:
-        manager._sync_with_other_servers()
-        return jsonify({
-            'success': True,
-            'message': 'Sincronización forzada completada',
-            'known_servers': manager.get_servers(),
-            'known_clients': manager.get_clients_sync_payload(),
-        }), 200
+        result = manager.force_refresh()
+        return jsonify(result), 200
     except Exception as e:
         return jsonify({
             'success': False,

@@ -1,6 +1,7 @@
 """
 Política de red CiberMonday (Linux).
-Allowlist + corte de internet vía nftables (preferido) o iptables.
+Allowlist + corte vía nftables (set dinámico) o iptables.
+DNS learning: redirect :53 → forwarder local que agrega IPs al set.
 """
 
 from __future__ import annotations
@@ -9,10 +10,17 @@ import ipaddress
 import shutil
 import socket
 import subprocess
+import threading
 from datetime import datetime
 from urllib.parse import urlparse
 
+from domain_match import expand_allowed_names
+
 TABLE_NAME = "cibermonday"
+SET_NAME = "allow4"
+DNS_REDIR_PORT = 5353
+UPSTREAM_DNS = "1.1.1.1"
+
 PRIVATE_NETWORKS = (
     "10.0.0.0/8",
     "172.16.0.0/12",
@@ -21,23 +29,14 @@ PRIVATE_NETWORKS = (
     "169.254.0.0/16",
 )
 
-# Familias CDN (alineado con Android / Windows)
-DOMAIN_FAMILIES = {
-    "youtube.com": (
-        "youtube.com", "youtu.be", "youtube-nocookie.com",
-        "googlevideo.com", "ytimg.com", "yt3.ggpht.com", "ggpht.com",
-        "googleusercontent.com", "googleapis.com", "gstatic.com", "google.com",
-    ),
-    "netflix.com": ("netflix.com", "nflxvideo.net", "nflxso.net", "nflximg.net", "fast.com"),
-    "twitch.tv": ("twitch.tv", "ttvnw.net", "jtvnw.net", "twitchcdn.net"),
-    "discord.com": ("discord.com", "discordapp.com", "discord.gg", "discord.media", "discordapp.net"),
-    "instagram.com": ("instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net", "facebook.net"),
-    "facebook.com": ("facebook.com", "fbcdn.net", "facebook.net", "instagram.com", "cdninstagram.com"),
-    "tiktok.com": ("tiktok.com", "tiktokv.com", "tiktokcdn.com", "musical.ly", "byteoversea.com"),
-}
-
 _last_fingerprint = None
-_backend = None  # 'nft' | 'iptables' | None
+_backend = None
+_learner = None
+_learned_ips: set[str] = set()
+_learn_lock = threading.Lock()
+_active_allowlist: list = []
+_rule_counter = 0
+_on_denied = None  # callback(qname) opcional
 
 
 def _run(cmd, timeout=15):
@@ -70,11 +69,9 @@ def resolve_domains(domains):
     for d in domains:
         host = d[2:] if d.startswith("*.") else d
         try:
-            infos = socket.getaddrinfo(host, None)
-            for info in infos:
+            for info in socket.getaddrinfo(host, None):
                 addr = info[4][0]
                 try:
-                    # Solo IPv4 para iptables/nft set simple
                     if isinstance(ipaddress.ip_address(addr), ipaddress.IPv4Address):
                         ips.add(addr)
                 except ValueError:
@@ -124,7 +121,8 @@ def build_allowed_remotes(mode, allowlist, server_url):
             remotes |= resolve_domains([server_host])
 
     if mode == "allowlist":
-        domains = []
+        names = expand_allowed_names(allowlist)
+        remotes |= resolve_domains(sorted(names))
         for entry in allowlist or []:
             kind = classify_entry(entry)
             if not kind:
@@ -132,7 +130,6 @@ def build_allowed_remotes(mode, allowlist, server_url):
             t, val = kind
             if t in ("ip", "cidr"):
                 try:
-                    # Filtrar IPv6 para backend simple
                     if "/" in val:
                         net = ipaddress.ip_network(val, strict=False)
                         if isinstance(net, ipaddress.IPv4Network):
@@ -143,16 +140,6 @@ def build_allowed_remotes(mode, allowlist, server_url):
                             remotes.add(str(ip))
                 except ValueError:
                     pass
-            elif t == "domain":
-                host = val[2:] if val.startswith("*.") else val
-                domains.extend([host, f"www.{host}", f"m.{host}"])
-                for fam_apex, family in DOMAIN_FAMILIES.items():
-                    if host == fam_apex or host.endswith("." + fam_apex) or fam_apex in host or host in family:
-                        domains.extend(family)
-                        break
-                if "youtube" in host or host in ("youtu.be",) or "googlevideo" in host:
-                    domains.extend(DOMAIN_FAMILIES["youtube.com"])
-        remotes |= resolve_domains(domains)
 
     return sorted(remotes)
 
@@ -174,24 +161,95 @@ def _clear_nft():
     _run(["nft", "delete", "table", "inet", TABLE_NAME], timeout=10)
 
 
-def _apply_nft(remotes):
+def nft_set_add(ips):
+    """Agrega IPv4 al set allow4 (idempotente)."""
+    global _learned_ips
+    added = []
+    with _learn_lock:
+        for ip in ips:
+            try:
+                if not isinstance(ipaddress.ip_address(ip), ipaddress.IPv4Address):
+                    continue
+            except ValueError:
+                continue
+            if ip in _learned_ips:
+                continue
+            r = _run(
+                ["nft", "add", "element", "inet", TABLE_NAME, SET_NAME, "{", f"{ip}", "}"],
+                timeout=5,
+            )
+            if r.returncode == 0:
+                _learned_ips.add(ip)
+                added.append(ip)
+            else:
+                # set puede no existir aún
+                err = (r.stderr or "").strip()
+                if err and "No such file" not in err:
+                    print(f"[NetPolicy] nft add {ip}: {err}")
+    return added
+
+
+def _apply_nft(remotes, enable_dns_redir: bool):
+    global _learned_ips
     _clear_nft()
-    # Crear tabla + chain output policy drop + accepts
+    _learned_ips = set()
+
+    # Solo IPs/host /32 en el set; CIDRs privados van como reglas fijas
+    set_elems = []
+    for r in remotes:
+        if "/" in r:
+            try:
+                net = ipaddress.ip_network(r, strict=False)
+                if isinstance(net, ipaddress.IPv4Network) and net.prefixlen == 32:
+                    set_elems.append(str(net.network_address))
+            except ValueError:
+                pass
+        else:
+            try:
+                if isinstance(ipaddress.ip_address(r), ipaddress.IPv4Address):
+                    set_elems.append(r)
+            except ValueError:
+                pass
+
+    priv = ", ".join(PRIVATE_NETWORKS)
+    elems = ", ".join(set_elems) if set_elems else ""
+    set_body = f" elements = {{ {elems} }}" if elems else ""
+
     script = [
         f"table inet {TABLE_NAME} {{",
+        f"  set {SET_NAME} {{",
+        "    type ipv4_addr",
+        "    flags interval",
+        set_body,
+        "  }",
         "  chain output {",
         "    type filter hook output priority 0; policy drop;",
-        "    oifname \"lo\" accept",
+        '    oifname "lo" accept',
         "    ct state established,related accept",
-    ]
-    if remotes:
-        joined = ", ".join(remotes)
-        script.append(f"    ip daddr {{ {joined} }} accept")
-    script += [
+        f"    ip daddr {{ {priv} }} accept",
+        # Upstream DNS del forwarder (evita bucle del redirect)
+        f"    ip daddr {UPSTREAM_DNS} udp dport 53 accept",
+        f"    ip daddr {UPSTREAM_DNS} tcp dport 53 accept",
+        f"    ip daddr {UPSTREAM_DNS} tcp dport 853 accept",
+        # Bloquear DoT genérico para forzar DNS clásico → learning
+        "    tcp dport 853 drop",
+        "    udp dport 853 drop",
+        f"    ip daddr @{SET_NAME} accept",
         "  }",
-        "}",
     ]
-    conf = "\n".join(script)
+    if enable_dns_redir:
+        script += [
+            "  chain dnsredir {",
+            "    type nat hook output priority -100; policy accept;",
+            # No redirigir queries al upstream del learner
+            f"    ip daddr {UPSTREAM_DNS} udp dport 53 return",
+            f"    ip daddr {UPSTREAM_DNS} tcp dport 53 return",
+            f"    udp dport 53 dnat ip to 127.0.0.1:{DNS_REDIR_PORT}",
+            f"    tcp dport 53 dnat ip to 127.0.0.1:{DNS_REDIR_PORT}",
+            "  }",
+        ]
+    script += ["}"]
+    conf = "\n".join(line for line in script if line is not None)
     r = subprocess.run(
         ["nft", "-f", "-"],
         input=conf,
@@ -202,6 +260,8 @@ def _apply_nft(remotes):
     if r.returncode != 0:
         print(f"[NetPolicy] nft error: {r.stderr}")
         return False
+    with _learn_lock:
+        _learned_ips = set(set_elems)
     return True
 
 
@@ -209,119 +269,136 @@ IPTABLES_COMMENT = "cibermonday-netpolicy"
 
 
 def _clear_iptables():
-    # Eliminar reglas con nuestro comentario
     try:
         r = _run(["iptables", "-S", "OUTPUT"], timeout=10)
         for line in (r.stdout or "").splitlines():
             if IPTABLES_COMMENT in line:
-                # Convert -A to -D
                 parts = line.split()
                 if parts and parts[0] == "-A":
                     parts[0] = "-D"
                     _run(["iptables"] + parts, timeout=10)
     except Exception as e:
         print(f"[NetPolicy] iptables clear error: {e}")
-    # Quitar jump a chain propia si existe
+    _run(["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "udp", "--dport", "53",
+          "-j", "DNAT", "--to-destination", f"127.0.0.1:{DNS_REDIR_PORT}"], timeout=5)
+    _run(["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "--dport", "53",
+          "-j", "DNAT", "--to-destination", f"127.0.0.1:{DNS_REDIR_PORT}"], timeout=5)
     _run(["iptables", "-D", "OUTPUT", "-j", "CIBERMONDAY"], timeout=5)
     _run(["iptables", "-F", "CIBERMONDAY"], timeout=5)
     _run(["iptables", "-X", "CIBERMONDAY"], timeout=5)
 
 
-def _apply_iptables(remotes):
+def _apply_iptables(remotes, enable_dns_redir: bool):
     _clear_iptables()
     _run(["iptables", "-N", "CIBERMONDAY"], timeout=5)
     _run(["iptables", "-F", "CIBERMONDAY"], timeout=5)
-    _run(
-        [
-            "iptables",
-            "-A",
-            "CIBERMONDAY",
-            "-o",
-            "lo",
-            "-j",
-            "ACCEPT",
-            "-m",
-            "comment",
-            "--comment",
-            IPTABLES_COMMENT,
-        ],
-        timeout=5,
-    )
-    _run(
-        [
-            "iptables",
-            "-A",
-            "CIBERMONDAY",
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-            "-m",
-            "comment",
-            "--comment",
-            IPTABLES_COMMENT,
-        ],
-        timeout=5,
-    )
+    for args in (
+        ["-A", "CIBERMONDAY", "-o", "lo", "-j", "ACCEPT"],
+        ["-A", "CIBERMONDAY", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+        ["-A", "CIBERMONDAY", "-d", UPSTREAM_DNS, "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
+        ["-A", "CIBERMONDAY", "-d", UPSTREAM_DNS, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"],
+        ["-A", "CIBERMONDAY", "-p", "tcp", "--dport", "853", "-j", "DROP"],
+        ["-A", "CIBERMONDAY", "-p", "udp", "--dport", "853", "-j", "DROP"],
+    ):
+        _run(["iptables"] + args + ["-m", "comment", "--comment", IPTABLES_COMMENT], timeout=5)
     for remote in remotes:
         _run(
-            [
-                "iptables",
-                "-A",
-                "CIBERMONDAY",
-                "-d",
-                remote,
-                "-j",
-                "ACCEPT",
-                "-m",
-                "comment",
-                "--comment",
-                IPTABLES_COMMENT,
-            ],
+            ["iptables", "-A", "CIBERMONDAY", "-d", remote, "-j", "ACCEPT",
+             "-m", "comment", "--comment", IPTABLES_COMMENT],
             timeout=5,
         )
     _run(
-        [
-            "iptables",
-            "-A",
-            "CIBERMONDAY",
-            "-j",
-            "DROP",
-            "-m",
-            "comment",
-            "--comment",
-            IPTABLES_COMMENT,
-        ],
+        ["iptables", "-A", "CIBERMONDAY", "-j", "DROP", "-m", "comment", "--comment", IPTABLES_COMMENT],
         timeout=5,
     )
     _run(
-        [
-            "iptables",
-            "-I",
-            "OUTPUT",
-            "1",
-            "-j",
-            "CIBERMONDAY",
-            "-m",
-            "comment",
-            "--comment",
-            IPTABLES_COMMENT,
-        ],
+        ["iptables", "-I", "OUTPUT", "1", "-j", "CIBERMONDAY", "-m", "comment", "--comment", IPTABLES_COMMENT],
         timeout=5,
     )
+    if enable_dns_redir:
+        _run(
+            ["iptables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53",
+             "!", "-d", UPSTREAM_DNS, "-j", "DNAT", "--to-destination", f"127.0.0.1:{DNS_REDIR_PORT}"],
+            timeout=5,
+        )
+        _run(
+            ["iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53",
+             "!", "-d", UPSTREAM_DNS, "-j", "DNAT", "--to-destination", f"127.0.0.1:{DNS_REDIR_PORT}"],
+            timeout=5,
+        )
     return True
 
 
-def apply_network_policy(mode, allowlist, server_url):
-    global _last_fingerprint
+def _on_learned_ips(ips):
+    backend = _detect_backend()
+    if backend == "nft":
+        nft_set_add(ips)
+    elif backend == "iptables":
+        global _rule_counter
+        for ip in ips:
+            with _learn_lock:
+                if ip in _learned_ips:
+                    continue
+                _learned_ips.add(ip)
+                _rule_counter += 1
+            _run(
+                ["iptables", "-I", "CIBERMONDAY", "3", "-d", ip, "-j", "ACCEPT",
+                 "-m", "comment", "--comment", IPTABLES_COMMENT],
+                timeout=5,
+            )
+
+
+def _stop_learner():
+    global _learner
+    if _learner:
+        try:
+            _learner.stop()
+        except Exception:
+            pass
+        _learner = None
+
+
+def set_denied_callback(cb):
+    """Registra callback para dominios DNS no allowlist (pedidos de acceso)."""
+    global _on_denied, _learner
+    _on_denied = cb
+    if _learner is not None:
+        _learner._on_denied = cb
+
+
+def _start_learner(allowlist):
+    global _learner, _active_allowlist
+    _active_allowlist = list(allowlist or [])
+    _stop_learner()
+    try:
+        from dns_learner import DnsLearner
+    except ImportError as e:
+        print(f"[NetPolicy] dns_learner no disponible: {e}")
+        return
+    learner = DnsLearner(
+        on_ips=_on_learned_ips,
+        listen_port=DNS_REDIR_PORT,
+        on_denied=_on_denied,
+    )
+    if learner.start(_active_allowlist):
+        _learner = learner
+
+
+def apply_network_policy(mode, allowlist, server_url, on_denied=None):
+    global _last_fingerprint, _on_denied
+    if on_denied is not None:
+        _on_denied = on_denied
     if mode == "unrestricted":
         return clear_network_policy()
 
     remotes = build_allowed_remotes(mode, allowlist, server_url)
-    fingerprint = f"{mode}|{'|'.join(remotes)}"
+    enable_dns = mode == "allowlist"
+    fingerprint = f"{mode}|dns:{enable_dns}|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
+        if _learner and enable_dns:
+            _learner.update_allowlist(allowlist or [])
+            if _on_denied is not None:
+                _learner._on_denied = _on_denied
         return True
 
     backend = _detect_backend()
@@ -329,23 +406,33 @@ def apply_network_policy(mode, allowlist, server_url):
         print("[NetPolicy] No hay nft ni iptables disponibles")
         return False
 
-    print(f"[NetPolicy] Aplicando modo={mode} backend={backend} destinos={len(remotes)}")
-    ok = _apply_nft(remotes) if backend == "nft" else _apply_iptables(remotes)
+    print(f"[NetPolicy] Aplicando modo={mode} backend={backend} seed={len(remotes)} dns_learn={enable_dns}")
+    if backend == "nft":
+        ok = _apply_nft(remotes, enable_dns)
+    else:
+        ok = _apply_iptables(remotes, enable_dns)
+
     if ok:
         _last_fingerprint = fingerprint
+        if enable_dns:
+            _start_learner(allowlist)
+        else:
+            _stop_learner()
     return ok
 
 
-def clear_network_policy():
-    global _last_fingerprint
-    if _last_fingerprint == "unrestricted":
+def clear_network_policy(force: bool = False):
+    global _last_fingerprint, _learned_ips
+    if not force and _last_fingerprint == "unrestricted":
         return True
     print("[NetPolicy] Limpiando política (unrestricted)")
+    _stop_learner()
     backend = _detect_backend()
     if backend == "nft":
         _clear_nft()
     elif backend == "iptables":
         _clear_iptables()
+    _learned_ips = set()
     _last_fingerprint = "unrestricted"
     return True
 

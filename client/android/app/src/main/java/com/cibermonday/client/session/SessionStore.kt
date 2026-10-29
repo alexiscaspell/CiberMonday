@@ -176,6 +176,12 @@ class SessionStore(context: Context) {
             prefs.edit().putBoolean(KEY_NETWORK_FILTER, value).apply()
         }
 
+    var internetRequestEnabled: Boolean
+        get() = prefs.getBoolean(KEY_INTERNET_REQUEST, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_INTERNET_REQUEST, value).apply()
+        }
+
     fun getAllowlist(): List<String> {
         val raw = prefs.getString(KEY_ALLOWLIST, null) ?: return emptyList()
         return try {
@@ -401,6 +407,7 @@ class SessionStore(context: Context) {
             if (it.isNotEmpty()) setAlertThresholds(it)
         }
         (config["network_filter_enabled"] as? Boolean)?.let { networkFilterEnabled = it }
+        (config["internet_request_enabled"] as? Boolean)?.let { internetRequestEnabled = it }
         @Suppress("UNCHECKED_CAST")
         (config["allowlist"] as? List<*>)?.mapNotNull { it as? String }?.let { setAllowlist(it) }
         notifyChanged()
@@ -439,6 +446,7 @@ class SessionStore(context: Context) {
         private const val KEY_END_TIME = "end_time"
         private const val KEY_SERVERS = "known_servers"
         private const val KEY_NETWORK_FILTER = "network_filter_enabled"
+        private const val KEY_INTERNET_REQUEST = "internet_request_enabled"
         private const val KEY_ALLOWLIST = "allowlist"
         private const val KEY_INET_TIME_LIMIT = "internet_time_limit_seconds"
         private const val KEY_INET_START_TIME = "internet_start_time"

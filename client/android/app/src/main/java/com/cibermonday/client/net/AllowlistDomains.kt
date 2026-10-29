@@ -15,6 +15,14 @@ object AllowlistDomains {
             "googleusercontent.com", "googleapis.com", "gstatic.com",
             "google.com", "youtubekids.com"
         ),
+        "github.com" to listOf(
+            "github.com", "githubusercontent.com", "githubassets.com",
+            "github.githubassets.com", "avatars.githubusercontent.com",
+            "raw.githubusercontent.com", "objects.githubusercontent.com",
+            "camo.githubusercontent.com", "cloud.githubusercontent.com",
+            "media.githubusercontent.com", "codeload.github.com", "api.github.com",
+            "ghcr.io", "github.io"
+        ),
         "netflix.com" to listOf(
             "netflix.com", "nflxvideo.net", "nflxso.net", "nflximg.net", "fast.com"
         ),
@@ -46,9 +54,12 @@ object AllowlistDomains {
                 out.add("m.$e")
             }
             FAMILIES[apex]?.forEach { out.add(it) }
-            // Cualquier mención a youtube
+            // Cualquier mención a youtube / github
             if (apex.contains("youtube") || apex == "youtu.be" || apex.contains("googlevideo")) {
                 FAMILIES["youtube.com"]?.forEach { out.add(it) }
+            }
+            if (apex.contains("github") || apex.endsWith("githubusercontent.com") || apex == "ghcr.io") {
+                FAMILIES["github.com"]?.forEach { out.add(it) }
             }
         }
         return out
@@ -60,10 +71,13 @@ object AllowlistDomains {
      * "https://YouTube.com/watch" → "youtube.com"
      */
     fun normalize(raw: String): String? {
-        var e = raw.trim().lowercase()
+        var e = raw.trim()
+        if (e.isBlank() || e.startsWith("#")) return null
+        if ('#' in e) e = e.substringBefore("#").trim()
+        e = e.lowercase()
         if (e.isBlank()) return null
         e = e.removePrefix("http://").removePrefix("https://")
-        e = e.substringBefore("/").substringBefore(":")
+        e = e.substringBefore("/").substringBefore(":").trim()
         if (e.isBlank()) return null
         // *youtube.com (sin punto) → *.youtube.com
         if (e.startsWith("*") && !e.startsWith("*.") && e.length > 1) {

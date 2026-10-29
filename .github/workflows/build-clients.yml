@@ -68,6 +68,8 @@ jobs:
             --hidden-import "registry_manager" `
             --hidden-import "config_gui" `
             --hidden-import "network_policy" `
+            --hidden-import "domain_match" `
+            --hidden-import "dns_learner" `
             --hidden-import "firewall_manager" `
             --hidden-import "tkinter" `
             --hidden-import "tkinter.ttk" `
@@ -87,6 +89,8 @@ jobs:
             --hidden-import "protection" `
             --hidden-import "firewall_manager" `
             --hidden-import "network_policy" `
+            --hidden-import "domain_match" `
+            --hidden-import "dns_learner" `
             --hidden-import "ctypes" `
             --hidden-import "ctypes.wintypes" `
             service.py
@@ -124,7 +128,8 @@ jobs:
         run: |
           mkdir -p cibermonday-linux
           cp client/linux/client.py client/linux/client_base.py client/linux/client_linux.py \
-             client/linux/network_policy.py client/linux/config_gui.py \
+             client/linux/network_policy.py client/linux/domain_match.py client/linux/dns_learner.py \
+             client/linux/config_gui.py \
              client/linux/install_linux.sh client/linux/uninstall_linux.sh \
              client/linux/cibermonday-client.service cibermonday-linux/
           chmod +x cibermonday-linux/install_linux.sh cibermonday-linux/uninstall_linux.sh

@@ -23,7 +23,16 @@ export interface ClientConfig {
   lock_recheck_interval?: number;
   custom_name?: string;
   network_filter_enabled?: boolean;
+  internet_request_enabled?: boolean;
   allowlist?: string[];
+}
+
+export interface AccessRequest {
+  id: string;
+  client_id: string;
+  domain: string;
+  created_at?: string;
+  status?: 'pending' | 'approved' | 'denied';
 }
 
 export interface Client {
@@ -34,6 +43,7 @@ export interface Client {
   current_session?: ClientSession | null;
   internet_session?: InternetSession | null;
   config?: ClientConfig;
+  pending_access_requests?: AccessRequest[];
 }
 
 export interface ServerInfo {

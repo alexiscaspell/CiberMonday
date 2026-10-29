@@ -29,6 +29,7 @@ class ClientManager:
         'max_server_timeouts': 10,
         'lock_recheck_interval': 1,
         'network_filter_enabled': False,
+        'internet_request_enabled': False,
         'allowlist': [],
     }
     
@@ -54,32 +55,111 @@ class ClientManager:
         # Trackea cambios de admin pendientes para evitar que el sync del
         # cliente sobreescriba antes de que el push llegue
         self._pending_admin_changes = {}  # client_id -> datetime
+        # Pedidos de acceso a dominios fuera de allowlist
+        self.access_requests = {}  # request_id -> dict
+
+    @staticmethod
+    def _looks_like_allowlist_rule(item: str) -> bool:
+        """True si el token parece dominio, *.wildcard, IP o CIDR."""
+        if not item:
+            return False
+        if '/' in item:
+            # CIDR IPv4
+            host, _, prefix = item.partition('/')
+            if not prefix.isdigit() or not (0 <= int(prefix) <= 32):
+                return False
+            item = host
+        if item.startswith('*.') and len(item) > 2:
+            item = item[2:]
+        if item.replace('.', '').isdigit():
+            parts = item.split('.')
+            return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+        # dominio / hostname
+        if '.' not in item and item not in ('localhost',):
+            return False
+        if item.startswith('.') or item.endswith('.'):
+            return False
+        allowed = set('abcdefghijklmnopqrstuvwxyz0123456789-.*')
+        return all(c in allowed for c in item)
 
     @staticmethod
     def _normalize_allowlist(entries):
-        """Normaliza y valida entradas de allowlist (dominios, IPs, CIDRs)."""
+        """Normaliza allowlist: dominios, *.wildcards, IPs/CIDR.
+
+        Formato estilo hosts:
+        - dominio activo
+        - ``# dominio`` = regla deshabilitada (se conserva)
+        - ``# === sección ===`` = comentario (se conserva)
+        - líneas en blanco se omiten
+        """
         if entries is None:
             return None
         if not isinstance(entries, list):
             raise ValueError('allowlist debe ser una lista de strings')
+        looks = ClientManager._looks_like_allowlist_rule
         normalized = []
-        seen = set()
+        seen_domains = set()
         for raw in entries:
             if raw is None:
                 continue
-            item = str(raw).strip().lower()
+            item = str(raw).strip()
+            if not item:
+                continue
+
+            disabled = False
+            if item.startswith('#'):
+                rest = item[1:].strip()
+                token = rest.lower().split()[0] if rest else ''
+                if looks(token):
+                    # "# drive.google.com" o "#drive.google.com" → deshabilitada
+                    disabled = True
+                    item = rest
+                else:
+                    # Comentario / encabezado de sección
+                    if item not in normalized:
+                        normalized.append(item)
+                    continue
+
+            # Cola de comentario en línea activa: "educ.ar # nota"
+            if not disabled and '#' in item:
+                item = item.split('#', 1)[0].strip()
+            item = item.lower()
             if not item:
                 continue
             item = item.removeprefix('http://').removeprefix('https://')
-            item = item.split('/')[0].split(':')[0]
+            item = item.split('/')[0].split(':')[0].strip()
             # *youtube.com → *.youtube.com
             if item.startswith('*') and not item.startswith('*.') and len(item) > 1:
                 item = '*.' + item[1:]
-            if not item or item in seen:
+            if not item or not looks(item):
                 continue
-            seen.add(item)
-            normalized.append(item)
+            if item.startswith('.') or item.endswith('*.'):
+                continue
+            stored = f'# {item}' if disabled else item
+            if item in seen_domains:
+                for i, prev in enumerate(normalized):
+                    prev_dom = prev[2:] if prev.startswith('# ') else prev
+                    if prev_dom == item:
+                        normalized[i] = stored
+                        break
+                continue
+            seen_domains.add(item)
+            normalized.append(stored)
         return normalized
+
+    @staticmethod
+    def active_allowlist(entries):
+        """Solo reglas habilitadas (sin #), para aplicar en clientes."""
+        out = []
+        for raw in entries or []:
+            item = str(raw).strip()
+            if not item or item.startswith('#'):
+                continue
+            if '#' in item:
+                item = item.split('#', 1)[0].strip()
+            if item:
+                out.append(item)
+        return out
 
     def _internet_session_info(self, client_id):
         """Info de sesión de internet para respuestas API, o None."""
@@ -183,6 +263,11 @@ class ClientManager:
             )
             if 'network_filter_enabled' in existing_cfg:
                 network_filter = bool(existing_cfg.get('network_filter_enabled'))
+            internet_request = bool(
+                config.get('internet_request_enabled', self.DEFAULT_CONFIG['internet_request_enabled'])
+            )
+            if 'internet_request_enabled' in existing_cfg:
+                internet_request = bool(existing_cfg.get('internet_request_enabled'))
             self.client_configs[client_id] = {
                 'sync_interval': config.get('sync_interval', self.DEFAULT_CONFIG['sync_interval']),
                 'alert_thresholds': config.get('alert_thresholds', self.DEFAULT_CONFIG['alert_thresholds']),
@@ -192,6 +277,7 @@ class ClientManager:
                     'lock_recheck_interval', self.DEFAULT_CONFIG['lock_recheck_interval']
                 ),
                 'network_filter_enabled': network_filter,
+                'internet_request_enabled': internet_request,
                 'allowlist': allowlist,
             }
             if self.client_configs[client_id]['custom_name']:
@@ -327,7 +413,8 @@ class ClientManager:
                 self._clear_internet_session(client_id)
 
             client_info['internet_session'] = self._internet_session_info(client_id)
-            client_info['config'] = self.client_configs.get(client_id, self.DEFAULT_CONFIG.copy())
+            client_info['config'] = self.get_client_config(client_id)
+            client_info['pending_access_requests'] = self.get_pending_access_requests(client_id)
             clients_list.append(client_info)
         
         return clients_list
@@ -572,6 +659,8 @@ class ClientManager:
         # Asegurar claves nuevas en configs antiguas en memoria
         if 'network_filter_enabled' not in cfg:
             cfg['network_filter_enabled'] = self.DEFAULT_CONFIG['network_filter_enabled']
+        if 'internet_request_enabled' not in cfg:
+            cfg['internet_request_enabled'] = self.DEFAULT_CONFIG['internet_request_enabled']
         if 'allowlist' not in cfg:
             cfg['allowlist'] = list(self.DEFAULT_CONFIG['allowlist'])
         return cfg
@@ -579,7 +668,8 @@ class ClientManager:
     def set_client_config(self, client_id, sync_interval=None, alert_thresholds=None,
                           custom_name=None, max_server_timeouts=None,
                           lock_recheck_interval=None,
-                          network_filter_enabled=None, allowlist=None,
+                          network_filter_enabled=None, internet_request_enabled=None,
+                          allowlist=None,
                           notify_client=True):
         """
         Modifica la configuración de un cliente.
@@ -640,6 +730,9 @@ class ClientManager:
         if network_filter_enabled is not None:
             current_config['network_filter_enabled'] = bool(network_filter_enabled)
 
+        if internet_request_enabled is not None:
+            current_config['internet_request_enabled'] = bool(internet_request_enabled)
+
         if allowlist is not None:
             try:
                 current_config['allowlist'] = self._normalize_allowlist(allowlist) or []
@@ -659,6 +752,209 @@ class ClientManager:
             'message': 'Configuración actualizada',
             'config': current_config
         }
+
+    # ==================== ACCESS REQUESTS (allowlist) ====================
+
+    @staticmethod
+    def _normalize_access_domain(raw: str):
+        """Normaliza un dominio pedido; None si inválido / ruido."""
+        if raw is None:
+            return None
+        item = str(raw).strip().lower().rstrip('.')
+        if not item or item.startswith('#'):
+            return None
+        if '#' in item:
+            item = item.split('#', 1)[0].strip()
+        item = item.removeprefix('http://').removeprefix('https://')
+        item = item.split('/')[0].split(':')[0].strip()
+        if item.startswith('*') and not item.startswith('*.') and len(item) > 1:
+            item = '*.' + item[1:]
+        if not item or len(item) > 253:
+            return None
+        if item in ('localhost',) or item.endswith('.local') or item.endswith('.lan'):
+            return None
+        if not ClientManager._looks_like_allowlist_rule(item):
+            return None
+        return item
+
+    def get_pending_access_requests(self, client_id=None):
+        """Lista pedidos pending (opcionalmente filtrados por cliente)."""
+        out = []
+        for req in self.access_requests.values():
+            if req.get('status') != 'pending':
+                continue
+            if client_id and req.get('client_id') != client_id:
+                continue
+            out.append(dict(req))
+        out.sort(key=lambda r: r.get('created_at') or '')
+        return out
+
+    def create_access_request(self, client_id, domain):
+        """Cliente reporta dominio bloqueado. Dedup por (client, domain) pending."""
+        if client_id not in self.clients_db:
+            return {'success': False, 'message': 'Cliente no encontrado'}
+        domain = self._normalize_access_domain(domain)
+        if not domain:
+            return {'success': False, 'message': 'Dominio inválido'}
+
+        for req in self.access_requests.values():
+            if (
+                req.get('client_id') == client_id
+                and req.get('domain') == domain
+                and req.get('status') == 'pending'
+            ):
+                return {
+                    'success': True,
+                    'message': 'Pedido ya pendiente',
+                    'request': dict(req),
+                    'created': False,
+                }
+
+        request_id = str(uuid.uuid4())
+        req = {
+            'id': request_id,
+            'client_id': client_id,
+            'domain': domain,
+            'created_at': datetime.now().isoformat(),
+            'status': 'pending',
+        }
+        self.access_requests[request_id] = req
+        self._touch_client(client_id)
+        print(f"[AccessReq] Nuevo {client_id[:8]}... → {domain}")
+        try:
+            self._sync_with_other_servers()
+        except Exception:
+            pass
+        return {
+            'success': True,
+            'message': 'Pedido registrado',
+            'request': dict(req),
+            'created': True,
+        }
+
+    def approve_access_request(self, client_id, request_id):
+        """Aprueba: agrega dominio a allowlist (permanente) y push config."""
+        req = self.access_requests.get(request_id)
+        if not req or req.get('client_id') != client_id:
+            return {'success': False, 'message': 'Pedido no encontrado'}
+        if req.get('status') != 'pending':
+            return {
+                'success': False,
+                'message': f"Pedido ya {req.get('status')}",
+                'request': dict(req),
+            }
+
+        domain = req.get('domain')
+        cfg = self.get_client_config(client_id)
+        allow = list(cfg.get('allowlist') or [])
+        # Reactivar si estaba como # domain
+        updated = False
+        for i, entry in enumerate(allow):
+            e = str(entry).strip()
+            if e == f'# {domain}' or e == f'#{domain}':
+                allow[i] = domain
+                updated = True
+                break
+            if e == domain:
+                updated = True
+                break
+        if not updated:
+            allow.append(domain)
+
+        result = self.set_client_config(
+            client_id, allowlist=allow, notify_client=True
+        )
+        if not result.get('success'):
+            return result
+
+        req['status'] = 'approved'
+        req['resolved_at'] = datetime.now().isoformat()
+        self.access_requests[request_id] = req
+        # Cerrar otros pending del mismo dominio
+        for other in self.access_requests.values():
+            if (
+                other.get('client_id') == client_id
+                and other.get('domain') == domain
+                and other.get('status') == 'pending'
+                and other.get('id') != request_id
+            ):
+                other['status'] = 'approved'
+                other['resolved_at'] = req['resolved_at']
+        try:
+            self._sync_with_other_servers()
+        except Exception:
+            pass
+        return {
+            'success': True,
+            'message': f'Dominio {domain} agregado a allowlist',
+            'request': dict(req),
+            'config': result.get('config'),
+        }
+
+    def deny_access_request(self, client_id, request_id):
+        """Rechaza pedido sin tocar allowlist."""
+        req = self.access_requests.get(request_id)
+        if not req or req.get('client_id') != client_id:
+            return {'success': False, 'message': 'Pedido no encontrado'}
+        if req.get('status') != 'pending':
+            return {
+                'success': False,
+                'message': f"Pedido ya {req.get('status')}",
+                'request': dict(req),
+            }
+        req['status'] = 'denied'
+        req['resolved_at'] = datetime.now().isoformat()
+        self.access_requests[request_id] = req
+        try:
+            self._sync_with_other_servers()
+        except Exception:
+            pass
+        return {
+            'success': True,
+            'message': 'Pedido rechazado',
+            'request': dict(req),
+        }
+
+    def _merge_access_requests_from_remote(self, clients_list):
+        """Fusiona pedidos de acceso recibidos vía sync entre servidores."""
+        for client_data in clients_list or []:
+            client_id = client_data.get('id')
+            if not client_id:
+                continue
+            for remote in client_data.get('pending_access_requests') or []:
+                rid = remote.get('id')
+                domain = self._normalize_access_domain(remote.get('domain') or '')
+                if not rid or not domain:
+                    continue
+                status = remote.get('status') or 'pending'
+                local = self.access_requests.get(rid)
+                if local is None:
+                    # Evitar duplicar pending mismo dominio
+                    if status == 'pending':
+                        dup = False
+                        for existing in self.access_requests.values():
+                            if (
+                                existing.get('client_id') == client_id
+                                and existing.get('domain') == domain
+                                and existing.get('status') == 'pending'
+                            ):
+                                dup = True
+                                break
+                        if dup:
+                            continue
+                    self.access_requests[rid] = {
+                        'id': rid,
+                        'client_id': client_id,
+                        'domain': domain,
+                        'created_at': remote.get('created_at') or datetime.now().isoformat(),
+                        'status': status,
+                        'resolved_at': remote.get('resolved_at'),
+                    }
+                else:
+                    # Preferir estado terminal sobre pending
+                    if local.get('status') == 'pending' and status in ('approved', 'denied'):
+                        local['status'] = status
+                        local['resolved_at'] = remote.get('resolved_at') or datetime.now().isoformat()
     
     # ==================== CLIENT PUSH NOTIFICATIONS ====================
     
@@ -979,6 +1275,8 @@ class ClientManager:
         if not clients_list:
             return
 
+        self._merge_access_requests_from_remote(clients_list)
+
         for client_data in clients_list:
             client_id = client_data.get('id')
             if not client_id:
@@ -1011,12 +1309,18 @@ class ClientManager:
             if isinstance(remote_config, dict):
                 if client_id not in self.client_configs:
                     self.client_configs[client_id] = self.DEFAULT_CONFIG.copy()
+                    self.client_configs[client_id]['allowlist'] = list(
+                        self.DEFAULT_CONFIG['allowlist']
+                    )
                 for key in (
                     'sync_interval',
                     'alert_thresholds',
                     'custom_name',
                     'max_server_timeouts',
                     'lock_recheck_interval',
+                    'network_filter_enabled',
+                    'internet_request_enabled',
+                    'allowlist',
                 ):
                     if key in remote_config and remote_config[key] is not None:
                         self.client_configs[client_id][key] = remote_config[key]
@@ -1109,7 +1413,113 @@ class ClientManager:
                             self.sync_clients_from_remote(remote_clients)
             except Exception as e:
                 print(f"[Sync] Error con {server_url}: {e}")
-    
+
+    def probe_client_live(self, client_id):
+        """
+        Consulta el diagnóstico del cliente en la LAN y adopta sesión/internet.
+        Returns: dict {ok, reason?}
+        """
+        if client_id not in self.clients_db:
+            return {'ok': False, 'reason': 'unknown'}
+        client = self.clients_db[client_id]
+        client_ip = client.get('client_ip')
+        port = int(client.get('diagnostic_port') or 5002)
+        if not client_ip:
+            return {'ok': False, 'reason': 'no_ip'}
+
+        url = f"http://{client_ip}:{port}/api/diagnostic"
+        try:
+            req = urllib.request.Request(url, headers={'Accept': 'application/json'})
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+        except Exception as e:
+            # Fallback mínimo
+            try:
+                url2 = f"http://{client_ip}:{port}/api/status"
+                req = urllib.request.Request(url2, headers={'Accept': 'application/json'})
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+            except Exception as e2:
+                return {'ok': False, 'reason': str(e2) or str(e)}
+
+        self._touch_client(client_id)
+        if client.get('client_ip') != client_ip:
+            self.clients_db[client_id]['client_ip'] = client_ip
+
+        session = data.get('session')
+        if isinstance(session, dict) and session.get('remaining_seconds') is not None:
+            rem = int(session.get('remaining_seconds') or 0)
+            tl = int(session.get('time_limit_seconds') or session.get('time_limit') or rem or 0)
+            self.report_session(client_id, rem, tl if tl > 0 else None)
+        elif data.get('has_session') and data.get('remaining_seconds') is not None:
+            rem = int(data.get('remaining_seconds') or 0)
+            self.report_session(client_id, rem, None)
+
+        inet = data.get('internet_session')
+        if isinstance(inet, dict) and inet.get('remaining_seconds') is not None:
+            rem = int(inet.get('remaining_seconds') or 0)
+            tl = int(inet.get('time_limit_seconds') or inet.get('time_limit') or rem or 0)
+            self.report_internet_session(client_id, rem, tl if tl > 0 else None)
+
+        return {'ok': True}
+
+    def force_refresh(self):
+        """
+        Sync con otros servidores + sondeo en vivo de cada cliente.
+        Usado por el botón Actualizar del panel.
+        """
+        self._sync_with_other_servers()
+
+        reached = 0
+        failed = 0
+        skipped = 0
+        details = []
+
+        def _probe(cid):
+            return cid, self.probe_client_live(cid)
+
+        client_ids = list(self.clients_db.keys())
+        if client_ids:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=min(8, len(client_ids))) as pool:
+                futs = [pool.submit(_probe, cid) for cid in client_ids]
+                for fut in as_completed(futs):
+                    try:
+                        cid, res = fut.result()
+                    except Exception as e:
+                        failed += 1
+                        details.append({'id': '?', 'ok': False, 'reason': str(e)})
+                        continue
+                    if res.get('ok'):
+                        reached += 1
+                    elif res.get('reason') == 'no_ip':
+                        skipped += 1
+                    else:
+                        failed += 1
+                    details.append({'id': cid[:8], **res})
+
+        total = len(client_ids)
+        if total == 0:
+            message = 'Sin clientes — sync de servidores completado'
+        else:
+            message = (
+                f'Actualizado: {reached}/{total} clientes en vivo'
+                + (f', {failed} sin respuesta' if failed else '')
+                + (f', {skipped} sin IP' if skipped else '')
+            )
+
+        return {
+            'success': True,
+            'message': message,
+            'reached': reached,
+            'failed': failed,
+            'skipped': skipped,
+            'total': total,
+            'details': details,
+            'known_servers': self.get_servers(),
+            'known_clients': self.get_clients_sync_payload(),
+        }
+
     # ==================== SERVER CONFIG ====================
     
     def get_server_config(self):

@@ -39,6 +39,8 @@ pyinstaller --onefile ^
     --hidden-import "registry_manager" ^
     --hidden-import "config_gui" ^
     --hidden-import "network_policy" ^
+    --hidden-import "domain_match" ^
+    --hidden-import "dns_learner" ^
     --hidden-import "firewall_manager" ^
     --hidden-import "requests" ^
     client.py

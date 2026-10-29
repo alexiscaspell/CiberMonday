@@ -52,6 +52,7 @@ class ApiClient(private val store: SessionStore) {
                     .put("alert_thresholds", JSONArray(store.getAlertThresholds()))
                     .put("custom_name", store.customName ?: JSONObject.NULL)
                     .put("network_filter_enabled", store.networkFilterEnabled)
+                    .put("internet_request_enabled", store.internetRequestEnabled)
                     .put("allowlist", JSONArray(store.getAllowlist()))
             )
             put("known_servers", serversToJson(store.loadServers()))
@@ -231,6 +232,46 @@ class ApiClient(private val store: SessionStore) {
         return after > 0 && after != before
     }
 
+    /**
+     * Notifica a todos los servidores un dominio bloqueado (pedido de acceso).
+     * Debounce 10 min por dominio. Solo si internet_request_enabled.
+     */
+    fun reportAccessRequest(domain: String) {
+        if (!store.internetRequestEnabled || !store.networkFilterEnabled) return
+        val name = domain.trim().lowercase().trimEnd('.')
+        if (name.isBlank() || name.length > 253) return
+        if (name == "localhost" || name.endsWith(".local") || name.endsWith(".lan")) return
+        if (name.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) return
+        val expanded = AllowlistDomains.expand(store.getAllowlist())
+        if (AllowlistDomains.hostAllowed(name, expanded)) return
+
+        val now = System.currentTimeMillis()
+        synchronized(accessReqLock) {
+            val last = accessReqCooldown[name] ?: 0L
+            if (now - last < ACCESS_REQ_COOLDOWN_MS) return
+            accessReqCooldown[name] = now
+        }
+
+        val clientId = store.clientId ?: return
+        val body = JSONObject().put("domain", name)
+        Thread({
+            val servers = store.loadServers().map { it.url }.toMutableSet()
+            val primary = store.serverUrl.trimEnd('/')
+            if (primary.isNotBlank()) servers.add(primary)
+            for (url in servers) {
+                if (url.isBlank()) continue
+                try {
+                    if (!health(url)) continue
+                    val resp = postJson("$url/api/client/$clientId/access-request", body)
+                    if (resp?.code == 200) {
+                        android.util.Log.i(TAG, "AccessReq $name → $url")
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }, "cm-access-req").apply { isDaemon = true }.start()
+    }
+
     /** Avisa a un servidor de los demás conocidos (paridad Linux/Windows). */
     private fun postSyncServers(serverUrl: String) {
         try {
@@ -317,6 +358,10 @@ class ApiClient(private val store: SessionStore) {
 
     companion object {
         const val DIAGNOSTIC_PORT = 5002
+        private const val TAG = "ApiClient"
+        private const val ACCESS_REQ_COOLDOWN_MS = 10 * 60 * 1000L
+        private val accessReqLock = Any()
+        private val accessReqCooldown = mutableMapOf<String, Long>()
 
         fun deviceName(): String {
             val model = Build.MODEL ?: "Android"

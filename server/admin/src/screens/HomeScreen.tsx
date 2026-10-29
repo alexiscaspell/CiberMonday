@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -36,14 +36,19 @@ export function HomeScreen() {
   const [broadcast, setBroadcast] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const refreshingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [broadcastDraft, setBroadcastDraft] = useState('');
   const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const notify = (msg: string) => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') window.alert(msg);
-    else Alert.alert('CiberMonday', msg);
-  };
+  const notify = useCallback((msg: string) => {
+    // Toast no bloqueante (alert se siente como “no hace nada” / molesta)
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3200);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -61,45 +66,90 @@ export function HomeScreen() {
 
   const loadAll = useCallback(async (withForceSync = false) => {
     setError(null);
+    const started = Date.now();
+    let syncMsg: string | null = null;
     try {
       if (withForceSync) {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 15000);
         try {
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 4000);
-          await api.forceSync();
+          const res = await api.forceSync(ctrl.signal);
+          syncMsg = res?.message || 'Actualizado';
+        } catch (e: any) {
+          if (e?.name !== 'AbortError') {
+            syncMsg = e?.message || 'No se pudo forzar sync';
+            console.warn('[refresh] force-sync:', e?.message || e);
+          } else {
+            syncMsg = 'Sync lento — mostrando datos locales';
+          }
+        } finally {
           clearTimeout(t);
-        } catch {
-          /* ignore sync errors */
         }
       }
-      const [c, info, cfg, srv] = await Promise.all([
+
+      // Cada endpoint independiente: uno fallando no deja la UI en 0 clientes
+      const [cRes, infoRes, cfgRes, srvRes] = await Promise.allSettled([
         api.fetchClients(),
         api.fetchServerInfo(),
-        api.fetchServerConfig().catch(() => null),
+        api.fetchServerConfig(),
         api.fetchServers(),
       ]);
-      setClients(c);
-      setServerUrl(info.url);
-      setBroadcast(cfg?.broadcast_interval ?? info.broadcast_interval ?? null);
-      setServers(srv);
+
+      if (cRes.status === 'fulfilled') {
+        setClients(cRes.value);
+      }
+      if (infoRes.status === 'fulfilled') {
+        setServerUrl(infoRes.value.url);
+        if (cfgRes.status !== 'fulfilled') {
+          setBroadcast(infoRes.value.broadcast_interval ?? null);
+        }
+      }
+      if (cfgRes.status === 'fulfilled') {
+        setBroadcast(cfgRes.value.broadcast_interval ?? null);
+      }
+      if (srvRes.status === 'fulfilled') {
+        setServers(srvRes.value);
+      }
+
+      const hardFail =
+        cRes.status === 'rejected' &&
+        infoRes.status === 'rejected' &&
+        srvRes.status === 'rejected';
+      if (hardFail) {
+        const msg =
+          (cRes as PromiseRejectedResult).reason?.message ||
+          'No se pudo conectar al servidor';
+        setError(msg);
+        if (withForceSync) syncMsg = syncMsg || msg;
+      }
+
+      if (withForceSync && syncMsg) notify(syncMsg);
     } catch (e: any) {
       setError(e.message || 'No se pudo conectar al servidor');
+      if (withForceSync) notify(e.message || 'Error al actualizar');
     } finally {
+      const wait = Math.max(0, 350 - (Date.now() - started));
+      if (wait) await new Promise((r) => setTimeout(r, wait));
       setLoading(false);
+      refreshingRef.current = false;
       setRefreshing(false);
     }
-  }, []);
+  }, [notify]);
 
   useEffect(() => {
     if (!ready || showSetup) return;
     loadAll(false);
-    const id = setInterval(() => loadAll(false), 5000);
+    const id = setInterval(() => {
+      if (!refreshingRef.current) loadAll(false);
+    }, 5000);
     return () => clearInterval(id);
   }, [ready, showSetup, loadAll]);
 
-  const onRefresh = async () => {
+  const onRefresh = () => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
     setRefreshing(true);
-    await loadAll(true);
+    void loadAll(true);
   };
 
   const onCopyUrl = async () => {
@@ -262,13 +312,85 @@ export function HomeScreen() {
         </View>
       </ScrollView>
 
-      <Pressable style={styles.fab} onPress={onRefresh}>
-        {refreshing ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.fabText}>↻</Text>
+      {toast
+        ? Platform.OS === 'web'
+          ? React.createElement(
+              'div',
+              {
+                role: 'status',
+                style: {
+                  position: 'fixed',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  bottom: 96,
+                  maxWidth: 480,
+                  width: 'calc(100% - 48px)',
+                  background: '#1f2937',
+                  color: '#fff',
+                  fontWeight: 600,
+                  textAlign: 'center',
+                  padding: '12px 16px',
+                  borderRadius: 10,
+                  zIndex: 2000,
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
+                  pointerEvents: 'none',
+                },
+              },
+              toast,
+            )
+          : (
+            <View style={styles.toast} pointerEvents="none">
+              <Text style={styles.toastText}>{toast}</Text>
+            </View>
+          )
+        : null}
+
+      {Platform.OS === 'web'
+        ? React.createElement(
+            'button',
+            {
+              type: 'button',
+              onClick: (e: { preventDefault: () => void }) => {
+                e.preventDefault();
+                onRefresh();
+              },
+              disabled: refreshing,
+              'aria-label': 'Actualizar',
+              title: 'Forzar sincronización y actualizar',
+              style: {
+                position: 'fixed',
+                right: 24,
+                bottom: 24,
+                width: 56,
+                height: 56,
+                borderRadius: 28,
+                border: 'none',
+                backgroundColor: colors.primary,
+                color: '#fff',
+                fontSize: 28,
+                fontWeight: 700,
+                cursor: refreshing ? 'wait' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+                zIndex: 1000,
+                opacity: refreshing ? 0.85 : 1,
+              },
+            },
+            refreshing
+              ? React.createElement(ActivityIndicator, { color: '#fff' })
+              : '↻',
+          )
+        : (
+          <Pressable style={styles.fab} onPress={onRefresh} accessibilityLabel="Actualizar">
+            {refreshing ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.fabText}>↻</Text>
+            )}
+          </Pressable>
         )}
-      </Pressable>
 
       {showBroadcastModal ? (
         <View style={styles.modalOverlay}>
@@ -403,6 +525,21 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
   },
   fabText: { color: '#fff', fontSize: 28, fontWeight: '700', lineHeight: 32 },
+  toast: {
+    position: 'absolute',
+    left: 24,
+    right: 24,
+    bottom: 96,
+    maxWidth: 480,
+    alignSelf: 'center',
+    backgroundColor: '#1f2937',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
+    zIndex: 1100,
+    elevation: 6,
+  },
+  toastText: { color: '#fff', fontWeight: '600', textAlign: 'center' },
   modalOverlay: {
     ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.45)',

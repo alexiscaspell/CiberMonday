@@ -1,6 +1,6 @@
 """
 Política de red CiberMonday (Windows).
-Allowlist + corte de internet vía firewall outbound (default block + allows).
+Allowlist + corte outbound; DNS learning vía forwarder en 127.0.0.1.
 """
 
 from __future__ import annotations
@@ -9,8 +9,11 @@ import ipaddress
 import socket
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from urllib.parse import urlparse
+
+from domain_match import expand_allowed_names
 
 RULE_PREFIX = "CiberMonday NetPolicy"
 PRIVATE_NETWORKS = (
@@ -24,24 +27,14 @@ PRIVATE_NETWORKS = (
     "fe80::/10",
 )
 
-# Familias CDN (mismo criterio que Android AllowlistDomains)
-DOMAIN_FAMILIES = {
-    "youtube.com": (
-        "youtube.com", "youtu.be", "youtube-nocookie.com",
-        "googlevideo.com", "ytimg.com", "yt3.ggpht.com", "ggpht.com",
-        "googleusercontent.com", "googleapis.com", "gstatic.com", "google.com",
-    ),
-    "netflix.com": ("netflix.com", "nflxvideo.net", "nflxso.net", "nflximg.net", "fast.com"),
-    "twitch.tv": ("twitch.tv", "ttvnw.net", "jtvnw.net", "twitchcdn.net"),
-    "discord.com": ("discord.com", "discordapp.com", "discord.gg", "discord.media", "discordapp.net"),
-    "instagram.com": ("instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net", "facebook.net"),
-    "facebook.com": ("facebook.com", "fbcdn.net", "facebook.net", "instagram.com", "cdninstagram.com"),
-    "tiktok.com": ("tiktok.com", "tiktokv.com", "tiktokcdn.com", "musical.ly", "byteoversea.com"),
-}
-
-# Estado previo del perfil outbound para restaurar
 _saved_outbound_policy = None
+_saved_dns = None  # list of (iface_name, dns_list)
 _last_fingerprint = None
+_learner = None
+_learned_ips: set[str] = set()
+_learn_lock = threading.Lock()
+_rule_seq = 0
+_on_denied = None  # callback(qname) opcional
 
 
 def _run(cmd, timeout=15):
@@ -52,7 +45,6 @@ def _run(cmd, timeout=15):
 
 
 def classify_entry(entry: str):
-    """Retorna ('cidr'|'ip'|'domain', valor_normalizado) o None."""
     raw = (entry or "").strip().lower()
     if not raw:
         return None
@@ -67,7 +59,6 @@ def classify_entry(entry: str):
         return ("ip", str(ip))
     except ValueError:
         pass
-    # dominio / wildcard
     host = raw[2:] if raw.startswith("*.") else raw
     if "." in host or host == "localhost":
         return ("domain", raw)
@@ -75,13 +66,11 @@ def classify_entry(entry: str):
 
 
 def resolve_domains(domains, timeout=2.0):
-    """Resuelve dominios (sin wildcard expand) a IPs."""
     ips = set()
     for d in domains:
         host = d[2:] if d.startswith("*.") else d
         try:
-            infos = socket.getaddrinfo(host, None)
-            for info in infos:
+            for info in socket.getaddrinfo(host, None):
                 addr = info[4][0]
                 try:
                     ipaddress.ip_address(addr)
@@ -93,7 +82,7 @@ def resolve_domains(domains, timeout=2.0):
     return ips
 
 
-def host_from_server_url(server_url: str | None):
+def host_from_server_url(server_url):
     if not server_url:
         return None
     try:
@@ -104,9 +93,6 @@ def host_from_server_url(server_url: str | None):
 
 
 def compute_policy_mode(network_filter_enabled, allowlist, internet_session_info, device_session_active):
-    """
-    Retorna ('unrestricted' | 'allowlist' | 'always_allowed_only').
-    """
     if not device_session_active:
         return "unrestricted"
 
@@ -121,47 +107,11 @@ def compute_policy_mode(network_filter_enabled, allowlist, internet_session_info
     if network_filter_enabled:
         return "allowlist"
 
-    if inet_exists and inet_remaining > 0:
-        # Timer activo pero sin filtro: internet completo hasta que expire
-        return "unrestricted"
-
     return "unrestricted"
 
 
-def _expand_allowlist_domains(allowlist):
-    """Expande entradas a apex + CDNs conocidos + www/m."""
-    out = []
-    seen = set()
-    for entry in allowlist or []:
-        kind = classify_entry(entry)
-        if not kind:
-            continue
-        t, val = kind
-        if t in ("ip", "cidr"):
-            if val not in seen:
-                seen.add(val)
-                out.append(("ip_or_cidr", val))
-            continue
-        host = val[2:] if val.startswith("*.") else val
-        candidates = {host, f"www.{host}", f"m.{host}"}
-        apex = host
-        for fam_apex, family in DOMAIN_FAMILIES.items():
-            if apex == fam_apex or apex.endswith("." + fam_apex) or fam_apex in apex or apex in family:
-                candidates.update(family)
-                break
-        if "youtube" in apex or apex in ("youtu.be",) or "googlevideo" in apex:
-            candidates.update(DOMAIN_FAMILIES["youtube.com"])
-        for d in sorted(candidates):
-            if d not in seen:
-                seen.add(d)
-                out.append(("domain", d))
-    return out
-
-
 def build_allowed_remotes(mode, allowlist, server_url):
-    """Lista de remoteip (IPs/CIDRs) a permitir en outbound."""
     remotes = set(PRIVATE_NETWORKS)
-
     server_host = host_from_server_url(server_url)
     if server_host:
         try:
@@ -171,24 +121,17 @@ def build_allowed_remotes(mode, allowlist, server_url):
             remotes |= resolve_domains([server_host])
 
     if mode == "allowlist":
-        domains = []
-        for kind, val in _expand_allowlist_domains(allowlist):
-            if kind == "ip_or_cidr":
-                remotes.add(val)
-            else:
-                domains.append(val)
-        remotes |= resolve_domains(domains)
-
+        remotes |= resolve_domains(sorted(expand_allowed_names(allowlist)))
+        for entry in allowlist or []:
+            kind = classify_entry(entry)
+            if kind and kind[0] in ("ip", "cidr"):
+                remotes.add(kind[1])
     return sorted(remotes)
 
 
 def _delete_our_rules():
-    # Eliminar por prefijo: netsh no soporta wildcard; listar y borrar
     try:
-        r = _run(
-            ["netsh", "advfirewall", "firewall", "show", "rule", "name=all"],
-            timeout=30,
-        )
+        r = _run(["netsh", "advfirewall", "firewall", "show", "rule", "name=all"], timeout=30)
         names = set()
         current = None
         for line in (r.stdout or "").splitlines():
@@ -198,10 +141,7 @@ def _delete_our_rules():
                 names.add(current)
                 current = None
         for name in names:
-            _run(
-                ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"],
-                timeout=10,
-            )
+            _run(["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"], timeout=10)
     except Exception as e:
         print(f"[NetPolicy] Error limpiando reglas: {e}")
 
@@ -228,14 +168,7 @@ def _set_outbound_block(enabled: bool):
                     _saved_outbound_policy[p] = "allow"
         for p in profiles:
             _run(
-                [
-                    "netsh",
-                    "advfirewall",
-                    "set",
-                    p,
-                    "firewallpolicy",
-                    "blockinbound,blockoutbound",
-                ],
+                ["netsh", "advfirewall", "set", p, "firewallpolicy", "blockinbound,blockoutbound"],
                 timeout=10,
             )
     else:
@@ -255,18 +188,9 @@ def _add_allow_rule(name_suffix: str, remoteip: str) -> bool:
     name = f"{RULE_PREFIX} {name_suffix}"
     r = _run(
         [
-            "netsh",
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            f"name={name}",
-            "dir=out",
-            "action=allow",
-            "enable=yes",
-            "profile=any",
-            f"remoteip={remoteip}",
-            "description=CiberMonday network allowlist",
+            "netsh", "advfirewall", "firewall", "add", "rule",
+            f"name={name}", "dir=out", "action=allow", "enable=yes", "profile=any",
+            f"remoteip={remoteip}", "description=CiberMonday network allowlist",
         ],
         timeout=10,
     )
@@ -277,47 +201,201 @@ def _add_allow_rule(name_suffix: str, remoteip: str) -> bool:
     return True
 
 
-def apply_network_policy(mode, allowlist, server_url):
-    """Aplica o limpia la política según mode."""
-    global _last_fingerprint
+def learn_ips(ips):
+    """Callback del DnsLearner: agrega reglas outbound para IPs nuevas."""
+    global _rule_seq
+    for ip in ips:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        key = str(addr)
+        with _learn_lock:
+            if key in _learned_ips:
+                continue
+            _learned_ips.add(key)
+            _rule_seq += 1
+            seq = _rule_seq
+        _add_allow_rule(f"learn-{seq}", key)
+
+
+def _list_ipv4_interfaces():
+    """Nombres de interfaces con IPv4 (netsh)."""
+    r = _run(["netsh", "interface", "ipv4", "show", "interfaces"], timeout=15)
+    names = []
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("idx") or set(line) <= set("- "):
+            continue
+        parts = line.split()
+        if len(parts) >= 5 and parts[0].isdigit():
+            # Idx Met MTU State Name...
+            name = " ".join(parts[4:])
+            if name and name.lower() not in ("loopback*", "loopback"):
+                names.append(name)
+    return names
+
+
+def _save_and_set_dns_localhost():
+    """Guarda DNS actual y apunta interfaces a 127.0.0.1."""
+    global _saved_dns
+    if _saved_dns is not None:
+        return
+    saved = []
+    for iface in _list_ipv4_interfaces():
+        r = _run(["netsh", "interface", "ipv4", "show", "dnsservers", f"name={iface}"], timeout=10)
+        dns_list = []
+        for line in (r.stdout or "").splitlines():
+            line = line.strip()
+            # líneas con IPs
+            try:
+                ipaddress.IPv4Address(line.split()[-1] if line.split() else "")
+                cand = line.split()[-1]
+                ipaddress.ip_address(cand)
+                dns_list.append(cand)
+            except Exception:
+                if "dhcp" in line.lower() or "dhcp" in (r.stdout or "").lower():
+                    dns_list = ["dhcp"]
+        if not dns_list:
+            # detectar DHCP en el bloque
+            blob = (r.stdout or "").lower()
+            dns_list = ["dhcp"] if "dhcp" in blob else []
+        saved.append((iface, dns_list))
+        _run(
+            ["netsh", "interface", "ipv4", "set", "dnsservers", f"name={iface}",
+             "static", "127.0.0.1", "primary"],
+            timeout=10,
+        )
+    _saved_dns = saved
+    print(f"[NetPolicy] DNS → 127.0.0.1 en {len(saved)} interfaces")
+
+
+def _restore_dns():
+    global _saved_dns
+    if _saved_dns is None:
+        return
+    for iface, dns_list in _saved_dns:
+        if not dns_list or dns_list == ["dhcp"] or (len(dns_list) == 1 and dns_list[0] == "dhcp"):
+            _run(
+                ["netsh", "interface", "ipv4", "set", "dnsservers", f"name={iface}", "dhcp"],
+                timeout=10,
+            )
+        else:
+            primary = dns_list[0]
+            _run(
+                ["netsh", "interface", "ipv4", "set", "dnsservers", f"name={iface}",
+                 "static", primary, "primary"],
+                timeout=10,
+            )
+            for extra in dns_list[1:]:
+                _run(
+                    ["netsh", "interface", "ipv4", "add", "dnsservers", f"name={iface}",
+                     extra],
+                    timeout=10,
+                )
+    _saved_dns = None
+    print("[NetPolicy] DNS restaurado")
+
+
+def _stop_learner():
+    global _learner
+    if _learner:
+        try:
+            _learner.stop()
+        except Exception:
+            pass
+        _learner = None
+
+
+def set_denied_callback(cb):
+    """Registra callback para dominios DNS no allowlist (pedidos de acceso)."""
+    global _on_denied, _learner
+    _on_denied = cb
+    if _learner is not None:
+        _learner._on_denied = cb
+
+
+def _start_learner(allowlist):
+    global _learner
+    _stop_learner()
+    try:
+        from dns_learner import DnsLearner
+    except ImportError as e:
+        print(f"[NetPolicy] dns_learner no disponible: {e}")
+        return
+    learner = DnsLearner(on_ips=learn_ips, on_denied=_on_denied)
+    if learner.start(allowlist or []):
+        _learner = learner
+        if learner.listen_port_used == 53:
+            _save_and_set_dns_localhost()
+        else:
+            print("[NetPolicy] DNS learner en puerto fallback; no se cambió DNS del sistema")
+
+
+def apply_network_policy(mode, allowlist, server_url, on_denied=None):
+    global _last_fingerprint, _learned_ips, _on_denied
+    if on_denied is not None:
+        _on_denied = on_denied
     if mode == "unrestricted":
         return clear_network_policy()
 
     remotes = build_allowed_remotes(mode, allowlist, server_url)
-    fingerprint = f"{mode}|{'|'.join(remotes)}"
+    enable_dns = mode == "allowlist"
+    fingerprint = f"{mode}|dns:{enable_dns}|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
+        if _learner and enable_dns:
+            _learner.update_allowlist(allowlist or [])
+            if _on_denied is not None:
+                _learner._on_denied = _on_denied
         return True
 
-    print(f"[NetPolicy] Aplicando modo={mode} destinos={len(remotes)}")
+    print(f"[NetPolicy] Aplicando modo={mode} destinos={len(remotes)} dns_learn={enable_dns}")
     _delete_our_rules()
     _set_outbound_block(True)
+    _learned_ips = set()
 
     ok_count = 0
     for i, remote in enumerate(remotes):
         if _add_allow_rule(f"allow-{i}", remote):
             ok_count += 1
+            if "/" not in remote:
+                try:
+                    ipaddress.ip_address(remote)
+                    _learned_ips.add(remote)
+                except ValueError:
+                    pass
 
     if ok_count == 0 and remotes:
-        print("[NetPolicy] Ninguna regla allow se aplicó (¿sin admin / netsh?)")
+        print("[NetPolicy] Ninguna regla allow se aplicó")
         return False
 
+    # Permitir DNS al upstream del learner siempre
+    _add_allow_rule("dns-upstream", "1.1.1.1")
+
     _last_fingerprint = fingerprint
+    if enable_dns:
+        _start_learner(allowlist)
+    else:
+        _stop_learner()
+        _restore_dns()
     return True
 
 
 def clear_network_policy(force: bool = False):
-    global _last_fingerprint
+    global _last_fingerprint, _learned_ips
     if not force and _last_fingerprint == "unrestricted":
         return True
     print("[NetPolicy] Limpiando política (unrestricted)")
+    _stop_learner()
+    _restore_dns()
     _delete_our_rules()
     _set_outbound_block(False)
+    _learned_ips = set()
     _last_fingerprint = "unrestricted"
     return True
 
 
 def internet_session_info_from_data(data):
-    """Construye info de sesión de internet desde dict persistido."""
     if not data:
         return None
     try:

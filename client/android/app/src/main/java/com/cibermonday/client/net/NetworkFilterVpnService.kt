@@ -25,9 +25,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * VPN local (CGNAT-safe).
  *
- * Allowlist: captura internet público y excluye IPs de dominios permitidos (+ CDNs
- * expandidos). DNS públicos / Private DNS (1.1.1.1, 8.8.8.8, …) se excluyen para
- * que la resolución no se rompa (DoT). Apps nativas (YouTube, etc.) salen del túnel.
+ * Allowlist: excluye IPs sembradas + aprende destinos por SNI (TLS) cuando el
+ * paquete cae en el TUN (p.ej. con Private DNS). DNS públicos se excluyen para
+ * no romper DoT. Apps nativas (YouTube, etc.) salen del túnel.
  */
 class NetworkFilterVpnService : VpnService() {
 
@@ -203,16 +203,95 @@ class NetworkFilterVpnService : VpnService() {
         val tun = tunInterface ?: return
         val input = FileInputStream(tun.fileDescriptor)
         val buf = ByteArray(32767)
+        val store = CiberMondayApp.instance.store
         while (running.get()) {
             try {
                 val n = input.read(buf)
                 if (n < 0) break
+                if (activeMode == SessionStore.MODE_ALLOWLIST && n > 40) {
+                    maybeLearnFromPacket(buf, n, store)
+                }
             } catch (_: InterruptedException) {
                 break
             } catch (e: Exception) {
                 if (running.get()) Log.d(TAG, "drainLoop: ${e.message}")
             }
         }
+    }
+
+    /** SNI learning: si el ClientHello nombra un host allowlist, excluir dest IP. */
+    private fun maybeLearnFromPacket(buf: ByteArray, n: Int, store: SessionStore) {
+        try {
+            if ((buf[0].toInt() ushr 4) != 4) return // solo IPv4
+            val ihl = (buf[0].toInt() and 0x0f) * 4
+            if (n < ihl + 20) return
+            if (buf[9].toInt() and 0xff != 6) return // TCP
+            val dest = "${buf[16].toInt() and 0xff}.${buf[17].toInt() and 0xff}." +
+                "${buf[18].toInt() and 0xff}.${buf[19].toInt() and 0xff}"
+            if (seededIps.contains(dest)) return
+            val dataOff = ihl + ((buf[ihl + 12].toInt() ushr 4) and 0x0f) * 4
+            if (dataOff + 6 >= n) return
+            // TLS record: Handshake (22)
+            if (buf[dataOff].toInt() and 0xff != 0x16) return
+            val hs = dataOff + 5
+            if (hs >= n || (buf[hs].toInt() and 0xff) != 0x01) return // ClientHello
+            val sni = extractSni(buf, hs, n) ?: return
+            val expanded = AllowlistDomains.expand(store.getAllowlist())
+            if (!AllowlistDomains.hostAllowed(sni, expanded)) {
+                // Best-effort: pedido de acceso si el admin activó notificar
+                if (store.internetRequestEnabled && store.networkFilterEnabled) {
+                    try {
+                        ApiClient(store).reportAccessRequest(sni)
+                    } catch (_: Exception) {
+                    }
+                }
+                return
+            }
+            if (seededIps.add(dest)) {
+                Log.i(TAG, "SNI learn $sni → $dest")
+                scheduleRebuild()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun extractSni(buf: ByteArray, hs: Int, n: Int): String? {
+        // Handshake header 4 bytes + ClientHello body
+        if (hs + 38 >= n) return null
+        var p = hs + 4 // skip handshake hdr
+        p += 2 // client_version
+        p += 32 // random
+        if (p >= n) return null
+        val sessionLen = buf[p].toInt() and 0xff
+        p += 1 + sessionLen
+        if (p + 2 > n) return null
+        val csLen = ((buf[p].toInt() and 0xff) shl 8) or (buf[p + 1].toInt() and 0xff)
+        p += 2 + csLen
+        if (p >= n) return null
+        val compLen = buf[p].toInt() and 0xff
+        p += 1 + compLen
+        if (p + 2 > n) return null
+        val extLen = ((buf[p].toInt() and 0xff) shl 8) or (buf[p + 1].toInt() and 0xff)
+        p += 2
+        val extEnd = (p + extLen).coerceAtMost(n)
+        while (p + 4 <= extEnd) {
+            val typ = ((buf[p].toInt() and 0xff) shl 8) or (buf[p + 1].toInt() and 0xff)
+            val len = ((buf[p + 2].toInt() and 0xff) shl 8) or (buf[p + 3].toInt() and 0xff)
+            p += 4
+            if (p + len > extEnd) break
+            if (typ == 0 && len >= 5) { // server_name
+                var q = p + 2 // skip list length
+                val nameType = buf[q].toInt() and 0xff
+                q += 1
+                if (nameType != 0 || q + 2 > p + len) break
+                val nameLen = ((buf[q].toInt() and 0xff) shl 8) or (buf[q + 1].toInt() and 0xff)
+                q += 2
+                if (q + nameLen > p + len) break
+                return String(buf, q, nameLen, Charsets.US_ASCII).lowercase()
+            }
+            p += len
+        }
+        return null
     }
 
     private fun startResolverLoop() {

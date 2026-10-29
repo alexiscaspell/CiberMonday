@@ -15,6 +15,78 @@ import { Button } from './Button';
 
 type UnitOption = { value: TimeUnit; label: string };
 
+type AllowlistRow =
+  | { kind: 'rule'; lineIndex: number; domain: string; enabled: boolean }
+  | { kind: 'section'; lineIndex: number; label: string };
+
+const RULE_TOKEN =
+  /^(?:\*\.)?(?:(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})$/i;
+
+function looksLikeAllowRule(token: string): boolean {
+  return RULE_TOKEN.test(token.trim());
+}
+
+/** Parsea texto allowlist estilo hosts (reglas, # deshabilitadas, secciones). */
+function parseAllowlistRows(text: string): AllowlistRow[] {
+  const rows: AllowlistRow[] = [];
+  const lines = text.split('\n');
+  lines.forEach((raw, lineIndex) => {
+    const line = raw.trim();
+    if (!line) return;
+    if (line.startsWith('#')) {
+      const rest = line.slice(1).trim();
+      const token = rest.split(/\s+/)[0] || '';
+      if (looksLikeAllowRule(token)) {
+        rows.push({
+          kind: 'rule',
+          lineIndex,
+          domain: token.toLowerCase(),
+          enabled: false,
+        });
+      } else {
+        rows.push({ kind: 'section', lineIndex, label: rest || line });
+      }
+      return;
+    }
+    const beforeComment = line.includes('#')
+      ? line.slice(0, line.indexOf('#')).trim()
+      : line;
+    if (!beforeComment) return;
+    const token = beforeComment.split(/\s+/)[0] || '';
+    if (!looksLikeAllowRule(token)) return;
+    rows.push({
+      kind: 'rule',
+      lineIndex,
+      domain: token.toLowerCase(),
+      enabled: true,
+    });
+  });
+  return rows;
+}
+
+function toggleAllowlistLine(text: string, lineIndex: number): string {
+  const lines = text.split('\n');
+  if (lineIndex < 0 || lineIndex >= lines.length) return text;
+  const raw = lines[lineIndex];
+  const trimmed = raw.trim();
+  if (!trimmed) return text;
+  const indent = raw.match(/^\s*/)?.[0] ?? '';
+  if (trimmed.startsWith('#')) {
+    const rest = trimmed.slice(1).trim();
+    const token = rest.split(/\s+/)[0] || '';
+    if (!looksLikeAllowRule(token)) return text;
+    lines[lineIndex] = `${indent}${token.toLowerCase()}`;
+  } else {
+    const beforeComment = trimmed.includes('#')
+      ? trimmed.slice(0, trimmed.indexOf('#')).trim()
+      : trimmed;
+    const token = beforeComment.split(/\s+/)[0] || '';
+    if (!looksLikeAllowRule(token)) return text;
+    lines[lineIndex] = `${indent}# ${token.toLowerCase()}`;
+  }
+  return lines.join('\n');
+}
+
 /** Desplegable nativo en web/WebView (los botones Pressable fallan en Android WebView). */
 function UnitDropdown({
   unit,
@@ -115,12 +187,20 @@ export function ClientCard({ client, onChanged }: Props) {
   const [networkFilter, setNetworkFilter] = useState(
     !!client.config?.network_filter_enabled,
   );
+  const [internetRequest, setInternetRequest] = useState(
+    !!client.config?.internet_request_enabled,
+  );
   const [allowlistText, setAllowlistText] = useState(
     (client.config?.allowlist ?? []).join('\n'),
   );
   const [configStatus, setConfigStatus] = useState('');
 
   const connected = !!client.connected;
+  const pendingRequests = client.pending_access_requests ?? [];
+  const allowlistRows = useMemo(
+    () => parseAllowlistRows(allowlistText),
+    [allowlistText],
+  );
 
   const notify = (msg: string) => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -271,8 +351,9 @@ export function ClientCard({ client, onChanged }: Props) {
       return;
     }
 
+    // Conserva # dominio (deshabilitado) y # secciones; el server normaliza.
     const allowlist = allowlistText
-      .split(/[\n,]+/)
+      .split('\n')
       .map((s) => s.trim())
       .filter(Boolean);
 
@@ -284,6 +365,7 @@ export function ClientCard({ client, onChanged }: Props) {
         max_server_timeouts: maxT,
         lock_recheck_interval: lock,
         network_filter_enabled: networkFilter,
+        internet_request_enabled: networkFilter && internetRequest,
         allowlist,
       });
       if (res.success) {
@@ -297,12 +379,53 @@ export function ClientCard({ client, onChanged }: Props) {
         if (typeof res.config?.network_filter_enabled === 'boolean') {
           setNetworkFilter(res.config.network_filter_enabled);
         }
+        if (typeof res.config?.internet_request_enabled === 'boolean') {
+          setInternetRequest(res.config.internet_request_enabled);
+        }
         setTimeout(() => setConfigStatus(''), 2500);
+        onChanged();
       } else {
         notify(res.message || 'Error');
       }
     } catch (e: any) {
       notify(e.message || 'Error al guardar config');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onApproveAccess = async (requestId: string) => {
+    setBusy(true);
+    try {
+      const res = await api.approveAccessRequest(client.id, requestId);
+      if (res.success) {
+        if (res.config?.allowlist) {
+          setAllowlistText(res.config.allowlist.join('\n'));
+        }
+        notify(res.message || 'Aprobado');
+        onChanged();
+      } else {
+        notify(res.message || 'Error al aprobar');
+      }
+    } catch (e: any) {
+      notify(e.message || 'Error al aprobar');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onDenyAccess = async (requestId: string) => {
+    setBusy(true);
+    try {
+      const res = await api.denyAccessRequest(client.id, requestId);
+      if (res.success) {
+        notify(res.message || 'Rechazado');
+        onChanged();
+      } else {
+        notify(res.message || 'Error al rechazar');
+      }
+    } catch (e: any) {
+      notify(e.message || 'Error al rechazar');
     } finally {
       setBusy(false);
     }
@@ -512,23 +635,101 @@ export function ClientCard({ client, onChanged }: Props) {
               onPress={() => setNetworkFilter((v) => !v)}
             />
           </View>
+          <View style={styles.toggleRow}>
+            <Text style={styles.fieldLabel}>Pedir acceso (notificar)</Text>
+            <Button
+              title={internetRequest ? 'Activado' : 'Desactivado'}
+              compact
+              variant={internetRequest ? 'primary' : 'ghost'}
+              disabled={!networkFilter}
+              onPress={() => setInternetRequest((v) => !v)}
+            />
+          </View>
+          <Text style={styles.hint}>
+            Si está activado, el cliente avisa cuando intenta un dominio fuera
+            de la allowlist; podés aprobarlo acá (queda permanente).
+          </Text>
+          {pendingRequests.length > 0 ? (
+            <View style={styles.accessReqBox}>
+              <Text style={styles.fieldLabel}>Pedidos de acceso</Text>
+              {pendingRequests.map((req) => (
+                <View key={req.id} style={styles.accessReqRow}>
+                  <Text style={styles.allowlistRuleText} numberOfLines={1}>
+                    {req.domain}
+                  </Text>
+                  <View style={styles.accessReqActions}>
+                    <Button
+                      title="Aprobar"
+                      compact
+                      variant="success"
+                      disabled={busy}
+                      onPress={() => onApproveAccess(req.id)}
+                    />
+                    <Button
+                      title="Rechazar"
+                      compact
+                      variant="ghost"
+                      disabled={busy}
+                      onPress={() => onDenyAccess(req.id)}
+                    />
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : null}
           <Text style={styles.fieldLabel}>
-            Allowlist (dominios, IPs o CIDR; uno por línea)
+            Allowlist (uno por línea; # desactiva o comenta)
           </Text>
           <Text style={styles.hint}>
-            Ej: youtube.com también habilita CDNs (googlevideo, ytimg, …) y la app
-            YouTube en Android.
+            Pegá dominios / *.wildcards. Usá el botón por regla para
+            desactivar sin borrar. youtube.com / github.com expanden CDNs.
           </Text>
           <TextInput
             style={[styles.input, styles.allowlistInput]}
             value={allowlistText}
             onChangeText={setAllowlistText}
             multiline
-            numberOfLines={5}
-            placeholder={'youtube.com\n*.google.com\n1.2.3.4'}
+            numberOfLines={8}
+            placeholder={
+              '# === ejemplo ===\nyoutube.com\n# ssl.gstatic.com\n*.khanacademy.org'
+            }
             placeholderTextColor={colors.muted}
             editable={networkFilter}
           />
+          {allowlistRows.length > 0 ? (
+            <View style={styles.allowlistRules}>
+              {allowlistRows.map((row) =>
+                row.kind === 'section' ? (
+                  <Text key={`s-${row.lineIndex}`} style={styles.allowlistSection}>
+                    {row.label}
+                  </Text>
+                ) : (
+                  <View key={`r-${row.lineIndex}`} style={styles.allowlistRuleRow}>
+                    <Text
+                      style={[
+                        styles.allowlistRuleText,
+                        !row.enabled && styles.allowlistRuleOff,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {row.domain}
+                    </Text>
+                    <Button
+                      title={row.enabled ? 'On' : 'Off'}
+                      compact
+                      variant={row.enabled ? 'primary' : 'ghost'}
+                      disabled={!networkFilter}
+                      onPress={() =>
+                        setAllowlistText((t) =>
+                          toggleAllowlistLine(t, row.lineIndex),
+                        )
+                      }
+                    />
+                  </View>
+                ),
+              )}
+            </View>
+          ) : null}
           <Button title="Guardar configuración" onPress={onSaveConfig} loading={busy} />
           {configStatus ? (
             <Text style={styles.configOk}>{configStatus}</Text>
@@ -651,12 +852,73 @@ const styles = StyleSheet.create({
   allowlistInput: {
     minHeight: 110,
     textAlignVertical: 'top',
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
     fontFamily: Platform.select({
       ios: 'Menlo',
       android: 'monospace',
       default: 'monospace',
     }),
+  },
+  allowlistRules: {
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    overflow: 'hidden',
+  },
+  allowlistSection: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.muted,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    backgroundColor: colors.background,
+    textTransform: 'uppercase',
+  },
+  allowlistRuleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  allowlistRuleText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+    fontFamily: Platform.select({
+      ios: 'Menlo',
+      android: 'monospace',
+      default: 'monospace',
+    }),
+  },
+  allowlistRuleOff: {
+    color: colors.muted,
+    textDecorationLine: 'line-through',
+  },
+  accessReqBox: {
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    backgroundColor: colors.background,
+  },
+  accessReqRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  accessReqActions: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    flexShrink: 0,
   },
   timeRow: {
     flexDirection: 'row',
