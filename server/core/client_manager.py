@@ -37,12 +37,23 @@ class ClientManager:
 
     @staticmethod
     def _merge_learned(a, b):
-        """Unión ordenada de allowlist_learned."""
+        """Unión ordenada de allowlist_learned (sin apexes de navegación anchos)."""
+        never = {
+            'google.com', 'googleapis.com', 'gstatic.com', 'googleusercontent.com',
+            'facebook.com', 'instagram.com', 'www.google.com', 'mail.google.com',
+            'accounts.google.com',
+        }
+        nav = {'www', 'm', 'mail', 'accounts', 'drive', 'docs', 'maps', 'login'}
         out = []
         seen = set()
         for raw in list(a or []) + list(b or []):
             e = str(raw or '').strip().lower().rstrip('.')
             if not e or e.startswith('#') or e in seen:
+                continue
+            if e in never:
+                continue
+            parts = e.split('.')
+            if len(parts) >= 2 and parts[0] in nav and '.'.join(parts[-2:]) in never:
                 continue
             seen.add(e)
             out.append(e)

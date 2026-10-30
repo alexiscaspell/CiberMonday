@@ -49,7 +49,7 @@ cp "$SCRIPT_DIR/client.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/client_base.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/client_linux.py" "$INSTALL_DIR/"
 # Allowlist / corte de internet (nft/iptables) — obligatorio para el timer
-for f in network_policy.py domain_match.py dns_learner.py; do
+for f in network_policy.py domain_match.py dns_learner.py allowlist_discover.py; do
     if [ -f "$SCRIPT_DIR/$f" ]; then
         cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/"
     else

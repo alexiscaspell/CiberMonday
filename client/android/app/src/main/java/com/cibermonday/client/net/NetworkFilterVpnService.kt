@@ -155,6 +155,9 @@ class NetworkFilterVpnService : VpnService() {
             }
             if (mode == SessionStore.MODE_ALLOWLIST) {
                 startResolverLoop()
+                maybeDiscoverRelated(store)
+            } else {
+                discoverFpDone = null
             }
             Log.i(TAG, "VPN ready mode=$mode seedIps=${seededIps.size}")
         } catch (e: Exception) {
@@ -240,10 +243,10 @@ class NetworkFilterVpnService : VpnService() {
             val learned = store.getAllowlistLearned()
             val matchesExplicit = AllowlistDomains.matchesExplicit(sni, explicit)
             var allowed = matchesExplicit || AllowlistDomains.hostAllowed(sni, explicit, learned)
-            if (!allowed && companionActive()) {
-                val apex = AllowlistDomains.dnsApex(sni)
-                if (apex.isNotBlank() && store.addAllowlistLearned(apex)) {
-                    Log.i(TAG, "related learned $apex (from $sni)")
+            val learnTarget = AllowlistDomains.liveLearnTarget(sni, explicit, learned)
+            if (learnTarget != null) {
+                if (store.addAllowlistLearned(learnTarget)) {
+                    Log.i(TAG, "related learned $learnTarget (from $sni)")
                 }
                 allowed = true
             }
@@ -255,9 +258,6 @@ class NetworkFilterVpnService : VpnService() {
                     }
                 }
                 return
-            }
-            if (matchesExplicit) {
-                lastExplicitAllowAt = System.currentTimeMillis()
             }
             if (seededIps.add(dest)) {
                 Log.i(TAG, "SNI learn $sni → $dest")
@@ -393,10 +393,7 @@ class NetworkFilterVpnService : VpnService() {
         )
 
         private val seededIps = ConcurrentHashMap.newKeySet<String>()
-        @Volatile private var lastExplicitAllowAt: Long = 0L
-
-        private fun companionActive(): Boolean =
-            System.currentTimeMillis() - lastExplicitAllowAt <= AllowlistDomains.COMPANION_WINDOW_MS
+        @Volatile private var discoverFpDone: String? = null
 
         fun hasActiveTimedSession(store: SessionStore): Boolean {
             val info = store.getSessionInfo() ?: return false
@@ -476,6 +473,31 @@ class NetworkFilterVpnService : VpnService() {
                         }
                     }
                 } catch (_: Exception) {
+                }
+            }
+        }
+
+        private fun maybeDiscoverRelated(store: SessionStore) {
+            val allow = store.getAllowlist()
+            val fp = allow.map { it.trim().lowercase() }.filter { it.isNotBlank() }.sorted().joinToString("|")
+            if (fp.isBlank() || fp == discoverFpDone) return
+            AllowlistDiscover.discoverAsync(allow) { hosts ->
+                discoverFpDone = fp
+                if (hosts.isEmpty()) return@discoverAsync
+                if (!store.mergeAllowlistLearned(hosts)) return@discoverAsync
+                Log.i(TAG, "discover merged ${hosts.size} related")
+                val before = seededIps.toSet()
+                refreshSeedIps(store)
+                if (seededIps != before) {
+                    // Rebuild tunnel so new CDN IPs are excluded
+                    try {
+                        val app = CiberMondayApp.instance
+                        val i = Intent(app, NetworkFilterVpnService::class.java).setAction(ACTION_REBUILD)
+                        if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i)
+                        else app.startService(i)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "discover rebuild: ${e.message}")
+                    }
                 }
             }
         }

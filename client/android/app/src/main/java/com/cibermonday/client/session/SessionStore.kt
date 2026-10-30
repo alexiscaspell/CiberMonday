@@ -204,30 +204,46 @@ class SessionStore(context: Context) {
     fun getAllowlistLearned(): List<String> {
         val raw = prefs.getString(KEY_ALLOWLIST_LEARNED, null) ?: return emptyList()
         return try {
-            JSONArray(raw).let { arr ->
+            val parsed = JSONArray(raw).let { arr ->
                 (0 until arr.length()).mapNotNull { i ->
                     arr.optString(i)?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
                 }
             }
+            val clean = com.cibermonday.client.net.AllowlistDomains.sanitizeLearned(parsed)
+            if (clean != parsed) setAllowlistLearned(clean)
+            clean
         } catch (_: Exception) {
             emptyList()
         }
     }
 
     fun setAllowlistLearned(entries: List<String>) {
+        val clean = com.cibermonday.client.net.AllowlistDomains.sanitizeLearned(entries)
         val arr = JSONArray()
-        entries.map { it.trim().lowercase() }.filter { it.isNotBlank() }.distinct().forEach { arr.put(it) }
+        clean.forEach { arr.put(it) }
         prefs.edit().putString(KEY_ALLOWLIST_LEARNED, arr.toString()).apply()
     }
 
-    /** Agrega apex related descubierto por tráfico (oculto en UI admin). */
+    /** Agrega host related (scan o refinamiento bajo known; oculto en UI). */
     fun addAllowlistLearned(apex: String): Boolean {
-        val name = apex.trim().lowercase().trimEnd('.')
-        if (name.isBlank()) return false
-        val cur = getAllowlistLearned().toMutableList()
-        if (name in cur) return false
-        cur.add(name)
-        setAllowlistLearned(if (cur.size > 300) cur.takeLast(300) else cur)
+        val target = com.cibermonday.client.net.AllowlistDomains.relatedLearnTarget(apex)
+            ?: com.cibermonday.client.net.AllowlistDomains.sanitizeLearned(listOf(apex)).firstOrNull()
+            ?: return false
+        val cur = getAllowlistLearned()
+        if (target in cur) return false
+        val next = cur + target
+        setAllowlistLearned(if (next.size > 300) next.takeLast(300) else next)
+        notifyChanged()
+        return true
+    }
+
+    /** Fusiona hosts del scan HTML de subrecursos. */
+    fun mergeAllowlistLearned(hosts: List<String>): Boolean {
+        if (hosts.isEmpty()) return false
+        val cur = getAllowlistLearned()
+        val next = com.cibermonday.client.net.AllowlistDomains.sanitizeLearned(cur + hosts)
+        if (next == cur) return false
+        setAllowlistLearned(if (next.size > 300) next.takeLast(300) else next)
         notifyChanged()
         return true
     }

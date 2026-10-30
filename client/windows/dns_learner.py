@@ -1,10 +1,8 @@
 """
-DNS forwarder local: aprende IPs allowlist + hosts relacionados del tráfico.
+DNS forwarder local: aprende IPs allowlist + refinamientos bajo apexes conocidos.
 
-Si un nombre denegado aparece poco después de un resolve de un sitio de la
-allowlist explícita, se agrega el apex a allowlist_learned (implícito) y se
-abren sus IPs — sin pedido de acceso. Los denegados sin ese contexto sí
-disparan on_denied (pedir acceso).
+Hosts related nuevos (CDN de otro apex) vienen del scan HTML (allowlist_discover),
+no de una ventana temporal tras visitar un sitio permitido.
 """
 
 from __future__ import annotations
@@ -13,20 +11,17 @@ import select
 import socket
 import struct
 import threading
-import time
 from typing import Callable, Iterable, Optional
 
 from domain_match import (
-    COMPANION_WINDOW_SEC,
-    dns_apex,
+    live_learn_target,
     name_is_allowed,
     name_matches_explicit,
 )
 
 UPSTREAM = ("1.1.1.1", 53)
 LISTEN_HOST = "127.0.0.1"
-LISTEN_PORT = 53
-FALLBACK_PORT = 5353
+LISTEN_PORT = 5353
 
 
 def _parse_qname(data: bytes, offset: int) -> tuple[str, int]:
@@ -144,33 +139,27 @@ class DnsLearner:
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
-        self._last_explicit_allow_at = 0.0
         self._lock = threading.Lock()
-        self.listen_port_used = listen_port
 
     def start(self, allowlist, learned=None) -> bool:
         self.stop()
         self._allowlist = list(allowlist or [])
         self._learned = list(learned or [])
         self._stop.clear()
-        self.listen_port_used = self._listen_port
-        for port in (self._listen_port, FALLBACK_PORT):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind((LISTEN_HOST, port))
-            except OSError as e:
-                print(f"[DnsLearner] bind {LISTEN_HOST}:{port} falló: {e}")
-                sock.close()
-                continue
-            sock.setblocking(False)
-            self._sock = sock
-            self.listen_port_used = port
-            self._thread = threading.Thread(target=self._loop, name="cm-dns-learn", daemon=True)
-            self._thread.start()
-            print(f"[DnsLearner] Escuchando {LISTEN_HOST}:{port} → {self._upstream}")
-            return True
-        return False
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((LISTEN_HOST, self._listen_port))
+        except OSError as e:
+            print(f"[DnsLearner] No se pudo bind {LISTEN_HOST}:{self._listen_port}: {e}")
+            sock.close()
+            return False
+        sock.setblocking(False)
+        self._sock = sock
+        self._thread = threading.Thread(target=self._loop, name="cm-dns-learn", daemon=True)
+        self._thread.start()
+        print(f"[DnsLearner] Escuchando {LISTEN_HOST}:{self._listen_port} → {self._upstream}")
+        return True
 
     def stop(self):
         self._stop.set()
@@ -190,9 +179,6 @@ class DnsLearner:
         self._allowlist = list(allowlist or [])
         if learned is not None:
             self._learned = list(learned or [])
-
-    def _companion_active(self) -> bool:
-        return (time.time() - self._last_explicit_allow_at) <= COMPANION_WINDOW_SEC
 
     def _loop(self):
         while not self._stop.is_set() and self._sock:
@@ -240,26 +226,23 @@ class DnsLearner:
         explicit = name_matches_explicit(name, self._allowlist)
         allowed = explicit or name_is_allowed(name, self._allowlist, self._learned)
 
-        if not allowed and self._companion_active():
-            apex = dns_apex(name)
-            if apex and apex not in ("localhost",):
-                with self._lock:
-                    if apex not in self._learned:
-                        self._learned.append(apex)
-                        learned_new = True
-                    else:
-                        learned_new = False
-                allowed = True
-                if learned_new:
-                    print(f"[DnsLearner] related {apex} (from {name})")
-                    if self._on_learned:
-                        try:
-                            self._on_learned(apex)
-                        except Exception as e:
-                            print(f"[DnsLearner] on_learned: {e}")
-
-        if explicit:
-            self._last_explicit_allow_at = time.time()
+        # Related: refinamiento bajo known, o CDN de media (sin ventana temporal).
+        target = live_learn_target(name, self._allowlist, self._learned)
+        if target:
+            with self._lock:
+                if target not in self._learned:
+                    self._learned.append(target)
+                    learned_new = True
+                else:
+                    learned_new = False
+            allowed = True
+            if learned_new:
+                print(f"[DnsLearner] related {target} (from {name})")
+                if self._on_learned:
+                    try:
+                        self._on_learned(target)
+                    except Exception as e:
+                        print(f"[DnsLearner] on_learned: {e}")
 
         if allowed and ips:
             try:

@@ -201,7 +201,14 @@ class CiberMondayClient(ABC):
         filter_on = bool(cfg.get('network_filter_enabled', False))
         request_on = bool(cfg.get('internet_request_enabled', False))
         allowlist = cfg.get('allowlist') or []
-        learned = cfg.get('allowlist_learned') or []
+        try:
+            from domain_match import sanitize_learned
+            learned = sanitize_learned(cfg.get('allowlist_learned') or [])
+            if learned != list(cfg.get('allowlist_learned') or []):
+                cfg['allowlist_learned'] = learned
+                self.save_config(cfg)
+        except Exception:
+            learned = cfg.get('allowlist_learned') or []
         session_info = self.get_session_info()
         device_active = bool(
             session_info and not session_info.get('is_expired') and session_info.get('remaining_seconds', 0) > 0
@@ -240,18 +247,62 @@ class CiberMondayClient(ABC):
         except Exception as e:
             print(f"[NetPolicy] Error aplicando política: {e}")
 
+        if mode == 'allowlist' and allowlist:
+            self._maybe_discover_related(allowlist)
+        else:
+            self._allow_discover_fp = None
+
+    def _maybe_discover_related(self, allowlist):
+        """Scan HTML de subrecursos (no <a href>) → allowlist_learned."""
+        try:
+            from allowlist_discover import discover_async
+        except ImportError as e:
+            print(f"[Discover] no disponible: {e}")
+            return
+        fp = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
+        if not fp or fp == getattr(self, '_allow_discover_fp', None):
+            return
+
+        def _done(hosts, _fp=fp):
+            self._allow_discover_fp = _fp
+            self._merge_discovered_hosts(hosts)
+
+        try:
+            discover_async(allowlist, _done, fingerprint=fp)
+        except Exception as e:
+            print(f"[Discover] error lanzando: {e}")
+
+    def _merge_discovered_hosts(self, hosts):
+        if not hosts:
+            return
+        try:
+            from domain_match import sanitize_learned
+            cfg = self.load_config() or {}
+            prev = list(cfg.get('allowlist_learned') or [])
+            learned = sanitize_learned(prev + list(hosts))
+            if learned == sanitize_learned(prev):
+                return
+            if len(learned) > 300:
+                learned = learned[-300:]
+            cfg['allowlist_learned'] = learned
+            self.save_config(cfg)
+            print(f"[Discover] merged {len(hosts)} related → total {len(learned)}")
+            self.refresh_network_policy()
+        except Exception as e:
+            print(f"[Discover] Error guardando related: {e}")
+
     def _on_related_learned(self, apex: str):
-        """CDN/host related descubierto por tráfico → allowlist_learned (oculta en UI)."""
+        """CDN/host related (scan o refinamiento bajo known) → allowlist_learned."""
         name = (apex or '').strip().lower().rstrip('.')
         if not name:
             return
         try:
+            from domain_match import sanitize_learned
             cfg = self.load_config() or {}
-            learned = list(cfg.get('allowlist_learned') or [])
-            if name in learned:
+            prev = list(cfg.get('allowlist_learned') or [])
+            learned = sanitize_learned(prev + [name])
+            if learned == sanitize_learned(prev):
                 return
-            learned.append(name)
-            # Cap para no crecer sin límite
             if len(learned) > 300:
                 learned = learned[-300:]
             cfg['allowlist_learned'] = learned

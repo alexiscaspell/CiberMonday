@@ -1,14 +1,39 @@
 """
-Matching de allowlist estricto + lista aprendida (tráfico).
+Matching de allowlist estricto + lista aprendida (related).
 
 - allowlist (admin/UI): lo que el usuario ve y edita
-- allowlist_learned (implícita): hosts descubiertos del tráfico al usar un
-  sitio permitido (CDN, APIs). No se muestran en la UI.
+- allowlist_learned (implícita): hosts related (CDN/APIs) descubiertos por
+  scan HTML de subrecursos o subdominios de apexes ya conocidos.
+  No se muestran en la UI. No hay ventana temporal de “companion”.
 """
 
 from __future__ import annotations
 
-COMPANION_WINDOW_SEC = 45.0
+# Primer label típico de navegación a un sitio (no subrecurso CDN).
+_NAV_FIRST_LABELS = frozenset({
+    "www", "m", "mail", "smtp", "imap",
+    "accounts", "login", "signin", "sso", "oauth",
+    "drive", "docs", "sheets", "slides", "calendar",
+    "maps", "news", "shop", "store", "pay",
+    "photos", "meet", "chat", "classroom", "myaccount",
+    "admin", "support", "help", "about", "blog", "search",
+    "console", "cloud",
+})
+
+# Apexes demasiado anchos: nunca aprender el apex de 2 labels (abriría Search/APIs).
+_NEVER_EXPAND_APEX = frozenset({
+    "google.com",
+    "googleapis.com",
+    "gstatic.com",
+    "googleusercontent.com",
+    "facebook.com",
+    "instagram.com",
+    "fbcdn.net",
+    "twitter.com",
+    "x.com",
+    "reddit.com",
+    "wikipedia.org",
+})
 
 
 def normalize_host(raw: str) -> str | None:
@@ -36,6 +61,151 @@ def dns_apex(name: str) -> str:
     if len(parts) <= 2:
         return ".".join(parts)
     return ".".join(parts[-2:])
+
+
+def related_learn_target(qname: str) -> str | None:
+    """Qué host persistir como related, o None si no debe auto-aprenderse.
+
+    - No aprender navegaciones (google.com, www.google.com, accounts.google.com, …)
+    - Apex CDN de 2 labels (googlevideo.com, ytimg.com) sí, salvo NEVER_EXPAND
+    - En plataformas compartidas (googleapis/gstatic/…) aprender el host exacto
+    """
+    name = (qname or "").strip().lower().rstrip(".")
+    parts = [p for p in name.split(".") if p]
+    if len(parts) < 2:
+        return None
+    if len(parts) == 2:
+        if name in _NEVER_EXPAND_APEX:
+            return None
+        return name
+    if parts[0] in _NAV_FIRST_LABELS:
+        return None
+    apex = ".".join(parts[-2:])
+    if apex in _NEVER_EXPAND_APEX:
+        return name
+    return apex
+
+
+# Alias histórico (DNS companion window eliminado; misma sanitización).
+companion_learn_target = related_learn_target
+
+
+def under_known_allowlist(qname: str, explicit, learned=None) -> bool:
+    """True si qname es el host o un subdominio de algo ya allowlist/learned."""
+    return name_is_allowed(qname, explicit, learned)
+
+
+_MEDIA_LABELS = frozenset({
+    "video", "ytimg", "ggpht", "img", "cdn", "assets", "media",
+    "stream", "hls", "dash", "playback", "static",
+})
+
+
+def _looks_media_cdn(target: str) -> bool:
+    """True para googlevideo / ytimg / cdn.example — no para gstatic ni google.com."""
+    parts = [p for p in (target or "").lower().split(".") if p]
+    if any(p in _MEDIA_LABELS for p in parts):
+        return True
+    # googlevideo, fbcdn-video, …
+    return any(p.endswith("video") or p.startswith("ytimg") or "ggpht" in p for p in parts)
+
+
+def discovery_learn_target(qname: str) -> str | None:
+    """Qué persistir desde el scan HTML (más estricto con plataformas compartidas)."""
+    target = related_learn_target(qname)
+    if not target:
+        return None
+    apex = dns_apex(target)
+    if apex in _NEVER_EXPAND_APEX or apex == "google.com":
+        head = target.split(".", 1)[0]
+        if head.startswith("youtube") or "youtube" in target:
+            return target
+        if head in ("ytimg", "ggpht", "fonts") or _looks_media_cdn(target):
+            return target
+        # clients/apis a veces los necesita el player; aceptar solo esos prefijos
+        if head in ("apis", "clients", "clients1", "clients2", "clients3", "clients4",
+                    "client-channel", "youtubei", "youtubei-att"):
+            return target
+        return None
+    return target
+
+
+def media_cdn_learn_target(qname: str) -> str | None:
+    """Aprender CDN de media/API de video desde DNS/SNI denegado (sin ventana).
+
+    p.ej. *.googlevideo.com, i.ytimg.com, youtubei.googleapis.com.
+    Nunca google.com / accounts.google.com / github.com.
+    """
+    target = related_learn_target(qname)
+    if not target:
+        return None
+    apex = dns_apex(target)
+    if apex in _NEVER_EXPAND_APEX:
+        head = target.split(".", 1)[0]
+        if head.startswith("youtube") or "youtube" in target:
+            return target
+        if head in ("ytimg", "ggpht", "fonts") or _looks_media_cdn(target):
+            return target
+        return None
+    if _looks_media_cdn(target):
+        return target
+    return None
+
+
+def live_learn_target(qname: str, explicit, learned=None) -> str | None:
+    """Qué aprender del tráfico en vivo.
+
+    1) Refinamientos bajo apexes ya conocidos
+    2) CDNs de media (googlevideo, ytimg, …) aunque sean apex nuevo —
+       necesarios porque no aparecen en el HTML estático del home
+    Nunca abre navegación tipo google.com por timing.
+    """
+    name = (qname or "").strip().lower().rstrip(".")
+    if not name:
+        return None
+
+    if under_known_allowlist(name, explicit, learned):
+        target = related_learn_target(name)
+        if not target:
+            return None
+        if name_matches_explicit(target, explicit) or name_matches_explicit(name, explicit):
+            return None
+        merged = list(learned or [])
+        if target in merged or name_is_allowed(target, explicit, merged):
+            apex = dns_apex(target)
+            if apex in _NEVER_EXPAND_APEX and target not in merged:
+                return target
+            return None
+        return target
+
+    # Apex nuevo solo si parece CDN de media (playback YouTube, etc.)
+    return media_cdn_learn_target(name)
+
+
+def sanitize_learned(entries) -> list[str]:
+    """Quita aprendidos peligrosos / navegacionales de corridas anteriores."""
+    out = []
+    seen = set()
+    for raw in entries or []:
+        e = normalize_host(raw)
+        if not e or e in seen:
+            continue
+        target = related_learn_target(e)
+        if target is None and e.count(".") >= 2:
+            parts = e.split(".")
+            apex = dns_apex(e)
+            if parts[0] in _NAV_FIRST_LABELS:
+                continue
+            if e in _NEVER_EXPAND_APEX or (len(parts) == 2 and apex in _NEVER_EXPAND_APEX):
+                continue
+            target = e
+        if not target or target in seen:
+            continue
+        if target in _NEVER_EXPAND_APEX:
+            continue
+        seen.add(target)
+        out.append(target)
+    return out
 
 
 def active_allowlist_entries(allowlist) -> list[str]:
