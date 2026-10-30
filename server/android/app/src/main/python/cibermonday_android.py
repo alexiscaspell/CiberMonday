@@ -158,24 +158,54 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         """Log de requests."""
         print(f"[CiberMonday HTTP] {args[0]}")
     
-    def _set_headers(self, status=200, content_type='application/json'):
+    def _set_headers(self, status=200, content_type='application/json',
+                     content_length=None):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header(
+            'Access-Control-Allow-Headers',
+            'Content-Type, Accept, Authorization',
+        )
+        # Content-Length evita que WebView/Chromium cuelgue en keep-alive
+        # sin body delimitado → "Failed to fetch".
+        if content_length is not None:
+            self.send_header('Content-Length', str(content_length))
+        self.send_header('Connection', 'close')
         self.end_headers()
     
     def _send_json(self, data, status=200):
-        self._set_headers(status)
-        self.wfile.write(json.dumps(data).encode('utf-8'))
+        try:
+            payload = json.dumps(data, default=str).encode('utf-8')
+        except Exception as e:
+            payload = json.dumps({
+                'success': False,
+                'message': f'Error serializando respuesta: {e}',
+            }).encode('utf-8')
+            status = 500
+        self._set_headers(status, content_length=len(payload))
+        self.wfile.write(payload)
+        try:
+            self.wfile.flush()
+        except Exception:
+            pass
     
     def _read_body(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        if content_length > 0:
+        try:
+            content_length = int(self.headers.get('Content-Length', 0) or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length <= 0:
+            return {}
+        try:
             body = self.rfile.read(content_length)
+            if not body:
+                return {}
             return json.loads(body.decode('utf-8'))
-        return {}
+        except Exception as e:
+            print(f"[CiberMonday HTTP] body inválido: {e}")
+            return {'_parse_error': str(e)}
 
     def _serve_admin_static(self, path):
         """Sirve el panel Expo desde admin_static/ (SPA)."""
@@ -209,16 +239,32 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
 
         with open(full, 'rb') as f:
             data = f.read()
-        self._set_headers(200, ctype)
+        self._set_headers(200, ctype, content_length=len(data))
         self.wfile.write(data)
+        try:
+            self.wfile.flush()
+        except Exception:
+            pass
         return True
 
     def do_OPTIONS(self):
         """Handle CORS preflight."""
-        self._set_headers(200)
+        self._set_headers(200, content_length=0)
     
     def do_GET(self):
         """Handle GET requests."""
+        try:
+            self._do_GET_inner()
+        except Exception as e:
+            print(f"[CiberMonday HTTP] GET error: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                self._send_json({'success': False, 'message': str(e)}, 500)
+            except Exception:
+                pass
+
+    def _do_GET_inner(self):
         path = self.path.split('?')[0]
         
         if not path.startswith('/api/'):
@@ -288,8 +334,26 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
     
     def do_POST(self):
         """Handle POST requests."""
+        try:
+            self._do_POST_inner()
+        except Exception as e:
+            print(f"[CiberMonday HTTP] POST error: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                self._send_json({'success': False, 'message': str(e)}, 500)
+            except Exception:
+                pass
+
+    def _do_POST_inner(self):
         path = self.path.split('?')[0]
         data = self._read_body()
+        if isinstance(data, dict) and data.get('_parse_error'):
+            self._send_json({
+                'success': False,
+                'message': f"JSON inválido: {data['_parse_error']}",
+            }, 400)
+            return
         
         if path == '/api/register':
             # Obtener IP del cliente desde los datos o desde la conexión
@@ -318,12 +382,13 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
         
         elif path.startswith('/api/client/') and path.endswith('/set-time'):
             client_id = path.split('/')[3]
+            # set_client_time ya notifica en thread; OK responder después
             result = self.manager.set_client_time(
                 client_id,
                 data.get('time', 0),
                 data.get('unit', 'minutes')
             )
-            self._send_json(result, 200 if result['success'] else 400)
+            self._send_json(result, 200 if result.get('success') else 400)
 
         elif path.startswith('/api/client/') and path.endswith('/internet-time'):
             client_id = path.split('/')[3]
@@ -332,11 +397,14 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 data.get('time', 0),
                 data.get('unit', 'minutes')
             )
-            self._send_json(result, 200 if result['success'] else 400)
+            self._send_json(result, 200 if result.get('success') else 400)
         
         elif path.startswith('/api/client/') and path.endswith('/config'):
             client_id = path.split('/')[3]
-            from_client = data.get('from_client', False)
+            from_client = bool(data.get('from_client', False))
+            # Responder al admin ANTES del push al cliente: el push puede
+            # tardar (DNS/resolve allowlist) y en WebView se veía
+            # "Failed to fetch" si la respuesta no cerraba a tiempo.
             result = self.manager.set_client_config(
                 client_id,
                 sync_interval=data.get('sync_interval'),
@@ -347,9 +415,16 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 network_filter_enabled=data.get('network_filter_enabled'),
                 internet_request_enabled=data.get('internet_request_enabled'),
                 allowlist=data.get('allowlist'),
-                notify_client=not from_client
+                notify_client=False,
             )
-            self._send_json(result, 200 if result['success'] else 400)
+            self._send_json(result, 200 if result.get('success') else 400)
+            if result.get('success') and not from_client and result.get('config'):
+                try:
+                    self.manager._notify_client(
+                        client_id, 'config', result['config']
+                    )
+                except Exception as e:
+                    print(f"[CiberMonday HTTP] push config diferido falló: {e}")
 
         elif '/access-request/' in path and path.endswith('/approve'):
             # /api/client/<id>/access-request/<rid>/approve

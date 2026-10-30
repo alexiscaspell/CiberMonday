@@ -681,8 +681,9 @@ export function ClientCard({ client, onChanged }: Props) {
             Allowlist (uno por línea; # desactiva o comenta)
           </Text>
           <Text style={styles.hint}>
-            Pegá dominios / *.wildcards. Usá el botón por regla para
-            desactivar sin borrar. youtube.com / github.com expanden CDNs.
+            Pegá dominios / *.wildcards. youtube.com y github.com (y otras
+            apps) expanden CDNs solos en el cliente; no hace falta listarlos.
+            Usá On/Off para desactivar una regla sin borrarla.
           </Text>
           <TextInput
             style={[styles.input, styles.allowlistInput]}

@@ -58,6 +58,40 @@ class ClientManager:
         # Pedidos de acceso a dominios fuera de allowlist
         self.access_requests = {}  # request_id -> dict
 
+    # Familias CDN implícitas (misma idea que client domain_match / AllowlistDomains).
+    # Se expanden en el cliente; en admin solo se guarda el apex.
+    ALLOWLIST_FAMILIES = {
+        'youtube.com': (
+            'youtube.com', 'youtu.be', 'youtube-nocookie.com',
+            'googlevideo.com', 'ytimg.com', 'yt3.ggpht.com', 'ggpht.com',
+            'googleusercontent.com', 'googleapis.com', 'gstatic.com', 'google.com',
+        ),
+        'github.com': (
+            'github.com', 'githubusercontent.com', 'githubassets.com',
+            'github.githubassets.com', 'avatars.githubusercontent.com',
+            'avatars0.githubusercontent.com', 'avatars1.githubusercontent.com',
+            'avatars2.githubusercontent.com', 'avatars3.githubusercontent.com',
+            'raw.githubusercontent.com', 'objects.githubusercontent.com',
+            'camo.githubusercontent.com', 'cloud.githubusercontent.com',
+            'media.githubusercontent.com', 'codeload.github.com', 'api.github.com',
+            'ghcr.io', 'npm.pkg.github.com', 'github.io',
+        ),
+        'netflix.com': ('netflix.com', 'nflxvideo.net', 'nflxso.net', 'nflximg.net', 'fast.com'),
+        'twitch.tv': ('twitch.tv', 'ttvnw.net', 'jtvnw.net', 'twitchcdn.net'),
+        'discord.com': (
+            'discord.com', 'discordapp.com', 'discord.gg', 'discord.media', 'discordapp.net',
+        ),
+        'instagram.com': (
+            'instagram.com', 'cdninstagram.com', 'facebook.com', 'fbcdn.net', 'facebook.net',
+        ),
+        'facebook.com': (
+            'facebook.com', 'fbcdn.net', 'facebook.net', 'instagram.com', 'cdninstagram.com',
+        ),
+        'tiktok.com': (
+            'tiktok.com', 'tiktokv.com', 'tiktokcdn.com', 'musical.ly', 'byteoversea.com',
+        ),
+    }
+
     @staticmethod
     def _looks_like_allowlist_rule(item: str) -> bool:
         """True si el token parece dominio, *.wildcard, IP o CIDR."""
@@ -83,6 +117,73 @@ class ClientManager:
         return all(c in allowed for c in item)
 
     @staticmethod
+    def _entry_domain(entry: str):
+        """Dominio de una entrada normalizada (`# foo` → foo), o None si es sección."""
+        e = (entry or '').strip()
+        if not e:
+            return None
+        if e.startswith('# ===') or (e.startswith('#') and not e.startswith('# ')):
+            # sección u otro comentario no-regla
+            rest = e[1:].strip()
+            if not ClientManager._looks_like_allowlist_rule(
+                rest.lower().split()[0] if rest else ''
+            ):
+                return None
+        if e.startswith('# '):
+            return e[2:].strip().lower() or None
+        if e.startswith('#'):
+            return e[1:].strip().lower() or None
+        return e.lower()
+
+    @classmethod
+    def _collapse_implicit_family_domains(cls, entries):
+        """Saca de la lista CDNs/www/m implícitos si el apex ya está (p.ej. github.com)."""
+        if not entries:
+            return entries
+        enabled = set()
+        for raw in entries:
+            dom = cls._entry_domain(raw)
+            if dom and not str(raw).strip().startswith('#'):
+                enabled.add(dom)
+
+        implied = set()
+        for apex, members in cls.ALLOWLIST_FAMILIES.items():
+            if apex not in enabled:
+                continue
+            for m in members:
+                if m != apex:
+                    implied.add(m)
+                implied.add(f'www.{m}')
+                implied.add(f'm.{m}')
+            implied.add(f'www.{apex}')
+            implied.add(f'm.{apex}')
+
+        # www./m. de cualquier dominio explícito (no solo familias)
+        for dom in list(enabled):
+            if dom.startswith('www.') or dom.startswith('m.'):
+                continue
+            implied.add(f'www.{dom}')
+            implied.add(f'm.{dom}')
+
+        out = []
+        seen = set()
+        for raw in entries:
+            dom = cls._entry_domain(raw)
+            if dom is None:
+                # comentario de sección
+                if raw not in out:
+                    out.append(raw)
+                continue
+            if dom in implied:
+                continue
+            key = dom
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(raw)
+        return out
+
+    @staticmethod
     def _normalize_allowlist(entries):
         """Normaliza allowlist: dominios, *.wildcards, IPs/CIDR.
 
@@ -91,6 +192,7 @@ class ClientManager:
         - ``# dominio`` = regla deshabilitada (se conserva)
         - ``# === sección ===`` = comentario (se conserva)
         - líneas en blanco se omiten
+        - miembros de familias CDN (youtube/github/…) no se guardan si el apex ya está
         """
         if entries is None:
             return None
@@ -145,7 +247,7 @@ class ClientManager:
                 continue
             seen_domains.add(item)
             normalized.append(stored)
-        return normalized
+        return ClientManager._collapse_implicit_family_domains(normalized)
 
     @staticmethod
     def active_allowlist(entries):
@@ -246,28 +348,38 @@ class ClientManager:
         self.clients_db[client_id] = client_data
         
         # Configuración
-        # allowlist / network_filter: si ya hay config de admin en servidor, no
-        # dejar que el re-registro del cliente la pise (evita *youtube.com stale).
+        # Tras un push de admin el cliente re-registra en todos los servers con la
+        # allowlist nueva. Si hay grace de admin local, no pisar; si no, adoptar
+        # la del cliente (colapsada) para que web↔móvil queden alineados.
         existing_cfg = self.client_configs.get(client_id) or {}
         if config:
             try:
-                allowlist = self._normalize_allowlist(
+                client_allowlist = self._normalize_allowlist(
                     config.get('allowlist', self.DEFAULT_CONFIG['allowlist'])
                 ) or []
             except ValueError:
-                allowlist = []
-            if 'allowlist' in existing_cfg:
+                client_allowlist = []
+            if self._has_pending_admin_change(client_id) and 'allowlist' in existing_cfg:
                 allowlist = list(existing_cfg.get('allowlist') or [])
+            elif client_allowlist:
+                allowlist = client_allowlist
+            elif 'allowlist' in existing_cfg:
+                allowlist = list(existing_cfg.get('allowlist') or [])
+            else:
+                allowlist = []
+
             network_filter = bool(
                 config.get('network_filter_enabled', self.DEFAULT_CONFIG['network_filter_enabled'])
             )
-            if 'network_filter_enabled' in existing_cfg:
+            if self._has_pending_admin_change(client_id) and 'network_filter_enabled' in existing_cfg:
                 network_filter = bool(existing_cfg.get('network_filter_enabled'))
+
             internet_request = bool(
                 config.get('internet_request_enabled', self.DEFAULT_CONFIG['internet_request_enabled'])
             )
-            if 'internet_request_enabled' in existing_cfg:
+            if self._has_pending_admin_change(client_id) and 'internet_request_enabled' in existing_cfg:
                 internet_request = bool(existing_cfg.get('internet_request_enabled'))
+
             self.client_configs[client_id] = {
                 'sync_interval': config.get('sync_interval', self.DEFAULT_CONFIG['sync_interval']),
                 'alert_thresholds': config.get('alert_thresholds', self.DEFAULT_CONFIG['alert_thresholds']),
@@ -279,6 +391,7 @@ class ClientManager:
                 'network_filter_enabled': network_filter,
                 'internet_request_enabled': internet_request,
                 'allowlist': allowlist,
+                'config_updated_at': datetime.now().isoformat(),
             }
             if self.client_configs[client_id]['custom_name']:
                 self.clients_db[client_id]['name'] = self.client_configs[client_id]['custom_name']
@@ -734,10 +847,15 @@ class ClientManager:
             current_config['internet_request_enabled'] = bool(internet_request_enabled)
 
         if allowlist is not None:
+            # from_client: aceptar pero colapsar familias (evita listar CDNs).
+            # Admin (notify_client): misma normalización.
             try:
                 current_config['allowlist'] = self._normalize_allowlist(allowlist) or []
             except ValueError as e:
                 return {'success': False, 'message': str(e)}
+
+        if notify_client:
+            current_config['config_updated_at'] = datetime.now().isoformat()
         
         self.client_configs[client_id] = current_config
         
@@ -746,6 +864,15 @@ class ClientManager:
         # Solo notificar al cliente si es acción del admin (no si el cliente reportó)
         if notify_client:
             self._notify_client(client_id, 'config', current_config)
+            # Propagar a otros servers (web ↔ móvil) sin esperar al cliente
+            try:
+                threading.Thread(
+                    target=self._sync_with_other_servers,
+                    name='cm-config-sync',
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                print(f"[Config] sync peers falló: {e}")
         
         return {
             'success': True,
@@ -974,6 +1101,10 @@ class ClientManager:
         if client_id not in self.clients_db:
             return
         
+        # Grace siempre: evita que un re-registro stale pise el cambio de admin
+        # aunque aún no haya IP / el push falle.
+        self._pending_admin_changes[client_id] = datetime.now()
+
         client = self.clients_db[client_id]
         client_ip = client.get('client_ip')
         diagnostic_port = client.get('diagnostic_port', 5002)
@@ -981,9 +1112,6 @@ class ClientManager:
         if not client_ip:
             print(f"[Push] Cliente {client_id[:8]}... no tiene IP registrada, no se puede notificar")
             return
-        
-        # Marcar que hay un cambio de admin pendiente (grace period)
-        self._pending_admin_changes[client_id] = datetime.now()
         
         import time as _time
         
@@ -1312,18 +1440,43 @@ class ClientManager:
                     self.client_configs[client_id]['allowlist'] = list(
                         self.DEFAULT_CONFIG['allowlist']
                     )
+                local_updated = self.client_configs[client_id].get('config_updated_at') or ''
+                remote_updated = remote_config.get('config_updated_at') or ''
+                # Si el remoto es más nuevo (o local no tiene stamp), adoptar red/allowlist
+                take_remote_policy = (not local_updated) or (remote_updated >= local_updated)
+
                 for key in (
                     'sync_interval',
                     'alert_thresholds',
                     'custom_name',
                     'max_server_timeouts',
                     'lock_recheck_interval',
-                    'network_filter_enabled',
-                    'internet_request_enabled',
-                    'allowlist',
                 ):
                     if key in remote_config and remote_config[key] is not None:
                         self.client_configs[client_id][key] = remote_config[key]
+
+                if take_remote_policy:
+                    if 'network_filter_enabled' in remote_config and remote_config['network_filter_enabled'] is not None:
+                        self.client_configs[client_id]['network_filter_enabled'] = bool(
+                            remote_config['network_filter_enabled']
+                        )
+                    if 'internet_request_enabled' in remote_config and remote_config['internet_request_enabled'] is not None:
+                        self.client_configs[client_id]['internet_request_enabled'] = bool(
+                            remote_config['internet_request_enabled']
+                        )
+                    if 'allowlist' in remote_config and remote_config['allowlist'] is not None:
+                        self.client_configs[client_id]['allowlist'] = (
+                            self._normalize_allowlist(remote_config['allowlist']) or []
+                        )
+                    if remote_updated:
+                        self.client_configs[client_id]['config_updated_at'] = remote_updated
+                elif 'allowlist' in self.client_configs[client_id]:
+                    # Colapsar basura CDN local aunque no adoptemos remoto
+                    self.client_configs[client_id]['allowlist'] = (
+                        self._normalize_allowlist(
+                            self.client_configs[client_id].get('allowlist') or []
+                        ) or []
+                    )
 
             session = client_data.get('current_session') or client_data.get('session')
             if not session:
