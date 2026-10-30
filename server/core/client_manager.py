@@ -41,7 +41,7 @@ class ClientManager:
         never = {
             'google.com', 'googleapis.com', 'gstatic.com', 'googleusercontent.com',
             'facebook.com', 'instagram.com', 'www.google.com', 'mail.google.com',
-            'accounts.google.com',
+            'accounts.google.com', 'play.google.com',
         }
         nav = {'www', 'm', 'mail', 'accounts', 'drive', 'docs', 'maps', 'login'}
         out = []

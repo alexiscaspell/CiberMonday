@@ -37,6 +37,9 @@ _rule_seq = 0
 _on_denied = None  # callback(qname) opcional
 _on_learned = None  # callback(apex)
 _active_learned: list = []
+_active_allowlist: list = []
+_host_proxy = None
+_saved_win_proxy = None  # (enable, server, override)
 
 
 def _run(cmd, timeout=15):
@@ -140,8 +143,9 @@ def build_allowed_remotes(mode, allowlist, server_url, learned=None):
             remotes |= resolve_domains([server_host])
 
     if mode == "allowlist":
+        # No sembrar IPs de dominios: HTTPS pasa por hostname proxy (CONNECT).
+        # Sembrar IPs compartidas (clients4 ≡ google.com) abriría Search.
         effective = merge_allowlists(allowlist, learned)
-        remotes |= resolve_domains(sorted(expand_allowed_names(effective)))
         for entry in effective:
             kind = classify_entry(entry)
             if kind and kind[0] in ("ip", "cidr"):
@@ -222,7 +226,9 @@ def _add_allow_rule(name_suffix: str, remoteip: str) -> bool:
 
 
 def learn_ips(ips):
-    """Callback del DnsLearner: agrega reglas outbound para IPs nuevas."""
+    """DNS learner: con hostname proxy no abrimos IPs (name-gate)."""
+    if _host_proxy is not None:
+        return
     global _rule_seq
     for ip in ips:
         try:
@@ -342,8 +348,147 @@ def set_learned_callback(cb):
         _learner._on_learned = cb
 
 
+def _proxy_host_allowed(name: str) -> bool:
+    from domain_match import live_learn_target, name_is_allowed
+
+    if name_is_allowed(name, _active_allowlist, _active_learned):
+        return True
+    target = live_learn_target(name, _active_allowlist, _active_learned)
+    if not target:
+        return False
+    if target not in _active_learned:
+        _active_learned.append(target)
+        if _on_learned:
+            try:
+                _on_learned(target)
+            except Exception:
+                pass
+    return True
+
+
+def _stop_host_proxy():
+    global _host_proxy
+    if _host_proxy:
+        try:
+            _host_proxy.stop()
+        except Exception:
+            pass
+        _host_proxy = None
+
+
+def _start_host_proxy():
+    global _host_proxy
+    _stop_host_proxy()
+    try:
+        from hostname_proxy import HostnameProxy
+    except ImportError as e:
+        print(f"[NetPolicy] hostname_proxy no disponible: {e}")
+        return
+    proxy = HostnameProxy(
+        is_allowed=_proxy_host_allowed,
+        on_denied=_on_denied,
+    )
+    if proxy.start():
+        _host_proxy = proxy
+    else:
+        print("[NetPolicy] HostnameProxy no arrancó")
+
+
+def _save_and_set_system_proxy():
+    """Apunta WinINET + WinHTTP al CONNECT proxy local (name-gate)."""
+    global _saved_win_proxy
+    if _saved_win_proxy is not None:
+        return
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            0,
+            winreg.KEY_READ | winreg.KEY_SET_VALUE,
+        )
+        try:
+            enable, _ = winreg.QueryValueEx(key, "ProxyEnable")
+        except OSError:
+            enable = 0
+        try:
+            server, _ = winreg.QueryValueEx(key, "ProxyServer")
+        except OSError:
+            server = ""
+        try:
+            override, _ = winreg.QueryValueEx(key, "ProxyOverride")
+        except OSError:
+            override = ""
+        _saved_win_proxy = (int(enable), str(server), str(override))
+        winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+        winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, "127.0.0.1:18080")
+        winreg.SetValueEx(
+            key, "ProxyOverride", 0, winreg.REG_SZ,
+            "localhost;127.*;<local>;*.local",
+        )
+        winreg.CloseKey(key)
+        _run(["netsh", "winhttp", "set", "proxy", "127.0.0.1:18080"], timeout=10)
+        print("[NetPolicy] System proxy → 127.0.0.1:18080 (hostname gate)")
+    except Exception as e:
+        print(f"[NetPolicy] No se pudo setear proxy del sistema: {e}")
+
+
+def _restore_system_proxy():
+    global _saved_win_proxy
+    if _saved_win_proxy is None:
+        return
+    enable, server, override = _saved_win_proxy
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            0,
+            winreg.KEY_SET_VALUE,
+        )
+        winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, int(enable))
+        winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, server or "")
+        winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, override or "")
+        winreg.CloseKey(key)
+        if enable and server:
+            _run(["netsh", "winhttp", "set", "proxy", server], timeout=10)
+        else:
+            _run(["netsh", "winhttp", "reset", "proxy"], timeout=10)
+        print("[NetPolicy] System proxy restaurado")
+    except Exception as e:
+        print(f"[NetPolicy] restore proxy: {e}")
+    _saved_win_proxy = None
+
+
+def _add_program_allow_rule():
+    """Permite outbound del proceso cliente (proxy dial-out)."""
+    exe = sys.executable
+    if getattr(sys, "frozen", False):
+        exe = sys.executable
+    name = f"{RULE_PREFIX} program"
+    _run(
+        [
+            "netsh", "advfirewall", "firewall", "add", "rule",
+            f"name={name}", "dir=out", "action=allow", "enable=yes", "profile=any",
+            f"program={exe}", "description=CiberMonday hostname proxy dial-out",
+        ],
+        timeout=10,
+    )
+    # Bloquear QUIC (bypass del proxy CONNECT)
+    _run(
+        [
+            "netsh", "advfirewall", "firewall", "add", "rule",
+            f"name={RULE_PREFIX} block-quic", "dir=out", "action=block",
+            "enable=yes", "profile=any", "protocol=UDP", "remoteport=443",
+            "description=CiberMonday force TCP+SNI/CONNECT",
+        ],
+        timeout=10,
+    )
+
+
 def _start_learner(allowlist, learned=None):
-    global _learner, _active_learned
+    global _learner, _active_learned, _active_allowlist
+    _active_allowlist = list(allowlist or [])
     _active_learned = list(learned or [])
     _stop_learner()
     try:
@@ -365,13 +510,14 @@ def _start_learner(allowlist, learned=None):
 
 
 def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=None, on_learned=None):
-    global _last_fingerprint, _learned_ips, _on_denied, _on_learned, _active_learned
+    global _last_fingerprint, _learned_ips, _on_denied, _on_learned, _active_learned, _active_allowlist
     if on_denied is not None:
         _on_denied = on_denied
     if on_learned is not None:
         _on_learned = on_learned
     if learned is not None:
         _active_learned = list(learned or [])
+    _active_allowlist = list(allowlist or [])
     if mode == "unrestricted":
         return clear_network_policy()
 
@@ -379,7 +525,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     enable_dns = mode == "allowlist"
     al_key = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
     ln_key = "|".join(sorted(str(x).strip().lower() for x in (_active_learned or []) if str(x).strip()))
-    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|ln:{ln_key}|{'|'.join(remotes)}"
+    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|ln:{ln_key}|proxy|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
         if _learner and enable_dns:
             _learner.update_allowlist(allowlist or [], _active_learned)
@@ -387,11 +533,13 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
                 _learner._on_denied = _on_denied
             if _on_learned is not None:
                 _learner._on_learned = _on_learned
+        if _host_proxy and enable_dns:
+            _host_proxy.update_callbacks(is_allowed=_proxy_host_allowed, on_denied=_on_denied)
         return True
 
     print(
         f"[NetPolicy] Aplicando modo={mode} destinos={len(remotes)} "
-        f"learned={len(_active_learned or [])} dns_learn={enable_dns}"
+        f"learned={len(_active_learned or [])} dns_learn={enable_dns} host_proxy={enable_dns}"
     )
     _delete_our_rules()
     _set_outbound_block(True)
@@ -414,12 +562,19 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
 
     # Permitir DNS al upstream del learner siempre
     _add_allow_rule("dns-upstream", "1.1.1.1")
+    if enable_dns:
+        _add_program_allow_rule()
 
     _last_fingerprint = fingerprint
     if enable_dns:
         _start_learner(allowlist, _active_learned)
+        _start_host_proxy()
+        _save_and_set_system_proxy()
+        _run(["ipconfig", "/flushdns"], timeout=10)
     else:
         _stop_learner()
+        _stop_host_proxy()
+        _restore_system_proxy()
         _restore_dns()
     return True
 
@@ -430,6 +585,8 @@ def clear_network_policy(force: bool = False):
         return True
     print("[NetPolicy] Limpiando política (unrestricted)")
     _stop_learner()
+    _stop_host_proxy()
+    _restore_system_proxy()
     _restore_dns()
     _delete_our_rules()
     _set_outbound_block(False)

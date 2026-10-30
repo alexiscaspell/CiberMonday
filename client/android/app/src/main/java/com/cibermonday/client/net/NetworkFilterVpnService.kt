@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.IpPrefix
+import android.net.ProxyInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -23,11 +24,11 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * VPN local (CGNAT-safe).
+ * VPN local (CGNAT-safe) + hostname gate.
  *
- * Allowlist: excluye IPs sembradas + aprende destinos por SNI (TLS) cuando el
- * paquete cae en el TUN (p.ej. con Private DNS). DNS públicos se excluyen para
- * no romper DoT. Apps nativas (YouTube, etc.) salen del túnel.
+ * Allowlist: HTTP CONNECT proxy local decide por nombre (SNI/CONNECT), no por IP.
+ * Así clients4.google.com puede pasar y google.com no, aunque compartan edge.
+ * Apps nativas allowlist (YouTube, …) salen del túnel vía addDisallowedApplication.
  */
 class NetworkFilterVpnService : VpnService() {
 
@@ -39,6 +40,7 @@ class NetworkFilterVpnService : VpnService() {
     private var activeMode: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var rebuildScheduled = false
+    private var hostProxy: HostnameProxy? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -121,9 +123,13 @@ class NetworkFilterVpnService : VpnService() {
                         for (dns in PUBLIC_DNS) {
                             excludeIpPrefix(builder, "$dns/32")
                         }
+                        // No excluir IPs allowlist: el name-gate es el proxy CONNECT.
+                        // Tráfico directo al edge compartido cae al TUN y se descarta.
                         if (mode == SessionStore.MODE_ALLOWLIST) {
-                            for (ip in seededIps) {
-                                excludeIpPrefix(builder, "$ip/32")
+                            if (Build.VERSION.SDK_INT >= 29) {
+                                builder.setHttpProxy(
+                                    ProxyInfo.buildDirectProxy("127.0.0.1", HOST_PROXY_PORT)
+                                )
                             }
                             for (pkg in relatedPackages(store)) {
                                 try {
@@ -154,12 +160,13 @@ class NetworkFilterVpnService : VpnService() {
                 it.start()
             }
             if (mode == SessionStore.MODE_ALLOWLIST) {
+                startHostProxy(store)
                 startResolverLoop()
                 maybeDiscoverRelated(store)
             } else {
                 discoverFpDone = null
             }
-            Log.i(TAG, "VPN ready mode=$mode seedIps=${seededIps.size}")
+            Log.i(TAG, "VPN ready mode=$mode hostProxy=${mode == SessionStore.MODE_ALLOWLIST}")
         } catch (e: Exception) {
             Log.e(TAG, "ensureTunnel: ${e.message}", e)
             running.set(false)
@@ -185,6 +192,11 @@ class NetworkFilterVpnService : VpnService() {
         activeFingerprint = null
         activeMode = null
         try {
+            hostProxy?.stop()
+        } catch (_: Exception) {
+        }
+        hostProxy = null
+        try {
             worker?.interrupt()
         } catch (_: Exception) {
         }
@@ -200,6 +212,40 @@ class NetworkFilterVpnService : VpnService() {
         }
         tunInterface = null
         Log.i(TAG, "VPN torn down")
+    }
+
+    private fun startHostProxy(store: SessionStore) {
+        try {
+            hostProxy?.stop()
+        } catch (_: Exception) {
+        }
+        hostProxy = HostnameProxy(
+            port = HOST_PROXY_PORT,
+            isAllowed = { host ->
+                val explicit = store.getAllowlist()
+                val learned = store.getAllowlistLearned()
+                var ok = AllowlistDomains.hostAllowed(host, explicit, learned)
+                AllowlistDomains.liveLearnTarget(host, explicit, learned)?.let { target ->
+                    store.addAllowlistLearned(target)
+                    ok = true
+                }
+                ok
+            },
+            onDenied = { host ->
+                if (store.internetRequestEnabled && store.networkFilterEnabled) {
+                    try {
+                        ApiClient(store).reportAccessRequest(host)
+                    } catch (_: Exception) {
+                    }
+                }
+            },
+            protect = { sock ->
+                try {
+                    protect(sock)
+                } catch (_: Exception) {
+                }
+            },
+        ).also { it.start() }
     }
 
     private fun drainLoop() {
@@ -259,10 +305,9 @@ class NetworkFilterVpnService : VpnService() {
                 }
                 return
             }
-            if (seededIps.add(dest)) {
-                Log.i(TAG, "SNI learn $sni → $dest")
-                scheduleRebuild()
-            }
+            // Name-gate via CONNECT proxy; no excluir IP (evitar abrir google.com
+            // en el mismo edge). Solo log / related learning.
+            Log.i(TAG, "SNI seen $sni → $dest (proxy name-gate; no IP exclude)")
         } catch (_: Exception) {
         }
     }
@@ -372,6 +417,7 @@ class NetworkFilterVpnService : VpnService() {
         private const val NOTIFICATION_ID = 42
         private const val CONSENT_NOTIFICATION_ID = 43
         private const val VPN_ADDR = "10.255.0.2"
+        private const val HOST_PROXY_PORT = 18080
         const val ACTION_STOP = "com.cibermonday.client.STOP_NET_FILTER"
         const val ACTION_REBUILD = "com.cibermonday.client.REBUILD_NET_FILTER"
         const val EXTRA_MODE = "mode"

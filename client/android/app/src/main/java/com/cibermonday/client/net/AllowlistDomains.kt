@@ -1,9 +1,10 @@
 package com.cibermonday.client.net
 
 /**
- * Matching estricto de allowlist (sin familias CDN hardcoded).
- * Related: scan HTML de subrecursos + CDNs de media del tráfico.
- * Sin ventana temporal “companion”.
+ * Matching estricto de allowlist.
+ * Related hosts (CDN/APIs) se aprenden libremente; el bloqueo de navegación
+ * directa en plataformas compartidas es por SNI/proxy name-gate, no por
+ * dejar de aprender clients4.google.com etc.
  */
 object AllowlistDomains {
 
@@ -21,6 +22,12 @@ object AllowlistDomains {
         "google.com", "googleapis.com", "gstatic.com", "googleusercontent.com",
         "facebook.com", "instagram.com", "fbcdn.net",
         "twitter.com", "x.com", "reddit.com", "wikipedia.org",
+    )
+
+    private val NAVIGATION_BLOCKLIST = setOf(
+        "google.com", "www.google.com", "accounts.google.com", "mail.google.com",
+        "play.google.com", "facebook.com", "www.facebook.com",
+        "instagram.com", "www.instagram.com",
     )
 
     private val MEDIA_LABELS = setOf(
@@ -101,10 +108,6 @@ object AllowlistDomains {
         return if (looksMediaCdn(target)) target else null
     }
 
-    /**
-     * Aprender en vivo: refinamiento bajo known, o CDN de media (googlevideo…).
-     * Sin ventana temporal — no abre google.com por timing.
-     */
     fun liveLearnTarget(qname: String, explicit: List<String>, learned: List<String>): String? {
         val name = qname.trim().lowercase().trimEnd('.')
         if (name.isBlank()) return null
@@ -125,14 +128,17 @@ object AllowlistDomains {
         val out = linkedSetOf<String>()
         for (raw in entries) {
             val e = normalize(raw) ?: continue
+            if (e in NAVIGATION_BLOCKLIST || e in NEVER_EXPAND_APEX) continue
+            val apex = dnsApex(e)
+            val parts = e.split('.')
+            if (parts.isNotEmpty() && parts[0] in NAV_FIRST_LABELS && apex in NEVER_EXPAND_APEX) continue
             val target = relatedLearnTarget(e)
                 ?: if (e.count { it == '.' } >= 2 && e !in NEVER_EXPAND_APEX) {
-                    val parts = e.split('.')
                     if (parts[0] in NAV_FIRST_LABELS) null
                     else if (parts.size == 2 && e in NEVER_EXPAND_APEX) null
                     else e
                 } else null
-            if (target.isNullOrBlank() || target in NEVER_EXPAND_APEX) continue
+            if (target.isNullOrBlank() || target in NEVER_EXPAND_APEX || target in NAVIGATION_BLOCKLIST) continue
             out.add(target)
         }
         return out.toList()

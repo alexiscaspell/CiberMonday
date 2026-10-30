@@ -1817,6 +1817,11 @@ def _make_diagnostic_handler(client):
                     except Exception:
                         s['available'] = False
             ds = client._discovery_stats
+            cfg = {}
+            try:
+                cfg = client.load_config() or {}
+            except Exception:
+                cfg = {}
             self._json({
                 'success': True, 'client_id': cid,
                 'server_url': client.server_url,
@@ -1825,6 +1830,9 @@ def _make_diagnostic_handler(client):
                 'internet_session': inet,
                 'network_policy_module': net_policy_ok,
                 'known_servers': servers,
+                'allowlist': list(cfg.get('allowlist') or []),
+                'allowlist_learned': list(cfg.get('allowlist_learned') or []),
+                'network_filter_enabled': bool(cfg.get('network_filter_enabled', False)),
                 'discovery': {
                     'listener_active': ds['listener_started'],
                     'broadcast_count': ds['broadcast_count'],

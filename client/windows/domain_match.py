@@ -111,7 +111,12 @@ def _looks_media_cdn(target: str) -> bool:
 
 
 def discovery_learn_target(qname: str) -> str | None:
-    """Qué persistir desde el scan HTML (más estricto con plataformas compartidas)."""
+    """Qué persistir desde el scan HTML (subrecursos / APIs del sitio).
+
+    Incluye frontends compartidos (clients4.google.com, …): el bloqueo de
+    navegación directa a google.com es por SNI/DNS name-gate, no dejando de
+    aprender hosts que YouTube necesita.
+    """
     target = related_learn_target(qname)
     if not target:
         return None
@@ -122,9 +127,10 @@ def discovery_learn_target(qname: str) -> str | None:
             return target
         if head in ("ytimg", "ggpht", "fonts") or _looks_media_cdn(target):
             return target
-        # clients/apis a veces los necesita el player; aceptar solo esos prefijos
-        if head in ("apis", "clients", "clients1", "clients2", "clients3", "clients4",
-                    "client-channel", "youtubei", "youtubei-att"):
+        if head in (
+            "apis", "clients", "clients1", "clients2", "clients3", "clients4",
+            "client-channel", "youtubei", "youtubei-att",
+        ):
             return target
         return None
     return target
@@ -182,18 +188,36 @@ def live_learn_target(qname: str, explicit, learned=None) -> str | None:
     return media_cdn_learn_target(name)
 
 
+# Solo apexes de navegación (no APIs/CDN related).
+_NAVIGATION_BLOCKLIST = frozenset({
+    "google.com",
+    "www.google.com",
+    "accounts.google.com",
+    "mail.google.com",
+    "play.google.com",
+    "facebook.com",
+    "www.facebook.com",
+    "instagram.com",
+    "www.instagram.com",
+})
+
+
 def sanitize_learned(entries) -> list[str]:
-    """Quita aprendidos peligrosos / navegacionales de corridas anteriores."""
+    """Quita aprendidos navegacionales / apexes anchos. Conserva CDNs y APIs related."""
     out = []
     seen = set()
     for raw in entries or []:
         e = normalize_host(raw)
         if not e or e in seen:
             continue
+        if e in _NAVIGATION_BLOCKLIST or e in _NEVER_EXPAND_APEX:
+            continue
+        parts = e.split(".")
+        apex = dns_apex(e)
+        if parts and parts[0] in _NAV_FIRST_LABELS and apex in _NEVER_EXPAND_APEX:
+            continue
         target = related_learn_target(e)
         if target is None and e.count(".") >= 2:
-            parts = e.split(".")
-            apex = dns_apex(e)
             if parts[0] in _NAV_FIRST_LABELS:
                 continue
             if e in _NEVER_EXPAND_APEX or (len(parts) == 2 and apex in _NEVER_EXPAND_APEX):
@@ -201,7 +225,7 @@ def sanitize_learned(entries) -> list[str]:
             target = e
         if not target or target in seen:
             continue
-        if target in _NEVER_EXPAND_APEX:
+        if target in _NEVER_EXPAND_APEX or target in _NAVIGATION_BLOCKLIST:
             continue
         seen.add(target)
         out.append(target)

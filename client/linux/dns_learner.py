@@ -89,6 +89,31 @@ def _nodata_response(query: bytes) -> bytes:
     return header + query[12:qend]
 
 
+def _nxdomain_response(query: bytes) -> bytes:
+    """NXDOMAIN: el cliente no debe recibir A reales de hosts denegados.
+
+    Si devolvemos la respuesta upstream, el browser obtiene la IP y puede
+    conectar igual cuando esa IP ya fue allowlistada por un CDN de Google
+    (p.ej. clients4.google.com comparte IP con google.com).
+    """
+    if len(query) < 12:
+        return query
+    _qname, _qtype, qend = _question_end(query)
+    if qend < 12:
+        return query
+    qdcount = struct.unpack("!H", query[4:6])[0]
+    header = struct.pack(
+        "!HHHHHH",
+        struct.unpack("!H", query[0:2])[0],
+        0x8183,  # QR|RD|RA + RCODE=3 NXDOMAIN
+        qdcount,
+        0,
+        0,
+        0,
+    )
+    return header + query[12:qend]
+
+
 def _extract_a_records(packet: bytes) -> tuple[str, list[str]]:
     if len(packet) < 12:
         return "", []
@@ -258,6 +283,8 @@ class DnsLearner:
 
         try:
             if self._sock:
-                self._sock.sendto(resp, addr)
+                # Denegados: NXDOMAIN (no filtrar IP compartida de Google/YouTube).
+                out = resp if allowed else _nxdomain_response(data)
+                self._sock.sendto(out, addr)
         except Exception:
             return

@@ -20,6 +20,8 @@ TABLE_NAME = "cibermonday"
 SET_NAME = "allow4"
 DNS_REDIR_PORT = 5353
 UPSTREAM_DNS = "1.1.1.1"
+SNI_PROXY_PORT = 18443
+PROXY_MARK = 0xC1BE00D1
 
 PRIVATE_NETWORKS = (
     "10.0.0.0/8",
@@ -39,6 +41,7 @@ _rule_counter = 0
 _on_denied = None  # callback(qname) opcional
 _on_learned = None  # callback(apex) — related host del tráfico
 _active_learned: list = []
+_host_proxy = None
 
 
 def _run(cmd, timeout=15):
@@ -246,14 +249,17 @@ def _apply_nft(remotes, enable_dns_redir: bool):
         "    type filter hook output priority 0; policy drop;",
         '    oifname "lo" accept',
         "    ct state established,related accept",
+        # Salidas del hostname proxy (SNI/CONNECT) — name-gate ya aplicado
+        f"    meta mark {PROXY_MARK:#x} accept",
         f"    ip daddr {{ {priv} }} accept",
         # Upstream DNS del forwarder (evita bucle del redirect)
         f"    ip daddr {UPSTREAM_DNS} udp dport 53 accept",
         f"    ip daddr {UPSTREAM_DNS} tcp dport 53 accept",
         f"    ip daddr {UPSTREAM_DNS} tcp dport 853 accept",
-        # Bloquear DoT genérico para forzar DNS clásico → learning
+        # Bloquear DoT / QUIC para forzar DNS clásico + TLS con SNI
         "    tcp dport 853 drop",
         "    udp dport 853 drop",
+        "    udp dport 443 drop",
         f"    ip daddr @{SET_NAME} accept",
         "  }",
     ]
@@ -261,11 +267,14 @@ def _apply_nft(remotes, enable_dns_redir: bool):
         script += [
             "  chain dnsredir {",
             "    type nat hook output priority -100; policy accept;",
+            f"    meta mark {PROXY_MARK:#x} return",
             # No redirigir queries al upstream del learner
             f"    ip daddr {UPSTREAM_DNS} udp dport 53 return",
             f"    ip daddr {UPSTREAM_DNS} tcp dport 53 return",
             f"    udp dport 53 dnat ip to 127.0.0.1:{DNS_REDIR_PORT}",
             f"    tcp dport 53 dnat ip to 127.0.0.1:{DNS_REDIR_PORT}",
+            # HTTPS → SNI proxy (name-gate; IPs compartidas no abren otros hosts)
+            f"    tcp dport 443 redirect to :{SNI_PROXY_PORT}",
             "  }",
         ]
     script += ["}"]
@@ -303,6 +312,8 @@ def _clear_iptables():
           "-j", "DNAT", "--to-destination", f"127.0.0.1:{DNS_REDIR_PORT}"], timeout=5)
     _run(["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "--dport", "53",
           "-j", "DNAT", "--to-destination", f"127.0.0.1:{DNS_REDIR_PORT}"], timeout=5)
+    _run(["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "--dport", "443",
+          "-j", "REDIRECT", "--to-ports", str(SNI_PROXY_PORT)], timeout=5)
     _run(["iptables", "-D", "OUTPUT", "-j", "CIBERMONDAY"], timeout=5)
     _run(["iptables", "-F", "CIBERMONDAY"], timeout=5)
     _run(["iptables", "-X", "CIBERMONDAY"], timeout=5)
@@ -315,10 +326,12 @@ def _apply_iptables(remotes, enable_dns_redir: bool):
     for args in (
         ["-A", "CIBERMONDAY", "-o", "lo", "-j", "ACCEPT"],
         ["-A", "CIBERMONDAY", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+        ["-A", "CIBERMONDAY", "-m", "mark", "--mark", str(PROXY_MARK), "-j", "ACCEPT"],
         ["-A", "CIBERMONDAY", "-d", UPSTREAM_DNS, "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
         ["-A", "CIBERMONDAY", "-d", UPSTREAM_DNS, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"],
         ["-A", "CIBERMONDAY", "-p", "tcp", "--dport", "853", "-j", "DROP"],
         ["-A", "CIBERMONDAY", "-p", "udp", "--dport", "853", "-j", "DROP"],
+        ["-A", "CIBERMONDAY", "-p", "udp", "--dport", "443", "-j", "DROP"],
     ):
         _run(["iptables"] + args + ["-m", "comment", "--comment", IPTABLES_COMMENT], timeout=5)
     for remote in remotes:
@@ -344,6 +357,12 @@ def _apply_iptables(remotes, enable_dns_redir: bool):
         _run(
             ["iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53",
              "!", "-d", UPSTREAM_DNS, "-j", "DNAT", "--to-destination", f"127.0.0.1:{DNS_REDIR_PORT}"],
+            timeout=5,
+        )
+        _run(
+            ["iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "443",
+             "-m", "mark", "!", "--mark", str(PROXY_MARK),
+             "-j", "REDIRECT", "--to-ports", str(SNI_PROXY_PORT)],
             timeout=5,
         )
     return True
@@ -378,12 +397,61 @@ def _stop_learner():
         _learner = None
 
 
+def _proxy_host_allowed(name: str) -> bool:
+    from domain_match import live_learn_target, name_is_allowed
+
+    if name_is_allowed(name, _active_allowlist, _active_learned):
+        return True
+    target = live_learn_target(name, _active_allowlist, _active_learned)
+    if not target:
+        return False
+    if target not in _active_learned:
+        _active_learned.append(target)
+        if _on_learned:
+            try:
+                _on_learned(target)
+            except Exception:
+                pass
+    return True
+
+
+def _stop_host_proxy():
+    global _host_proxy
+    if _host_proxy:
+        try:
+            _host_proxy.stop()
+        except Exception:
+            pass
+        _host_proxy = None
+
+
+def _start_host_proxy():
+    global _host_proxy
+    _stop_host_proxy()
+    try:
+        from hostname_proxy import HostnameProxy
+    except ImportError as e:
+        print(f"[NetPolicy] hostname_proxy no disponible: {e}")
+        return
+    proxy = HostnameProxy(
+        is_allowed=_proxy_host_allowed,
+        on_denied=_on_denied,
+        on_allowed=None,
+    )
+    if proxy.start():
+        _host_proxy = proxy
+    else:
+        print("[NetPolicy] HostnameProxy no arrancó (SNI gate degradado)")
+
+
 def set_denied_callback(cb):
     """Registra callback para dominios DNS no allowlist (pedidos de acceso)."""
     global _on_denied, _learner
     _on_denied = cb
     if _learner is not None:
         _learner._on_denied = cb
+    if _host_proxy is not None:
+        _host_proxy.update_callbacks(on_denied=cb)
 
 
 def set_learned_callback(cb):
@@ -415,13 +483,14 @@ def _start_learner(allowlist, learned=None):
 
 
 def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=None, on_learned=None):
-    global _last_fingerprint, _on_denied, _on_learned, _active_learned
+    global _last_fingerprint, _on_denied, _on_learned, _active_learned, _active_allowlist
     if on_denied is not None:
         _on_denied = on_denied
     if on_learned is not None:
         _on_learned = on_learned
     if learned is not None:
         _active_learned = list(learned or [])
+    _active_allowlist = list(allowlist or [])
     if mode == "unrestricted":
         return clear_network_policy()
 
@@ -429,7 +498,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     enable_dns = mode == "allowlist"
     al_key = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
     ln_key = "|".join(sorted(str(x).strip().lower() for x in (_active_learned or []) if str(x).strip()))
-    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|ln:{ln_key}|{'|'.join(remotes)}"
+    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|ln:{ln_key}|sni|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
         if _learner and enable_dns:
             _learner.update_allowlist(allowlist or [], _active_learned)
@@ -437,6 +506,8 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
                 _learner._on_denied = _on_denied
             if _on_learned is not None:
                 _learner._on_learned = _on_learned
+        if _host_proxy and enable_dns:
+            _host_proxy.update_callbacks(is_allowed=_proxy_host_allowed, on_denied=_on_denied)
         return True
 
     backend = _detect_backend()
@@ -446,7 +517,8 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
 
     print(
         f"[NetPolicy] Aplicando modo={mode} backend={backend} "
-        f"seed={len(remotes)} learned={len(_active_learned or [])} dns_learn={enable_dns}"
+        f"seed={len(remotes)} learned={len(_active_learned or [])} "
+        f"dns_learn={enable_dns} sni_proxy={enable_dns}"
     )
     if backend == "nft":
         ok = _apply_nft(remotes, enable_dns)
@@ -457,8 +529,10 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
         _last_fingerprint = fingerprint
         if enable_dns:
             _start_learner(allowlist, _active_learned)
+            _start_host_proxy()
         else:
             _stop_learner()
+            _stop_host_proxy()
         _flush_conntrack()
     return ok
 
@@ -478,6 +552,7 @@ def clear_network_policy(force: bool = False):
         return True
     print("[NetPolicy] Limpiando política (unrestricted)")
     _stop_learner()
+    _stop_host_proxy()
     backend = _detect_backend()
     if backend == "nft":
         _clear_nft()

@@ -1,0 +1,364 @@
+"""
+Proxy local por hostname (CONNECT + SNI transparente).
+
+Permite clients4.google.com y bloquea google.com aunque compartan IP:
+la decisión es el nombre (CONNECT host o SNI del ClientHello), no el IP.
+"""
+
+from __future__ import annotations
+
+import select
+import socket
+import struct
+import threading
+from typing import Callable, Optional
+
+LISTEN_CONNECT = ("127.0.0.1", 18080)
+LISTEN_SNI = ("127.0.0.1", 18443)
+SO_MARK = 36  # Linux
+PROXY_MARK = 0xC1BE00D1
+
+# SO_ORIGINAL_DST (Linux)
+SOL_IP = 0
+SO_ORIGINAL_DST = 80
+
+
+def extract_sni(data: bytes) -> Optional[str]:
+    """Extrae SNI de un TLS ClientHello (record + handshake)."""
+    try:
+        if len(data) < 5 or data[0] != 0x16:
+            return None
+        # TLS record header
+        rec_len = (data[3] << 8) | data[4]
+        hs = 5
+        if hs >= len(data) or data[hs] != 0x01:  # ClientHello
+            return None
+        p = hs + 4  # skip handshake hdr
+        if p + 2 + 32 >= len(data):
+            return None
+        p += 2  # client version
+        p += 32  # random
+        if p >= len(data):
+            return None
+        sid_len = data[p]
+        p += 1 + sid_len
+        if p + 2 > len(data):
+            return None
+        cs_len = (data[p] << 8) | data[p + 1]
+        p += 2 + cs_len
+        if p >= len(data):
+            return None
+        comp_len = data[p]
+        p += 1 + comp_len
+        if p + 2 > len(data):
+            return None
+        ext_len = (data[p] << 8) | data[p + 1]
+        p += 2
+        end = min(len(data), p + ext_len)
+        while p + 4 <= end:
+            typ = (data[p] << 8) | data[p + 1]
+            ln = (data[p + 2] << 8) | data[p + 3]
+            p += 4
+            if p + ln > end:
+                break
+            if typ == 0 and ln >= 5:  # server_name
+                q = p + 2
+                if q >= p + ln:
+                    break
+                name_type = data[q]
+                q += 1
+                if name_type != 0 or q + 2 > p + ln:
+                    break
+                name_len = (data[q] << 8) | data[q + 1]
+                q += 2
+                if q + name_len > p + ln:
+                    break
+                return data[q : q + name_len].decode("ascii", errors="ignore").lower()
+            p += ln
+    except Exception:
+        return None
+    return None
+
+
+def _splice(a: socket.socket, b: socket.socket, timeout: float = 300.0):
+    a.setblocking(False)
+    b.setblocking(False)
+    sockets = [a, b]
+    try:
+        while True:
+            r, _, x = select.select(sockets, [], sockets, timeout)
+            if x or not r:
+                break
+            for src in r:
+                dst = b if src is a else a
+                try:
+                    data = src.recv(65536)
+                except Exception:
+                    return
+                if not data:
+                    return
+                try:
+                    dst.sendall(data)
+                except Exception:
+                    return
+    finally:
+        for s in (a, b):
+            try:
+                s.close()
+            except Exception:
+                pass
+
+
+def _set_mark(sock: socket.socket):
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, SO_MARK, PROXY_MARK)
+    except Exception:
+        try:
+            sock.setsockopt(socket.SOL_IP, SO_MARK, PROXY_MARK)
+        except Exception:
+            pass
+
+
+def _original_dst(conn: socket.socket) -> Optional[tuple[str, int]]:
+    try:
+        raw = conn.getsockopt(SOL_IP, SO_ORIGINAL_DST, 16)
+        # sockaddr_in
+        port = struct.unpack("!H", raw[2:4])[0]
+        ip = socket.inet_ntoa(raw[4:8])
+        return ip, port
+    except Exception:
+        return None
+
+
+class HostnameProxy:
+    """CONNECT (:18080) + transparent SNI (:18443)."""
+
+    def __init__(
+        self,
+        is_allowed: Callable[[str], bool],
+        on_allowed: Optional[Callable[[str], None]] = None,
+        on_denied: Optional[Callable[[str], None]] = None,
+    ):
+        self._is_allowed = is_allowed
+        self._on_allowed = on_allowed
+        self._on_denied = on_denied
+        self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []
+        self._socks: list[socket.socket] = []
+
+    def start(self) -> bool:
+        self.stop()
+        self._stop.clear()
+        ok = True
+        for label, addr, handler in (
+            ("connect", LISTEN_CONNECT, self._serve_connect),
+            ("sni", LISTEN_SNI, self._serve_sni),
+        ):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(addr)
+                sock.listen(128)
+                sock.settimeout(1.0)
+                self._socks.append(sock)
+                t = threading.Thread(
+                    target=handler, args=(sock,), name=f"cm-hostproxy-{label}", daemon=True
+                )
+                t.start()
+                self._threads.append(t)
+                print(f"[HostProxy] listening {addr[0]}:{addr[1]} ({label})")
+            except OSError as e:
+                print(f"[HostProxy] bind {addr}: {e}")
+                ok = False
+        return ok
+
+    def stop(self):
+        self._stop.set()
+        for s in self._socks:
+            try:
+                s.close()
+            except Exception:
+                pass
+        self._socks = []
+        for t in self._threads:
+            t.join(timeout=2)
+        self._threads = []
+
+    def update_callbacks(
+        self,
+        is_allowed: Optional[Callable[[str], bool]] = None,
+        on_allowed: Optional[Callable[[str], None]] = None,
+        on_denied: Optional[Callable[[str], None]] = None,
+    ):
+        if is_allowed is not None:
+            self._is_allowed = is_allowed
+        if on_allowed is not None:
+            self._on_allowed = on_allowed
+        if on_denied is not None:
+            self._on_denied = on_denied
+
+    def _check(self, host: str) -> bool:
+        name = (host or "").strip().lower().rstrip(".")
+        if not name:
+            return False
+        allowed = False
+        try:
+            allowed = bool(self._is_allowed(name))
+        except Exception as e:
+            print(f"[HostProxy] is_allowed: {e}")
+        if allowed:
+            if self._on_allowed:
+                try:
+                    self._on_allowed(name)
+                except Exception:
+                    pass
+        else:
+            print(f"[HostProxy] DENY {name}")
+            if self._on_denied:
+                try:
+                    self._on_denied(name)
+                except Exception:
+                    pass
+        return allowed
+
+    def _dial(self, host: str, port: int) -> Optional[socket.socket]:
+        try:
+            remote = socket.create_connection((host, port), timeout=10)
+            _set_mark(remote)
+            return remote
+        except Exception as e:
+            print(f"[HostProxy] dial {host}:{port}: {e}")
+            return None
+
+    def _serve_connect(self, sock: socket.socket):
+        while not self._stop.is_set():
+            try:
+                conn, _ = sock.accept()
+            except socket.timeout:
+                continue
+            except Exception:
+                if self._stop.is_set():
+                    break
+                continue
+            threading.Thread(
+                target=self._handle_connect, args=(conn,), daemon=True
+            ).start()
+
+    def _handle_connect(self, conn: socket.socket):
+        remote = None
+        try:
+            conn.settimeout(15)
+            buf = b""
+            while b"\r\n\r\n" not in buf and len(buf) < 65536:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return
+                buf += chunk
+            head = buf.split(b"\r\n\r\n", 1)[0].decode("latin-1", errors="ignore")
+            line = head.split("\r\n", 1)[0]
+            parts = line.split()
+            if len(parts) < 2 or parts[0].upper() != "CONNECT":
+                conn.sendall(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n")
+                return
+            target = parts[1]
+            if ":" in target:
+                host, port_s = target.rsplit(":", 1)
+                port = int(port_s)
+            else:
+                host, port = target, 443
+            host = host.strip("[]").lower()
+            if not self._check(host):
+                conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                return
+            remote = self._dial(host, port)
+            if not remote:
+                conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                return
+            conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            conn.settimeout(None)
+            remote.settimeout(None)
+            _splice(conn, remote)
+            conn = None
+            remote = None
+        except Exception as e:
+            print(f"[HostProxy] connect handler: {e}")
+        finally:
+            for s in (conn, remote):
+                if s:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+
+    def _serve_sni(self, sock: socket.socket):
+        while not self._stop.is_set():
+            try:
+                conn, _ = sock.accept()
+            except socket.timeout:
+                continue
+            except Exception:
+                if self._stop.is_set():
+                    break
+                continue
+            threading.Thread(
+                target=self._handle_sni, args=(conn,), daemon=True
+            ).start()
+
+    def _handle_sni(self, conn: socket.socket):
+        remote = None
+        try:
+            conn.settimeout(15)
+            buf = b""
+            sni = None
+            # Leer hasta poder parsear ClientHello (o tope)
+            while len(buf) < 65536:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return
+                buf += chunk
+                sni = extract_sni(buf)
+                if sni or (len(buf) >= 5 and buf[0] != 0x16):
+                    break
+                # record completo?
+                if len(buf) >= 5:
+                    need = 5 + ((buf[3] << 8) | buf[4])
+                    if len(buf) >= need:
+                        sni = extract_sni(buf)
+                        break
+
+            orig = _original_dst(conn)
+            dest_host = sni
+            dest_port = 443
+            dest_ip = None
+            if orig:
+                dest_ip, dest_port = orig
+
+            if not sni:
+                # Sin SNI no podemos name-gate con seguridad
+                print("[HostProxy] DENY (no SNI)")
+                return
+
+            if not self._check(sni):
+                return
+
+            # Preferir dial por nombre (SNI); fallback IP original
+            remote = self._dial(sni, dest_port) or (
+                self._dial(dest_ip, dest_port) if dest_ip else None
+            )
+            if not remote:
+                return
+            remote.sendall(buf)
+            conn.settimeout(None)
+            remote.settimeout(None)
+            _splice(conn, remote)
+            conn = None
+            remote = None
+        except Exception as e:
+            print(f"[HostProxy] sni handler: {e}")
+        finally:
+            for s in (conn, remote):
+                if s:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
