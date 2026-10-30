@@ -10,10 +10,15 @@ object AllowlistDomains {
 
     private val FAMILIES = mapOf(
         "youtube.com" to listOf(
-            "youtube.com", "youtu.be", "youtube-nocookie.com", "yt.be",
-            "googlevideo.com", "ytimg.com", "yt3.ggpht.com", "ggpht.com",
+            "youtube.com", "youtu.be", "youtube-nocookie.com", "youtubekids.com", "yt.be",
+            "googlevideo.com", "gvt1.com", "gvt2.com", "gvt3.com",
+            "ytimg.com", "yt3.ggpht.com", "ggpht.com",
             "googleusercontent.com", "googleapis.com", "gstatic.com",
-            "google.com", "youtubekids.com"
+            "google.com",
+            "accounts.google.com", "play.google.com",
+            "youtubei.googleapis.com", "youtube.googleapis.com",
+            "youtube-ui.l.google.com", "ytimg.l.google.com", "ytstatic.l.google.com",
+            "wide-youtube.l.google.com", "video.google.com"
         ),
         "github.com" to listOf(
             "github.com", "githubusercontent.com", "githubassets.com",

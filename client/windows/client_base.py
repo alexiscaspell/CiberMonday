@@ -1086,6 +1086,11 @@ class CiberMondayClient(ABC):
                         print("\rEsperando asignación de tiempo...", end='', flush=True)
                         self.alerts_shown = {t: False for t in self.alert_thresholds}
                         last_remaining = None
+                    # Sin sesión: limpiar reglas viejas (unrestricted).
+                    try:
+                        self.refresh_network_policy()
+                    except Exception:
+                        pass
                     time.sleep(1)
                     continue
 

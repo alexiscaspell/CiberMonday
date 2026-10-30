@@ -39,10 +39,50 @@ def _parse_qname(data: bytes, offset: int) -> tuple[str, int]:
             jumped = True
             continue
         offset += 1
-        labels.append(data[offset : offset + length].decode("idna", errors="ignore"))
+        try:
+            labels.append(data[offset : offset + length].decode("idna"))
+        except Exception:
+            labels.append(data[offset : offset + length].decode("ascii", errors="ignore"))
         offset += length
     name = ".".join(labels).lower()
     return name, end
+
+
+def _question_end(packet: bytes) -> tuple[str, int, int]:
+    """Return (qname, qtype, offset_after_question)."""
+    if len(packet) < 12:
+        return "", 0, 0
+    qdcount = struct.unpack("!H", packet[4:6])[0]
+    offset = 12
+    qname = ""
+    qtype = 0
+    for _ in range(qdcount):
+        qname, offset = _parse_qname(packet, offset)
+        if offset + 4 > len(packet):
+            return qname, 0, offset
+        qtype, _qclass = struct.unpack("!HH", packet[offset : offset + 4])
+        offset += 4
+    return qname, qtype, offset
+
+
+def _nodata_response(query: bytes) -> bytes:
+    """Respuesta vacía (NOERROR) — fuerza fallback A cuando el firewall es solo IPv4."""
+    if len(query) < 12:
+        return query
+    qname, _qtype, qend = _question_end(query)
+    if qend < 12:
+        return query
+    qdcount = struct.unpack("!H", query[4:6])[0]
+    header = struct.pack(
+        "!HHHHHH",
+        struct.unpack("!H", query[0:2])[0],
+        0x8180,  # QR+RD+RA, NOERROR
+        qdcount,
+        0,
+        0,
+        0,
+    )
+    return header + query[12:qend]
 
 
 def _extract_a_records(packet: bytes) -> tuple[str, list[str]]:
@@ -53,13 +93,15 @@ def _extract_a_records(packet: bytes) -> tuple[str, list[str]]:
         return "", []
     qdcount = struct.unpack("!H", packet[4:6])[0]
     ancount = struct.unpack("!H", packet[6:8])[0]
+    nscount = struct.unpack("!H", packet[8:10])[0]
+    arcount = struct.unpack("!H", packet[10:12])[0]
     offset = 12
     qname = ""
     for _ in range(qdcount):
         qname, offset = _parse_qname(packet, offset)
         offset += 4
     ips: list[str] = []
-    for _ in range(ancount):
+    for _ in range(ancount + nscount + arcount):
         if offset >= len(packet):
             break
         _, offset = _parse_qname(packet, offset)
@@ -142,6 +184,15 @@ class DnsLearner:
                     print(f"[DnsLearner] loop: {e}")
 
     def _handle(self, data: bytes, addr):
+        qname, qtype, _ = _question_end(data)
+        # Firewall solo IPv4: no devolver AAAA (evita assets rotos por Happy Eyeballs).
+        if qtype == 28:  # AAAA
+            try:
+                if self._sock:
+                    self._sock.sendto(_nodata_response(data), addr)
+            except Exception:
+                pass
+            return
         try:
             up = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             up.settimeout(3)
@@ -151,22 +202,23 @@ class DnsLearner:
         except Exception as e:
             print(f"[DnsLearner] upstream: {e}")
             return
+        resp_qname, ips = _extract_a_records(resp)
+        name = resp_qname or qname
+        allowed = bool(name and name_is_allowed(name, self._allowlist))
+        # Importante: abrir IPs en nft/iptables ANTES de contestar DNS (evita race).
+        if allowed and ips:
+            try:
+                self._on_ips(ips)
+                print(f"[DnsLearner] allow {name} → {', '.join(ips)}")
+            except Exception as e:
+                print(f"[DnsLearner] on_ips: {e}")
+        elif not allowed and self._on_denied and name:
+            try:
+                self._on_denied(name)
+            except Exception as e:
+                print(f"[DnsLearner] on_denied: {e}")
         try:
             if self._sock:
                 self._sock.sendto(resp, addr)
         except Exception:
             return
-        qname, ips = _extract_a_records(resp)
-        if not ips:
-            return
-        if name_is_allowed(qname, self._allowlist):
-            try:
-                self._on_ips(ips)
-                print(f"[DnsLearner] allow {qname} → {', '.join(ips)}")
-            except Exception as e:
-                print(f"[DnsLearner] on_ips: {e}")
-        elif self._on_denied and qname:
-            try:
-                self._on_denied(qname)
-            except Exception as e:
-                print(f"[DnsLearner] on_denied: {e}")

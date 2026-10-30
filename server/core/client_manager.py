@@ -62,9 +62,15 @@ class ClientManager:
     # Se expanden en el cliente; en admin solo se guarda el apex.
     ALLOWLIST_FAMILIES = {
         'youtube.com': (
-            'youtube.com', 'youtu.be', 'youtube-nocookie.com',
-            'googlevideo.com', 'ytimg.com', 'yt3.ggpht.com', 'ggpht.com',
-            'googleusercontent.com', 'googleapis.com', 'gstatic.com', 'google.com',
+            'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'youtubekids.com', 'yt.be',
+            'googlevideo.com', 'gvt1.com', 'gvt2.com', 'gvt3.com',
+            'ytimg.com', 'yt3.ggpht.com', 'ggpht.com',
+            'googleusercontent.com', 'googleapis.com', 'gstatic.com',
+            'google.com',
+            'accounts.google.com', 'play.google.com',
+            'youtubei.googleapis.com', 'youtube.googleapis.com',
+            'youtube-ui.l.google.com', 'ytimg.l.google.com', 'ytstatic.l.google.com',
+            'wide-youtube.l.google.com', 'video.google.com',
         ),
         'github.com': (
             'github.com', 'githubusercontent.com', 'githubassets.com',

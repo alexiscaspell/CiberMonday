@@ -65,19 +65,36 @@ def classify_entry(entry: str):
 
 
 def resolve_domains(domains):
-    ips = set()
-    for d in domains:
+    """Resuelve A/AAAA→IPv4 en paralelo para sembrar el set antes del primer paint."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _one(d):
         host = d[2:] if d.startswith("*.") else d
+        out = set()
         try:
-            for info in socket.getaddrinfo(host, None):
+            for info in socket.getaddrinfo(host, None, socket.AF_INET):
                 addr = info[4][0]
                 try:
                     if isinstance(ipaddress.ip_address(addr), ipaddress.IPv4Address):
-                        ips.add(addr)
+                        out.add(addr)
                 except ValueError:
                     pass
         except Exception:
-            continue
+            pass
+        return out
+
+    ips = set()
+    names = [d for d in domains if d]
+    if not names:
+        return ips
+    workers = min(16, max(4, len(names)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(_one, d) for d in names]
+        for fut in as_completed(futs):
+            try:
+                ips |= fut.result()
+            except Exception:
+                pass
     return ips
 
 
@@ -393,7 +410,9 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None):
 
     remotes = build_allowed_remotes(mode, allowlist, server_url)
     enable_dns = mode == "allowlist"
-    fingerprint = f"{mode}|dns:{enable_dns}|{'|'.join(remotes)}"
+    # Incluir allowlist: al achicar la lista hay que rearmar el set (IPs aprendidas viejas).
+    al_key = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
+    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
         if _learner and enable_dns:
             _learner.update_allowlist(allowlist or [])
@@ -418,7 +437,17 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None):
             _start_learner(allowlist)
         else:
             _stop_learner()
+        _flush_conntrack()
     return ok
+
+
+def _flush_conntrack():
+    """Cierra flujos TCP viejos que quedarían abiertos por established/related."""
+    if shutil.which("conntrack"):
+        try:
+            _run(["conntrack", "-F"], timeout=5)
+        except Exception:
+            pass
 
 
 def clear_network_policy(force: bool = False):
