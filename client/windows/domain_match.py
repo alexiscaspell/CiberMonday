@@ -38,7 +38,10 @@ def normalize_host(raw: str):
     e = e.lower()
     if not e:
         return None
-    e = e.removeprefix("http://").removeprefix("https://")
+    if e.startswith("https://"):
+        e = e[8:]
+    elif e.startswith("http://"):
+        e = e[7:]
     e = e.split("/")[0].split(":")[0].strip()
     if e.startswith("*") and not e.startswith("*.") and len(e) > 1:
         e = "*." + e[1:]

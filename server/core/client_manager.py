@@ -228,7 +228,10 @@ class ClientManager:
             item = item.lower()
             if not item:
                 continue
-            item = item.removeprefix('http://').removeprefix('https://')
+            if item.startswith('https://'):
+                item = item[8:]
+            elif item.startswith('http://'):
+                item = item[7:]
             item = item.split('/')[0].split(':')[0].strip()
             # *youtube.com → *.youtube.com
             if item.startswith('*') and not item.startswith('*.') and len(item) > 1:
@@ -892,7 +895,10 @@ class ClientManager:
             return None
         if '#' in item:
             item = item.split('#', 1)[0].strip()
-        item = item.removeprefix('http://').removeprefix('https://')
+        if item.startswith('https://'):
+            item = item[8:]
+        elif item.startswith('http://'):
+            item = item[7:]
         item = item.split('/')[0].split(':')[0].strip()
         if item.startswith('*') and not item.startswith('*.') and len(item) > 1:
             item = '*.' + item[1:]
