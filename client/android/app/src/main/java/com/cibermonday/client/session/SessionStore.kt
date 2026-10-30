@@ -201,6 +201,15 @@ class SessionStore(context: Context) {
         prefs.edit().putString(KEY_ALLOWLIST, arr.toString()).apply()
     }
 
+    var configUpdatedAt: String?
+        get() = prefs.getString(KEY_CONFIG_UPDATED_AT, null)
+        set(value) {
+            val ed = prefs.edit()
+            if (value.isNullOrBlank()) ed.remove(KEY_CONFIG_UPDATED_AT)
+            else ed.putString(KEY_CONFIG_UPDATED_AT, value)
+            ed.apply()
+        }
+
     fun saveInternetSession(timeLimitSeconds: Int, startTimeIso: String, endTimeIso: String) {
         prefs.edit()
             .putInt(KEY_INET_TIME_LIMIT, timeLimitSeconds)
@@ -410,6 +419,7 @@ class SessionStore(context: Context) {
         (config["internet_request_enabled"] as? Boolean)?.let { internetRequestEnabled = it }
         @Suppress("UNCHECKED_CAST")
         (config["allowlist"] as? List<*>)?.mapNotNull { it as? String }?.let { setAllowlist(it) }
+        (config["config_updated_at"] as? String)?.takeIf { it.isNotBlank() }?.let { configUpdatedAt = it }
         notifyChanged()
     }
 
@@ -448,6 +458,7 @@ class SessionStore(context: Context) {
         private const val KEY_NETWORK_FILTER = "network_filter_enabled"
         private const val KEY_INTERNET_REQUEST = "internet_request_enabled"
         private const val KEY_ALLOWLIST = "allowlist"
+        private const val KEY_CONFIG_UPDATED_AT = "config_updated_at"
         private const val KEY_INET_TIME_LIMIT = "internet_time_limit_seconds"
         private const val KEY_INET_START_TIME = "internet_start_time"
         private const val KEY_INET_END_TIME = "internet_end_time"

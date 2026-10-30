@@ -54,6 +54,10 @@ class ApiClient(private val store: SessionStore) {
                     .put("network_filter_enabled", store.networkFilterEnabled)
                     .put("internet_request_enabled", store.internetRequestEnabled)
                     .put("allowlist", JSONArray(store.getAllowlist()))
+                    .put(
+                        "config_updated_at",
+                        store.configUpdatedAt ?: JSONObject.NULL
+                    )
             )
             put("known_servers", serversToJson(store.loadServers()))
         }

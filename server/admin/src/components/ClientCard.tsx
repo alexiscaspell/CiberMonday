@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -194,6 +194,33 @@ export function ClientCard({ client, onChanged }: Props) {
     (client.config?.allowlist ?? []).join('\n'),
   );
   const [configStatus, setConfigStatus] = useState('');
+  // Evita que el poll pise ediciones locales; al guardar se limpia.
+  const [configDirty, setConfigDirty] = useState(false);
+
+  // Poll / sync peer: reflejar config del server (allowlist/filter incluidos).
+  useEffect(() => {
+    if (configDirty) return;
+    const cfg = client.config;
+    setSyncInterval(String(cfg?.sync_interval ?? 30));
+    setAlerts(
+      (cfg?.alert_thresholds ?? [600, 300, 120, 60]).map((s) => s / 60).join(', '),
+    );
+    setTimeouts(String(cfg?.max_server_timeouts ?? 10));
+    setLockRecheck(String(cfg?.lock_recheck_interval ?? 1));
+    setNetworkFilter(!!cfg?.network_filter_enabled);
+    setInternetRequest(!!cfg?.internet_request_enabled);
+    setAllowlistText((cfg?.allowlist ?? []).join('\n'));
+  }, [
+    configDirty,
+    client.config?.config_updated_at,
+    client.config?.network_filter_enabled,
+    client.config?.internet_request_enabled,
+    client.config?.sync_interval,
+    client.config?.max_server_timeouts,
+    client.config?.lock_recheck_interval,
+    JSON.stringify(client.config?.alert_thresholds ?? null),
+    JSON.stringify(client.config?.allowlist ?? null),
+  ]);
 
   const connected = !!client.connected;
   const pendingRequests = client.pending_access_requests ?? [];
@@ -370,6 +397,7 @@ export function ClientCard({ client, onChanged }: Props) {
       });
       if (res.success) {
         setConfigStatus('Guardado');
+        setConfigDirty(false);
         if (res.config?.alert_thresholds) {
           setAlerts(res.config.alert_thresholds.map((s) => s / 60).join(', '));
         }
@@ -606,24 +634,36 @@ export function ClientCard({ client, onChanged }: Props) {
           <Field
             label="Sincronización (seg)"
             value={syncInterval}
-            onChange={setSyncInterval}
+            onChange={(v) => {
+              setConfigDirty(true);
+              setSyncInterval(v);
+            }}
             keyboard="number-pad"
           />
           <Field
             label="Alertas (min, coma)"
             value={alerts}
-            onChange={setAlerts}
+            onChange={(v) => {
+              setConfigDirty(true);
+              setAlerts(v);
+            }}
           />
           <Field
             label="Reintentos servidor"
             value={timeouts}
-            onChange={setTimeouts}
+            onChange={(v) => {
+              setConfigDirty(true);
+              setTimeouts(v);
+            }}
             keyboard="number-pad"
           />
           <Field
             label="Re-bloqueo (seg)"
             value={lockRecheck}
-            onChange={setLockRecheck}
+            onChange={(v) => {
+              setConfigDirty(true);
+              setLockRecheck(v);
+            }}
             keyboard="number-pad"
           />
           <View style={styles.toggleRow}>
@@ -632,7 +672,10 @@ export function ClientCard({ client, onChanged }: Props) {
               title={networkFilter ? 'Activado' : 'Desactivado'}
               compact
               variant={networkFilter ? 'primary' : 'ghost'}
-              onPress={() => setNetworkFilter((v) => !v)}
+              onPress={() => {
+                setConfigDirty(true);
+                setNetworkFilter((v) => !v);
+              }}
             />
           </View>
           <View style={styles.toggleRow}>
@@ -642,7 +685,10 @@ export function ClientCard({ client, onChanged }: Props) {
               compact
               variant={internetRequest ? 'primary' : 'ghost'}
               disabled={!networkFilter}
-              onPress={() => setInternetRequest((v) => !v)}
+              onPress={() => {
+                setConfigDirty(true);
+                setInternetRequest((v) => !v);
+              }}
             />
           </View>
           <Text style={styles.hint}>
@@ -688,7 +734,10 @@ export function ClientCard({ client, onChanged }: Props) {
           <TextInput
             style={[styles.input, styles.allowlistInput]}
             value={allowlistText}
-            onChangeText={setAllowlistText}
+            onChangeText={(t) => {
+              setConfigDirty(true);
+              setAllowlistText(t);
+            }}
             multiline
             numberOfLines={8}
             placeholder={
@@ -720,11 +769,12 @@ export function ClientCard({ client, onChanged }: Props) {
                       compact
                       variant={row.enabled ? 'primary' : 'ghost'}
                       disabled={!networkFilter}
-                      onPress={() =>
+                      onPress={() => {
+                        setConfigDirty(true);
                         setAllowlistText((t) =>
                           toggleAllowlistLine(t, row.lineIndex),
-                        )
-                      }
+                        );
+                      }}
                     />
                   </View>
                 ),

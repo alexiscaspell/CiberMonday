@@ -597,6 +597,7 @@ class CiberMondayClient(ABC):
                     'network_filter_enabled': bool(config_data.get('network_filter_enabled', False)),
                     'internet_request_enabled': bool(config_data.get('internet_request_enabled', False)),
                     'allowlist': config_data.get('allowlist') or [],
+                    'config_updated_at': config_data.get('config_updated_at'),
                 }
 
             inet_info = self.get_internet_session_info()
@@ -725,6 +726,9 @@ class CiberMondayClient(ABC):
                 val = server_config['allowlist'] if isinstance(server_config['allowlist'], list) else []
                 current['allowlist'] = val
                 print(f"[Config] Allowlist: {len(val)} entradas")
+
+            if server_config.get('config_updated_at'):
+                current['config_updated_at'] = server_config['config_updated_at']
 
             current['server_url'] = current.get('server_url', self.server_url)
             self.save_config(current)

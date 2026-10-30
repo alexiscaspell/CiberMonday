@@ -357,50 +357,109 @@ class ClientManager:
         self.clients_db[client_id] = client_data
         
         # Configuración
-        # Tras un push de admin el cliente re-registra en todos los servers con la
-        # allowlist nueva. Si hay grace de admin local, no pisar; si no, adoptar
-        # la del cliente (colapsada) para que web↔móvil queden alineados.
+        # LWW por config_updated_at: el stamp del cliente (último push admin) gana
+        # si es >= al local. Nunca pisar con now() — eso hacía que un re-registro
+        # stale bloqueara el sync peer de allowlist/filter.
         existing_cfg = self.client_configs.get(client_id) or {}
         if config:
+            existing_stamp = existing_cfg.get('config_updated_at') or ''
+            client_stamp = str(config.get('config_updated_at') or '')
+            admin_grace = self._has_pending_admin_change(client_id)
+            take_client_policy = (
+                not admin_grace
+                and (
+                    not existing_stamp
+                    or (bool(client_stamp) and client_stamp >= existing_stamp)
+                )
+            )
+
             try:
                 client_allowlist = self._normalize_allowlist(
                     config.get('allowlist', self.DEFAULT_CONFIG['allowlist'])
                 ) or []
             except ValueError:
                 client_allowlist = []
-            if self._has_pending_admin_change(client_id) and 'allowlist' in existing_cfg:
-                allowlist = list(existing_cfg.get('allowlist') or [])
-            elif client_allowlist:
+
+            if take_client_policy:
                 allowlist = client_allowlist
-            elif 'allowlist' in existing_cfg:
-                allowlist = list(existing_cfg.get('allowlist') or [])
+                network_filter = bool(
+                    config.get(
+                        'network_filter_enabled',
+                        self.DEFAULT_CONFIG['network_filter_enabled'],
+                    )
+                )
+                internet_request = bool(
+                    config.get(
+                        'internet_request_enabled',
+                        self.DEFAULT_CONFIG['internet_request_enabled'],
+                    )
+                )
             else:
-                allowlist = []
+                allowlist = list(
+                    existing_cfg.get('allowlist', self.DEFAULT_CONFIG['allowlist']) or []
+                )
+                network_filter = bool(
+                    existing_cfg.get(
+                        'network_filter_enabled',
+                        self.DEFAULT_CONFIG['network_filter_enabled'],
+                    )
+                )
+                internet_request = bool(
+                    existing_cfg.get(
+                        'internet_request_enabled',
+                        self.DEFAULT_CONFIG['internet_request_enabled'],
+                    )
+                )
 
-            network_filter = bool(
-                config.get('network_filter_enabled', self.DEFAULT_CONFIG['network_filter_enabled'])
-            )
-            if self._has_pending_admin_change(client_id) and 'network_filter_enabled' in existing_cfg:
-                network_filter = bool(existing_cfg.get('network_filter_enabled'))
+            # Campos “suaves”: adoptar del cliente solo si también ganó la policy
+            # o no hay config local aún; si no, conservar local (mismo LWW).
+            if take_client_policy or not existing_cfg:
+                soft = {
+                    'sync_interval': config.get(
+                        'sync_interval', self.DEFAULT_CONFIG['sync_interval']
+                    ),
+                    'alert_thresholds': config.get(
+                        'alert_thresholds', self.DEFAULT_CONFIG['alert_thresholds']
+                    ),
+                    'custom_name': config.get('custom_name'),
+                    'max_server_timeouts': config.get(
+                        'max_server_timeouts', self.DEFAULT_CONFIG['max_server_timeouts']
+                    ),
+                    'lock_recheck_interval': config.get(
+                        'lock_recheck_interval',
+                        self.DEFAULT_CONFIG['lock_recheck_interval'],
+                    ),
+                }
+            else:
+                soft = {
+                    'sync_interval': existing_cfg.get(
+                        'sync_interval', self.DEFAULT_CONFIG['sync_interval']
+                    ),
+                    'alert_thresholds': existing_cfg.get(
+                        'alert_thresholds', self.DEFAULT_CONFIG['alert_thresholds']
+                    ),
+                    'custom_name': existing_cfg.get('custom_name'),
+                    'max_server_timeouts': existing_cfg.get(
+                        'max_server_timeouts', self.DEFAULT_CONFIG['max_server_timeouts']
+                    ),
+                    'lock_recheck_interval': existing_cfg.get(
+                        'lock_recheck_interval',
+                        self.DEFAULT_CONFIG['lock_recheck_interval'],
+                    ),
+                }
 
-            internet_request = bool(
-                config.get('internet_request_enabled', self.DEFAULT_CONFIG['internet_request_enabled'])
-            )
-            if self._has_pending_admin_change(client_id) and 'internet_request_enabled' in existing_cfg:
-                internet_request = bool(existing_cfg.get('internet_request_enabled'))
+            new_stamp = existing_stamp
+            if take_client_policy and client_stamp:
+                new_stamp = client_stamp
+            elif not new_stamp and client_stamp:
+                new_stamp = client_stamp
 
             self.client_configs[client_id] = {
-                'sync_interval': config.get('sync_interval', self.DEFAULT_CONFIG['sync_interval']),
-                'alert_thresholds': config.get('alert_thresholds', self.DEFAULT_CONFIG['alert_thresholds']),
-                'custom_name': config.get('custom_name'),
-                'max_server_timeouts': config.get('max_server_timeouts', self.DEFAULT_CONFIG['max_server_timeouts']),
-                'lock_recheck_interval': config.get(
-                    'lock_recheck_interval', self.DEFAULT_CONFIG['lock_recheck_interval']
-                ),
+                **soft,
                 'network_filter_enabled': network_filter,
                 'internet_request_enabled': internet_request,
                 'allowlist': allowlist,
-                'config_updated_at': datetime.now().isoformat(),
+                'config_updated_at': new_stamp or existing_stamp or None,
             }
             if self.client_configs[client_id]['custom_name']:
                 self.clients_db[client_id]['name'] = self.client_configs[client_id]['custom_name']
@@ -1454,20 +1513,24 @@ class ClientManager:
                     )
                 local_updated = self.client_configs[client_id].get('config_updated_at') or ''
                 remote_updated = remote_config.get('config_updated_at') or ''
-                # Si el remoto es más nuevo (o local no tiene stamp), adoptar red/allowlist
-                take_remote_policy = (not local_updated) or (remote_updated >= local_updated)
+                # Misma regla para TODOS los campos (antes alerts siempre pisaban
+                # y allowlist/filter solo si el stamp remoto era más nuevo → UI
+                # “sincronizada” en sync/alerts pero allowlist desfasada).
+                take_remote = (not local_updated) or (
+                    bool(remote_updated) and remote_updated >= local_updated
+                )
 
-                for key in (
-                    'sync_interval',
-                    'alert_thresholds',
-                    'custom_name',
-                    'max_server_timeouts',
-                    'lock_recheck_interval',
-                ):
-                    if key in remote_config and remote_config[key] is not None:
-                        self.client_configs[client_id][key] = remote_config[key]
+                if take_remote:
+                    for key in (
+                        'sync_interval',
+                        'alert_thresholds',
+                        'custom_name',
+                        'max_server_timeouts',
+                        'lock_recheck_interval',
+                    ):
+                        if key in remote_config and remote_config[key] is not None:
+                            self.client_configs[client_id][key] = remote_config[key]
 
-                if take_remote_policy:
                     if 'network_filter_enabled' in remote_config and remote_config['network_filter_enabled'] is not None:
                         self.client_configs[client_id]['network_filter_enabled'] = bool(
                             remote_config['network_filter_enabled']
@@ -1477,18 +1540,24 @@ class ClientManager:
                             remote_config['internet_request_enabled']
                         )
                     if 'allowlist' in remote_config and remote_config['allowlist'] is not None:
-                        self.client_configs[client_id]['allowlist'] = (
-                            self._normalize_allowlist(remote_config['allowlist']) or []
-                        )
+                        try:
+                            self.client_configs[client_id]['allowlist'] = (
+                                self._normalize_allowlist(remote_config['allowlist']) or []
+                            )
+                        except ValueError:
+                            pass
                     if remote_updated:
                         self.client_configs[client_id]['config_updated_at'] = remote_updated
                 elif 'allowlist' in self.client_configs[client_id]:
                     # Colapsar basura CDN local aunque no adoptemos remoto
-                    self.client_configs[client_id]['allowlist'] = (
-                        self._normalize_allowlist(
-                            self.client_configs[client_id].get('allowlist') or []
-                        ) or []
-                    )
+                    try:
+                        self.client_configs[client_id]['allowlist'] = (
+                            self._normalize_allowlist(
+                                self.client_configs[client_id].get('allowlist') or []
+                            ) or []
+                        )
+                    except ValueError:
+                        pass
 
             session = client_data.get('current_session') or client_data.get('session')
             if not session:

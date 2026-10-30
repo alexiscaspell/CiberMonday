@@ -25,6 +25,7 @@ export interface ClientConfig {
   network_filter_enabled?: boolean;
   internet_request_enabled?: boolean;
   allowlist?: string[];
+  config_updated_at?: string;
 }
 
 export interface AccessRequest {
