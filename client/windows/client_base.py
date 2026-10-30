@@ -1523,6 +1523,9 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
+CLIENT_VERSION = "0.7.12"
+
+
 def _make_diagnostic_handler(client):
     """Crea la clase DiagnosticHandler con referencia al client."""
 
@@ -1822,13 +1825,21 @@ def _make_diagnostic_handler(client):
                 cfg = client.load_config() or {}
             except Exception:
                 cfg = {}
+            host_proxy = False
+            try:
+                import network_policy as np
+                host_proxy = getattr(np, '_host_proxy', None) is not None
+            except Exception:
+                pass
             self._json({
                 'success': True, 'client_id': cid,
+                'client_version': CLIENT_VERSION,
                 'server_url': client.server_url,
                 'registry_available': True,
                 'session': si,
                 'internet_session': inet,
                 'network_policy_module': net_policy_ok,
+                'hostname_proxy_active': host_proxy,
                 'known_servers': servers,
                 'allowlist': list(cfg.get('allowlist') or []),
                 'allowlist_learned': list(cfg.get('allowlist_learned') or []),
