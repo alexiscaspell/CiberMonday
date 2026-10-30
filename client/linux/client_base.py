@@ -14,7 +14,7 @@ import threading
 import socket
 import json
 from abc import ABC, abstractmethod
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 
 if sys.stdout is None:
     sys.stdout = open(os.devnull, 'w')
@@ -262,10 +262,17 @@ class CiberMondayClient(ABC):
         fp = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
         if not fp or fp == getattr(self, '_allow_discover_fp', None):
             return
+        fail_at = getattr(self, '_allow_discover_fail_at', 0) or 0
+        if fail_at and (time.time() - fail_at) < 45:
+            return
 
         def _done(hosts, _fp=fp):
-            self._allow_discover_fp = _fp
-            self._merge_discovered_hosts(hosts)
+            # Solo marcar fingerprint si hubo related; si falló el fetch, reintentar.
+            if hosts:
+                self._allow_discover_fp = _fp
+                self._merge_discovered_hosts(hosts)
+            else:
+                self._allow_discover_fail_at = time.time()
 
         try:
             discover_async(allowlist, _done, fingerprint=fp)
@@ -1123,7 +1130,7 @@ class CiberMondayClient(ABC):
 
         def server_thread():
             try:
-                server = HTTPServer(('0.0.0.0', port), handler_class)
+                server = ThreadingHTTPServer(('0.0.0.0', port), handler_class)
                 self._diagnostic_server = server
 
                 try:
@@ -1523,7 +1530,7 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
-CLIENT_VERSION = "0.7.12"
+CLIENT_VERSION = "0.7.13"
 
 
 def _make_diagnostic_handler(client):
@@ -1813,12 +1820,17 @@ def _make_diagnostic_handler(client):
             servers = client.load_servers()
             for s in servers:
                 url = s.get('url')
-                if url:
-                    try:
-                        r = requests.get(f"{url}/api/health", timeout=2)
-                        s['available'] = r.status_code == 200
-                    except Exception:
-                        s['available'] = False
+                if not url:
+                    continue
+                host = (url.split('://', 1)[-1].split('/', 1)[0].split(':', 1)[0] or '').lower()
+                if host in ('localhost', '127.0.0.1', '::1'):
+                    s['available'] = False
+                    continue
+                try:
+                    r = requests.get(f"{url}/api/health", timeout=1.5)
+                    s['available'] = r.status_code == 200
+                except Exception:
+                    s['available'] = False
             ds = client._discovery_stats
             cfg = {}
             try:

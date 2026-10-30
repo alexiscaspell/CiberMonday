@@ -159,12 +159,14 @@ def media_cdn_learn_target(qname: str) -> str | None:
 
 
 def live_learn_target(qname: str, explicit, learned=None) -> str | None:
-    """Qué aprender del tráfico en vivo.
+    """Qué aprender del tráfico en vivo (DNS/SNI/CONNECT).
 
     1) Refinamientos bajo apexes ya conocidos
-    2) CDNs de media (googlevideo, ytimg, …) aunque sean apex nuevo —
-       necesarios porque no aparecen en el HTML estático del home
-    Nunca abre navegación tipo google.com por timing.
+    2) CDNs de media (googlevideo, ytimg, …) — no suelen estar en el HTML
+    3) APIs de plataformas compartidas (clients4.google.com, youtubei…):
+       misma heurística que el scan HTML, aplicada al tráfico real.
+       No hardcodea hosts de un sitio; solo filtra navegación vs subrecurso.
+    Nunca abre google.com / accounts.google.com.
     """
     name = (qname or "").strip().lower().rstrip(".")
     if not name:
@@ -184,8 +186,14 @@ def live_learn_target(qname: str, explicit, learned=None) -> str | None:
             return None
         return target
 
-    # Apex nuevo solo si parece CDN de media (playback YouTube, etc.)
-    return media_cdn_learn_target(name)
+    media = media_cdn_learn_target(name)
+    if media:
+        return media
+    # Solo plataformas compartidas (google/gstatic/…): APIs, no sitios nuevos.
+    apex = dns_apex(name)
+    if apex in _NEVER_EXPAND_APEX or apex == "google.com":
+        return discovery_learn_target(name)
+    return None
 
 
 # Solo apexes de navegación (no APIs/CDN related).

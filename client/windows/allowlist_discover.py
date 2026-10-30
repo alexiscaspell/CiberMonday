@@ -112,8 +112,11 @@ def _host_from_url(url: str) -> Optional[str]:
 
 def _fetch(url: str, timeout: float = 8.0) -> Optional[str]:
     try:
+        # Sin proxy del sistema: el HostnameProxy aún puede no conocer related.
+        from urllib.request import build_opener, ProxyHandler
         req = Request(url, headers={"User-Agent": _UA, "Accept": "text/html,*/*"})
-        with urlopen(req, timeout=timeout) as resp:
+        opener = build_opener(ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
             ctype = (resp.headers.get("Content-Type") or "").lower()
             raw = resp.read(2_000_000)
         # Solo parsear como HTML si parece texto

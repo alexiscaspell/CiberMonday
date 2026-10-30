@@ -528,8 +528,8 @@ class NetworkFilterVpnService : VpnService() {
             val fp = allow.map { it.trim().lowercase() }.filter { it.isNotBlank() }.sorted().joinToString("|")
             if (fp.isBlank() || fp == discoverFpDone) return
             AllowlistDiscover.discoverAsync(allow) { hosts ->
-                discoverFpDone = fp
                 if (hosts.isEmpty()) return@discoverAsync
+                discoverFpDone = fp
                 if (!store.mergeAllowlistLearned(hosts)) return@discoverAsync
                 Log.i(TAG, "discover merged ${hosts.size} related")
                 val before = seededIps.toSet()

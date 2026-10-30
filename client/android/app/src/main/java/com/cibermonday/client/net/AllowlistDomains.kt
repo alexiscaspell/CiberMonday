@@ -121,7 +121,13 @@ object AllowlistDomains {
             }
             return target
         }
-        return mediaCdnLearnTarget(name)
+        mediaCdnLearnTarget(name)?.let { return it }
+        // Plataformas compartidas: APIs/CDN from live traffic (same as HTML discover).
+        val apex = dnsApex(name)
+        if (apex in NEVER_EXPAND_APEX || apex == "google.com") {
+            return discoveryLearnTarget(name)
+        }
+        return null
     }
 
     fun sanitizeLearned(entries: List<String>): List<String> {

@@ -186,6 +186,7 @@ def set_client_config(client_id):
         network_filter_enabled=data.get('network_filter_enabled'),
         internet_request_enabled=data.get('internet_request_enabled'),
         allowlist=data.get('allowlist'),
+        allowlist_learned=data.get('allowlist_learned'),
         notify_client=not from_client
     )
     
