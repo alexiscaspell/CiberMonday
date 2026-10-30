@@ -191,6 +191,7 @@ class CiberMondayClient(ABC):
                 apply_network_policy,
                 clear_network_policy,
                 set_denied_callback,
+                set_learned_callback,
             )
         except ImportError as e:
             print(f"[NetPolicy] Módulo no disponible: {e}")
@@ -200,6 +201,7 @@ class CiberMondayClient(ABC):
         filter_on = bool(cfg.get('network_filter_enabled', False))
         request_on = bool(cfg.get('internet_request_enabled', False))
         allowlist = cfg.get('allowlist') or []
+        learned = cfg.get('allowlist_learned') or []
         session_info = self.get_session_info()
         device_active = bool(
             session_info and not session_info.get('is_expired') and session_info.get('remaining_seconds', 0) > 0
@@ -211,11 +213,16 @@ class CiberMondayClient(ABC):
         else:
             mode = compute_policy_mode(filter_on, allowlist, inet_info, device_active)
 
-        # Pedidos de acceso solo en allowlist + flag server
+        # Pedidos de acceso: solo denegados sin contexto de sitio permitido
         if mode == 'allowlist' and request_on:
             set_denied_callback(self._on_dns_denied)
         else:
             set_denied_callback(None)
+
+        if mode == 'allowlist':
+            set_learned_callback(self._on_related_learned)
+        else:
+            set_learned_callback(None)
 
         server_url = cfg.get('server_url') or getattr(self, 'server_url', None)
         try:
@@ -227,9 +234,31 @@ class CiberMondayClient(ABC):
                     allowlist,
                     server_url,
                     on_denied=self._on_dns_denied if (mode == 'allowlist' and request_on) else None,
+                    learned=learned,
+                    on_learned=self._on_related_learned if mode == 'allowlist' else None,
                 )
         except Exception as e:
             print(f"[NetPolicy] Error aplicando política: {e}")
+
+    def _on_related_learned(self, apex: str):
+        """CDN/host related descubierto por tráfico → allowlist_learned (oculta en UI)."""
+        name = (apex or '').strip().lower().rstrip('.')
+        if not name:
+            return
+        try:
+            cfg = self.load_config() or {}
+            learned = list(cfg.get('allowlist_learned') or [])
+            if name in learned:
+                return
+            learned.append(name)
+            # Cap para no crecer sin límite
+            if len(learned) > 300:
+                learned = learned[-300:]
+            cfg['allowlist_learned'] = learned
+            self.save_config(cfg)
+            print(f"[NetPolicy] related aprendido: {name} (total {len(learned)})")
+        except Exception as e:
+            print(f"[NetPolicy] Error guardando related: {e}")
 
     def _on_dns_denied(self, qname: str):
         """Callback DnsLearner: dominio bloqueado → pedido a servidores (debounce)."""
@@ -239,19 +268,19 @@ class CiberMondayClient(ABC):
             print(f"[AccessReq] Error: {e}")
 
     def request_access_for_domain(self, domain: str):
-        """POST /access-request a todos los servidores conocidos (debounce 10 min)."""
+        """POST /access-request (apex) a todos los servers — descubrimiento por tráfico."""
         import re
         import threading
         import time
 
-        name = (domain or '').strip().lower().rstrip('.')
-        if not name or len(name) > 253:
+        raw = (domain or '').strip().lower().rstrip('.')
+        if not raw or len(raw) > 253:
             return
-        if name in ('localhost',) or name.endswith('.local') or name.endswith('.lan'):
+        if raw in ('localhost',) or raw.endswith('.local') or raw.endswith('.lan'):
             return
-        if re.fullmatch(r'\d+\.\d+\.\d+\.\d+', name):
+        if re.fullmatch(r'\d+\.\d+\.\d+\.\d+', raw):
             return
-        if not re.search(r'[a-z]', name):
+        if not re.search(r'[a-z]', raw):
             return
 
         cfg = self.load_config() or {}
@@ -261,11 +290,17 @@ class CiberMondayClient(ABC):
             return
 
         try:
-            from domain_match import name_is_allowed
-            if name_is_allowed(name, cfg.get('allowlist') or []):
+            from domain_match import name_is_allowed, dns_apex
+            explicit = cfg.get('allowlist') or []
+            learned = cfg.get('allowlist_learned') or []
+            if name_is_allowed(raw, explicit, learned):
+                return
+            # Agrupar CDN subdominios → un pedido por apex
+            name = dns_apex(raw) or raw
+            if name_is_allowed(name, explicit, learned):
                 return
         except Exception:
-            pass
+            name = raw
 
         if not hasattr(self, '_access_req_cooldown'):
             self._access_req_cooldown = {}
@@ -297,7 +332,7 @@ class CiberMondayClient(ABC):
                         timeout=5,
                     )
                     if r.status_code == 200:
-                        print(f"[AccessReq] {name} → {url}")
+                        print(f"[AccessReq] {name} (from {raw}) → {url}")
                 except Exception as e:
                     print(f"[AccessReq] falló {url}: {e}")
 
@@ -597,6 +632,7 @@ class CiberMondayClient(ABC):
                     'network_filter_enabled': bool(config_data.get('network_filter_enabled', False)),
                     'internet_request_enabled': bool(config_data.get('internet_request_enabled', False)),
                     'allowlist': config_data.get('allowlist') or [],
+                    'allowlist_learned': config_data.get('allowlist_learned') or [],
                     'config_updated_at': config_data.get('config_updated_at'),
                 }
 
@@ -726,6 +762,15 @@ class CiberMondayClient(ABC):
                 val = server_config['allowlist'] if isinstance(server_config['allowlist'], list) else []
                 current['allowlist'] = val
                 print(f"[Config] Allowlist: {len(val)} entradas")
+
+            if 'allowlist_learned' in server_config:
+                remote = server_config['allowlist_learned'] if isinstance(
+                    server_config['allowlist_learned'], list
+                ) else []
+                local = list(current.get('allowlist_learned') or [])
+                # Unión: no perder related aprendidos en este cliente
+                merged = list(dict.fromkeys([*local, *[str(x).strip().lower() for x in remote if x]]))
+                current['allowlist_learned'] = merged
 
             if server_config.get('config_updated_at'):
                 current['config_updated_at'] = server_config['config_updated_at']
@@ -1549,21 +1594,10 @@ def _make_diagnostic_handler(client):
                     self._json({'success': False, 'message': 'No data'}, 400)
                     return
                 if data.get('cleared'):
-                    # Si el dispositivo sigue con tiempo, cortar a always_allowed
-                    # (no borrar: sin sesión de internet + filtro off = unrestricted).
-                    session_info = client.get_session_info()
-                    device_active = bool(
-                        session_info
-                        and not session_info.get('is_expired')
-                        and session_info.get('remaining_seconds', 0) > 0
-                    )
-                    if device_active:
-                        now = datetime.now()
-                        client.save_internet_session(0, now.isoformat(), now.isoformat())
-                        print("[Push] Internet cortado (always_allowed)")
-                    else:
-                        client.clear_internet_session()
-                        print("[Push] Sesión de internet detenida")
+                    # Admin "Detener internet": quitar el reloj (como Detener sesión),
+                    # no forzar always_allowed_only. Política = allowlist/unrestricted.
+                    client.clear_internet_session()
+                    print("[Push] Sesión de internet detenida")
                     try:
                         client.refresh_network_policy()
                     except Exception:

@@ -1,6 +1,10 @@
 """
-DNS forwarder local (Windows): aprende IPs allowlist y notifica callback.
-Escucha en 127.0.0.1:53 cuando el servicio corre como admin.
+DNS forwarder local: aprende IPs allowlist + hosts relacionados del tráfico.
+
+Si un nombre denegado aparece poco después de un resolve de un sitio de la
+allowlist explícita, se agrega el apex a allowlist_learned (implícito) y se
+abren sus IPs — sin pedido de acceso. Los denegados sin ese contexto sí
+disparan on_denied (pedir acceso).
 """
 
 from __future__ import annotations
@@ -9,9 +13,15 @@ import select
 import socket
 import struct
 import threading
+import time
 from typing import Callable, Iterable, Optional
 
-from domain_match import name_is_allowed
+from domain_match import (
+    COMPANION_WINDOW_SEC,
+    dns_apex,
+    name_is_allowed,
+    name_matches_explicit,
+)
 
 UPSTREAM = ("1.1.1.1", 53)
 LISTEN_HOST = "127.0.0.1"
@@ -19,7 +29,7 @@ LISTEN_PORT = 53
 FALLBACK_PORT = 5353
 
 
-def _parse_qname(data: bytes, offset: int):
+def _parse_qname(data: bytes, offset: int) -> tuple[str, int]:
     labels = []
     jumped = False
     end = offset
@@ -45,11 +55,11 @@ def _parse_qname(data: bytes, offset: int):
         except Exception:
             labels.append(data[offset : offset + length].decode("ascii", errors="ignore"))
         offset += length
-    return ".".join(labels).lower(), end
+    name = ".".join(labels).lower()
+    return name, end
 
 
-def _question_end(packet: bytes):
-    """Return (qname, qtype, offset_after_question)."""
+def _question_end(packet: bytes) -> tuple[str, int, int]:
     if len(packet) < 12:
         return "", 0, 0
     qdcount = struct.unpack("!H", packet[4:6])[0]
@@ -66,7 +76,6 @@ def _question_end(packet: bytes):
 
 
 def _nodata_response(query: bytes) -> bytes:
-    """Respuesta vacía (NOERROR) — fuerza fallback A cuando el firewall es solo IPv4."""
     if len(query) < 12:
         return query
     _qname, _qtype, qend = _question_end(query)
@@ -85,7 +94,7 @@ def _nodata_response(query: bytes) -> bytes:
     return header + query[12:qend]
 
 
-def _extract_a_records(packet: bytes):
+def _extract_a_records(packet: bytes) -> tuple[str, list[str]]:
     if len(packet) < 12:
         return "", []
     flags = struct.unpack("!H", packet[2:4])[0]
@@ -100,7 +109,7 @@ def _extract_a_records(packet: bytes):
     for _ in range(qdcount):
         qname, offset = _parse_qname(packet, offset)
         offset += 4
-    ips = []
+    ips: list[str] = []
     for _ in range(ancount + nscount + arcount):
         if offset >= len(packet):
             break
@@ -121,23 +130,30 @@ class DnsLearner:
         self,
         on_ips: Callable[[Iterable[str]], None],
         listen_port: int = LISTEN_PORT,
-        upstream=UPSTREAM,
-        on_denied=None,
+        upstream: tuple[str, int] = UPSTREAM,
+        on_denied: Optional[Callable[[str], None]] = None,
+        on_learned: Optional[Callable[[str], None]] = None,
     ):
         self._on_ips = on_ips
         self._on_denied = on_denied
+        self._on_learned = on_learned
         self._listen_port = listen_port
         self._upstream = upstream
-        self._allowlist = []
+        self._allowlist: list = []
+        self._learned: list = []
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._last_explicit_allow_at = 0.0
+        self._lock = threading.Lock()
         self.listen_port_used = listen_port
 
-    def start(self, allowlist) -> bool:
+    def start(self, allowlist, learned=None) -> bool:
         self.stop()
         self._allowlist = list(allowlist or [])
+        self._learned = list(learned or [])
         self._stop.clear()
+        self.listen_port_used = self._listen_port
         for port in (self._listen_port, FALLBACK_PORT):
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
@@ -170,8 +186,13 @@ class DnsLearner:
         if t and t.is_alive():
             t.join(timeout=2)
 
-    def update_allowlist(self, allowlist):
+    def update_allowlist(self, allowlist, learned=None):
         self._allowlist = list(allowlist or [])
+        if learned is not None:
+            self._learned = list(learned or [])
+
+    def _companion_active(self) -> bool:
+        return (time.time() - self._last_explicit_allow_at) <= COMPANION_WINDOW_SEC
 
     def _loop(self):
         while not self._stop.is_set() and self._sock:
@@ -180,16 +201,16 @@ class DnsLearner:
                 if not r:
                     continue
                 data, addr = self._sock.recvfrom(4096)
-                if data:
-                    self._handle(data, addr)
+                if not data:
+                    continue
+                self._handle(data, addr)
             except Exception as e:
                 if not self._stop.is_set():
                     print(f"[DnsLearner] loop: {e}")
 
     def _handle(self, data: bytes, addr):
         qname, qtype, _ = _question_end(data)
-        # Firewall solo IPv4: no devolver AAAA (evita assets rotos por Happy Eyeballs).
-        if qtype == 28:  # AAAA
+        if qtype == 28:  # AAAA — firewall solo IPv4
             try:
                 if self._sock:
                     self._sock.sendto(_nodata_response(data), addr)
@@ -205,21 +226,53 @@ class DnsLearner:
         except Exception as e:
             print(f"[DnsLearner] upstream: {e}")
             return
+
         resp_qname, ips = _extract_a_records(resp)
         name = resp_qname or qname
-        allowed = bool(name and name_is_allowed(name, self._allowlist))
-        # Importante: abrir IPs en el firewall ANTES de contestar DNS (evita race).
+        if not name:
+            try:
+                if self._sock:
+                    self._sock.sendto(resp, addr)
+            except Exception:
+                pass
+            return
+
+        explicit = name_matches_explicit(name, self._allowlist)
+        allowed = explicit or name_is_allowed(name, self._allowlist, self._learned)
+
+        if not allowed and self._companion_active():
+            apex = dns_apex(name)
+            if apex and apex not in ("localhost",):
+                with self._lock:
+                    if apex not in self._learned:
+                        self._learned.append(apex)
+                        learned_new = True
+                    else:
+                        learned_new = False
+                allowed = True
+                if learned_new:
+                    print(f"[DnsLearner] related {apex} (from {name})")
+                    if self._on_learned:
+                        try:
+                            self._on_learned(apex)
+                        except Exception as e:
+                            print(f"[DnsLearner] on_learned: {e}")
+
+        if explicit:
+            self._last_explicit_allow_at = time.time()
+
         if allowed and ips:
             try:
                 self._on_ips(ips)
                 print(f"[DnsLearner] allow {name} → {', '.join(ips)}")
             except Exception as e:
                 print(f"[DnsLearner] on_ips: {e}")
-        elif not allowed and self._on_denied and name:
+        elif not allowed and self._on_denied:
             try:
                 self._on_denied(name)
             except Exception as e:
                 print(f"[DnsLearner] on_denied: {e}")
+
         try:
             if self._sock:
                 self._sock.sendto(resp, addr)

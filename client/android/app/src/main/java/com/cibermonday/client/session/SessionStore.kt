@@ -201,6 +201,39 @@ class SessionStore(context: Context) {
         prefs.edit().putString(KEY_ALLOWLIST, arr.toString()).apply()
     }
 
+    fun getAllowlistLearned(): List<String> {
+        val raw = prefs.getString(KEY_ALLOWLIST_LEARNED, null) ?: return emptyList()
+        return try {
+            JSONArray(raw).let { arr ->
+                (0 until arr.length()).mapNotNull { i ->
+                    arr.optString(i)?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun setAllowlistLearned(entries: List<String>) {
+        val arr = JSONArray()
+        entries.map { it.trim().lowercase() }.filter { it.isNotBlank() }.distinct().forEach { arr.put(it) }
+        prefs.edit().putString(KEY_ALLOWLIST_LEARNED, arr.toString()).apply()
+    }
+
+    /** Agrega apex related descubierto por tráfico (oculto en UI admin). */
+    fun addAllowlistLearned(apex: String): Boolean {
+        val name = apex.trim().lowercase().trimEnd('.')
+        if (name.isBlank()) return false
+        val cur = getAllowlistLearned().toMutableList()
+        if (name in cur) return false
+        cur.add(name)
+        setAllowlistLearned(if (cur.size > 300) cur.takeLast(300) else cur)
+        notifyChanged()
+        return true
+    }
+
+    fun effectiveAllowlist(): List<String> = getAllowlist() + getAllowlistLearned()
+
     var configUpdatedAt: String?
         get() = prefs.getString(KEY_CONFIG_UPDATED_AT, null)
         set(value) {
@@ -419,6 +452,11 @@ class SessionStore(context: Context) {
         (config["internet_request_enabled"] as? Boolean)?.let { internetRequestEnabled = it }
         @Suppress("UNCHECKED_CAST")
         (config["allowlist"] as? List<*>)?.mapNotNull { it as? String }?.let { setAllowlist(it) }
+        (config["allowlist_learned"] as? List<*>)?.mapNotNull { it as? String }?.let { remote ->
+            val merged = (getAllowlistLearned() + remote.map { it.trim().lowercase() }.filter { it.isNotBlank() })
+                .distinct()
+            setAllowlistLearned(merged)
+        }
         (config["config_updated_at"] as? String)?.takeIf { it.isNotBlank() }?.let { configUpdatedAt = it }
         notifyChanged()
     }
@@ -458,6 +496,7 @@ class SessionStore(context: Context) {
         private const val KEY_NETWORK_FILTER = "network_filter_enabled"
         private const val KEY_INTERNET_REQUEST = "internet_request_enabled"
         private const val KEY_ALLOWLIST = "allowlist"
+        private const val KEY_ALLOWLIST_LEARNED = "allowlist_learned"
         private const val KEY_CONFIG_UPDATED_AT = "config_updated_at"
         private const val KEY_INET_TIME_LIMIT = "internet_time_limit_seconds"
         private const val KEY_INET_START_TIME = "internet_start_time"

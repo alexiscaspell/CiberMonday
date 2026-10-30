@@ -727,8 +727,10 @@ export function ClientCard({ client, onChanged }: Props) {
             Allowlist (uno por línea; # desactiva o comenta)
           </Text>
           <Text style={styles.hint}>
-            Pegá dominios / *.wildcards. youtube.com y github.com (y otras
-            apps) expanden CDNs solos en el cliente; no hace falta listarlos.
+            Solo lo listado (y subdominios / *.wildcards). Los CDN u otros
+            hosts que el sitio pide al navegar se aprenden solos en segundo
+            plano (no se listan acá). “Pedir acceso” es para sitios que el
+            usuario intenta abrir fuera de la allowlist.
             Usá On/Off para desactivar una regla sin borrarla.
           </Text>
           <TextInput

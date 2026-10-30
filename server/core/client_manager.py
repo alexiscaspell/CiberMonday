@@ -31,7 +31,22 @@ class ClientManager:
         'network_filter_enabled': False,
         'internet_request_enabled': False,
         'allowlist': [],
+        # Hosts related descubiertos por tráfico (ocultos en UI admin)
+        'allowlist_learned': [],
     }
+
+    @staticmethod
+    def _merge_learned(a, b):
+        """Unión ordenada de allowlist_learned."""
+        out = []
+        seen = set()
+        for raw in list(a or []) + list(b or []):
+            e = str(raw or '').strip().lower().rstrip('.')
+            if not e or e.startswith('#') or e in seen:
+                continue
+            seen.add(e)
+            out.append(e)
+        return out[:500]
     
     # Segundos durante los cuales un reporte del cliente es ignorado
     # después de un cambio de admin (para dar tiempo al push de llegar)
@@ -58,45 +73,10 @@ class ClientManager:
         # Pedidos de acceso a dominios fuera de allowlist
         self.access_requests = {}  # request_id -> dict
 
-    # Familias CDN implícitas (misma idea que client domain_match / AllowlistDomains).
-    # Se expanden en el cliente; en admin solo se guarda el apex.
-    ALLOWLIST_FAMILIES = {
-        'youtube.com': (
-            'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'youtubekids.com', 'yt.be',
-            'googlevideo.com', 'gvt1.com', 'gvt2.com', 'gvt3.com',
-            'ytimg.com', 'yt3.ggpht.com', 'ggpht.com',
-            'googleusercontent.com', 'googleapis.com', 'gstatic.com',
-            'google.com',
-            'accounts.google.com', 'play.google.com',
-            'youtubei.googleapis.com', 'youtube.googleapis.com',
-            'youtube-ui.l.google.com', 'ytimg.l.google.com', 'ytstatic.l.google.com',
-            'wide-youtube.l.google.com', 'video.google.com',
-        ),
-        'github.com': (
-            'github.com', 'githubusercontent.com', 'githubassets.com',
-            'github.githubassets.com', 'avatars.githubusercontent.com',
-            'avatars0.githubusercontent.com', 'avatars1.githubusercontent.com',
-            'avatars2.githubusercontent.com', 'avatars3.githubusercontent.com',
-            'raw.githubusercontent.com', 'objects.githubusercontent.com',
-            'camo.githubusercontent.com', 'cloud.githubusercontent.com',
-            'media.githubusercontent.com', 'codeload.github.com', 'api.github.com',
-            'ghcr.io', 'npm.pkg.github.com', 'github.io',
-        ),
-        'netflix.com': ('netflix.com', 'nflxvideo.net', 'nflxso.net', 'nflximg.net', 'fast.com'),
-        'twitch.tv': ('twitch.tv', 'ttvnw.net', 'jtvnw.net', 'twitchcdn.net'),
-        'discord.com': (
-            'discord.com', 'discordapp.com', 'discord.gg', 'discord.media', 'discordapp.net',
-        ),
-        'instagram.com': (
-            'instagram.com', 'cdninstagram.com', 'facebook.com', 'fbcdn.net', 'facebook.net',
-        ),
-        'facebook.com': (
-            'facebook.com', 'fbcdn.net', 'facebook.net', 'instagram.com', 'cdninstagram.com',
-        ),
-        'tiktok.com': (
-            'tiktok.com', 'tiktokv.com', 'tiktokcdn.com', 'musical.ly', 'byteoversea.com',
-        ),
-    }
+    # Ya no hay familias CDN hardcoded: el cliente solo permite lo listado
+    # (y subdominios). Los hosts relacionados se descubren del tráfico vía
+    # pedidos de acceso. Este mapa vacío mantiene el helper de colapso www/m.
+    ALLOWLIST_FAMILIES = {}
 
     @staticmethod
     def _looks_like_allowlist_rule(item: str) -> bool:
@@ -454,11 +434,16 @@ class ClientManager:
             elif not new_stamp and client_stamp:
                 new_stamp = client_stamp
 
+            client_learned = config.get('allowlist_learned') or []
+            existing_learned = existing_cfg.get('allowlist_learned') or []
+            learned = self._merge_learned(existing_learned, client_learned)
+
             self.client_configs[client_id] = {
                 **soft,
                 'network_filter_enabled': network_filter,
                 'internet_request_enabled': internet_request,
                 'allowlist': allowlist,
+                'allowlist_learned': learned,
                 'config_updated_at': new_stamp or existing_stamp or None,
             }
             if self.client_configs[client_id]['custom_name']:
@@ -466,6 +451,7 @@ class ClientManager:
         elif client_id not in self.client_configs:
             cfg = self.DEFAULT_CONFIG.copy()
             cfg['allowlist'] = list(self.DEFAULT_CONFIG['allowlist'])
+            cfg['allowlist_learned'] = list(self.DEFAULT_CONFIG['allowlist_learned'])
             self.client_configs[client_id] = cfg
         
         # Restaurar sesión si se proporcionó (activa o expirada)
@@ -779,35 +765,20 @@ class ClientManager:
         }
 
     def stop_client_internet_session(self, client_id):
-        """Detiene la sesión de internet (corta a always-allowed vía cliente)."""
+        """Detiene el reloj de internet (igual que Detener sesión: limpia, no bloquea).
+
+        Al borrar la sesión de internet el cliente vuelve a allowlist / unrestricted
+        según el filtro. El corte hard (always_allowed_only) solo ocurre cuando el
+        timer de internet llega a 0 por sí solo.
+        """
         if client_id not in self.clients_db:
             return {'success': False, 'message': 'Cliente no encontrado'}
 
-        # Sin sesión de dispositivo: limpiar y avisar cleared (cliente abre red).
-        if client_id not in self.client_sessions:
-            had = client_id in self.internet_sessions
-            self._clear_internet_session(client_id, notify=True)
-            return {
-                'success': True,
-                'message': 'Sesión de internet detenida' if had else 'No había sesión de internet'
-            }
-
-        # Con dispositivo activo: expirar (remaining=0) para forzar always_allowed_only.
-        # No borrar la sesión — si se borra y el filtro está off, el cliente queda unrestricted.
-        now = datetime.now()
-        prev = self.internet_sessions.get(client_id) or {}
-        self.internet_sessions[client_id] = {
-            'time_limit': int(prev.get('time_limit') or 0),
-            'start_time': prev.get('start_time') or now.isoformat(),
-            'end_time': now.isoformat(),
-        }
-        session_info = self._internet_session_info(client_id)
-        self._notify_client(client_id, 'internet', session_info)
-
+        had = client_id in self.internet_sessions
+        self._clear_internet_session(client_id, notify=True)
         return {
             'success': True,
-            'message': 'Sesión de internet detenida (solo LAN/servidor)',
-            'internet_session': session_info,
+            'message': 'Sesión de internet detenida' if had else 'No había sesión de internet',
         }
     
     def delete_client(self, client_id):
@@ -844,13 +815,15 @@ class ClientManager:
             cfg['internet_request_enabled'] = self.DEFAULT_CONFIG['internet_request_enabled']
         if 'allowlist' not in cfg:
             cfg['allowlist'] = list(self.DEFAULT_CONFIG['allowlist'])
+        if 'allowlist_learned' not in cfg:
+            cfg['allowlist_learned'] = list(self.DEFAULT_CONFIG['allowlist_learned'])
         return cfg
     
     def set_client_config(self, client_id, sync_interval=None, alert_thresholds=None,
                           custom_name=None, max_server_timeouts=None,
                           lock_recheck_interval=None,
                           network_filter_enabled=None, internet_request_enabled=None,
-                          allowlist=None,
+                          allowlist=None, allowlist_learned=None,
                           notify_client=True):
         """
         Modifica la configuración de un cliente.
@@ -915,12 +888,18 @@ class ClientManager:
             current_config['internet_request_enabled'] = bool(internet_request_enabled)
 
         if allowlist is not None:
-            # from_client: aceptar pero colapsar familias (evita listar CDNs).
-            # Admin (notify_client): misma normalización.
+            # Admin/UI: solo allowlist explícita (learned no se edita ni se muestra).
             try:
                 current_config['allowlist'] = self._normalize_allowlist(allowlist) or []
             except ValueError as e:
                 return {'success': False, 'message': str(e)}
+
+        if allowlist_learned is not None:
+            # Cliente reporta related descubiertos → unión (nunca borrar por admin save).
+            current_config['allowlist_learned'] = self._merge_learned(
+                current_config.get('allowlist_learned'),
+                allowlist_learned,
+            )
 
         if notify_client:
             current_config['config_updated_at'] = datetime.now().isoformat()
@@ -1558,6 +1537,12 @@ class ClientManager:
                         )
                     except ValueError:
                         pass
+
+                # Learned always unions (related traffic hosts; hidden in UI)
+                self.client_configs[client_id]['allowlist_learned'] = self._merge_learned(
+                    self.client_configs[client_id].get('allowlist_learned'),
+                    remote_config.get('allowlist_learned'),
+                )
 
             session = client_data.get('current_session') or client_data.get('session')
             if not session:

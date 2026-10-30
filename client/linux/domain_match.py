@@ -1,40 +1,14 @@
 """
-Matching de nombres allowlist + familias CDN (Linux / mismo API que Windows).
+Matching de allowlist estricto + lista aprendida (tráfico).
+
+- allowlist (admin/UI): lo que el usuario ve y edita
+- allowlist_learned (implícita): hosts descubiertos del tráfico al usar un
+  sitio permitido (CDN, APIs). No se muestran en la UI.
 """
 
 from __future__ import annotations
 
-DOMAIN_FAMILIES = {
-    "youtube.com": (
-        "youtube.com", "youtu.be", "youtube-nocookie.com", "youtubekids.com", "yt.be",
-        "googlevideo.com", "gvt1.com", "gvt2.com", "gvt3.com",
-        "ytimg.com", "yt3.ggpht.com", "ggpht.com",
-        "googleusercontent.com", "googleapis.com", "gstatic.com",
-        # Hosts concretos de Google (login / player UI); no hace falta abrir todo google.com
-        # pero varios CNAMEs de YouTube viven bajo *.l.google.com / google.com.
-        "google.com",
-        "accounts.google.com", "play.google.com",
-        "youtubei.googleapis.com", "youtube.googleapis.com",
-        "youtube-ui.l.google.com", "ytimg.l.google.com", "ytstatic.l.google.com",
-        "wide-youtube.l.google.com", "video.google.com",
-    ),
-    "github.com": (
-        "github.com", "githubusercontent.com", "githubassets.com",
-        "github.githubassets.com", "avatars.githubusercontent.com",
-        "avatars0.githubusercontent.com", "avatars1.githubusercontent.com",
-        "avatars2.githubusercontent.com", "avatars3.githubusercontent.com",
-        "raw.githubusercontent.com", "objects.githubusercontent.com",
-        "camo.githubusercontent.com", "cloud.githubusercontent.com",
-        "media.githubusercontent.com", "codeload.github.com", "api.github.com",
-        "ghcr.io", "npm.pkg.github.com", "github.io",
-    ),
-    "netflix.com": ("netflix.com", "nflxvideo.net", "nflxso.net", "nflximg.net", "fast.com"),
-    "twitch.tv": ("twitch.tv", "ttvnw.net", "jtvnw.net", "twitchcdn.net"),
-    "discord.com": ("discord.com", "discordapp.com", "discord.gg", "discord.media", "discordapp.net"),
-    "instagram.com": ("instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net", "facebook.net"),
-    "facebook.com": ("facebook.com", "fbcdn.net", "facebook.net", "instagram.com", "cdninstagram.com"),
-    "tiktok.com": ("tiktok.com", "tiktokv.com", "tiktokcdn.com", "musical.ly", "byteoversea.com"),
-}
+COMPANION_WINDOW_SEC = 45.0
 
 
 def normalize_host(raw: str) -> str | None:
@@ -56,57 +30,85 @@ def normalize_host(raw: str) -> str | None:
     return e or None
 
 
-def expand_allowed_names(allowlist) -> set[str]:
-    """Nombres exactos permitidos (sin wildcards) tras expandir familias."""
-    out: set[str] = set()
+def dns_apex(name: str) -> str:
+    """Aproxima el apex registrable (últimas 2 etiquetas)."""
+    parts = [p for p in (name or "").strip().lower().rstrip(".").split(".") if p]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    return ".".join(parts[-2:])
+
+
+def active_allowlist_entries(allowlist) -> list[str]:
+    out = []
     for raw in allowlist or []:
         e = normalize_host(raw)
-        if not e or "/" in e:
+        if e:
+            out.append(e)
+    return out
+
+
+def merge_allowlists(explicit, learned) -> list[str]:
+    """Allowlist efectiva = explícita + aprendida (sin duplicar)."""
+    seen = set()
+    out = []
+    for raw in list(explicit or []) + list(learned or []):
+        e = normalize_host(raw)
+        if not e or e in seen:
+            continue
+        # learned solo apex simples (sin #)
+        if e.startswith("*."):
+            key = e
+        else:
+            key = e
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    return out
+
+
+def expand_allowed_names(allowlist) -> set[str]:
+    """Nombres a sembrar (apex + www/m)."""
+    out: set[str] = set()
+    for e in active_allowlist_entries(allowlist):
+        if "/" in e:
             continue
         try:
             import ipaddress
-            ipaddress.ip_address(e)
+            ipaddress.ip_address(e[2:] if e.startswith("*.") else e)
             continue
         except ValueError:
             pass
         host = e[2:] if e.startswith("*.") else e
         out.add(host)
-        out.add(f"www.{host}")
-        out.add(f"m.{host}")
-        for fam_apex, family in DOMAIN_FAMILIES.items():
-            if host == fam_apex or host.endswith("." + fam_apex) or fam_apex in host or host in family:
-                out.update(family)
-        if "youtube" in host or host in ("youtu.be",) or "googlevideo" in host:
-            out.update(DOMAIN_FAMILIES["youtube.com"])
-        if "github" in host or host.endswith("githubusercontent.com") or host == "ghcr.io":
-            out.update(DOMAIN_FAMILIES["github.com"])
+        if not e.startswith("*."):
+            out.add(f"www.{host}")
+            out.add(f"m.{host}")
     return out
 
 
 def wildcard_suffixes(allowlist) -> list[str]:
-    """Sufijos para *.example.com → example.com."""
-    suffixes = []
-    for raw in allowlist or []:
-        e = normalize_host(raw)
-        if not e:
-            continue
-        if e.startswith("*."):
-            suffixes.append(e[2:])
-    return suffixes
+    return [e[2:] for e in active_allowlist_entries(allowlist) if e.startswith("*.")]
 
 
-def name_is_allowed(qname: str, allowlist) -> bool:
-    """True si QNAME/SNI está permitido por allowlist + familias."""
+def name_is_allowed(qname: str, allowlist, learned=None) -> bool:
+    """True si coincide con allowlist explícita o aprendida."""
     name = (qname or "").strip().lower().rstrip(".")
     if not name:
         return False
-    allowed = expand_allowed_names(allowlist)
-    if name in allowed:
-        return True
-    for a in allowed:
-        if name.endswith("." + a):
+    for e in active_allowlist_entries(merge_allowlists(allowlist, learned)):
+        if e.startswith("*."):
+            suf = e[2:]
+            if name == suf or name.endswith("." + suf):
+                return True
+            continue
+        if name == e or name.endswith("." + e):
             return True
-    for suf in wildcard_suffixes(allowlist):
-        if name == suf or name.endswith("." + suf):
+        if name in (f"www.{e}", f"m.{e}"):
             return True
     return False
+
+
+def name_matches_explicit(qname: str, allowlist) -> bool:
+    """True solo si matchea la allowlist del admin (no la aprendida)."""
+    return name_is_allowed(qname, allowlist, learned=None)

@@ -14,7 +14,7 @@ import threading
 from datetime import datetime
 from urllib.parse import urlparse
 
-from domain_match import expand_allowed_names
+from domain_match import expand_allowed_names, merge_allowlists
 
 TABLE_NAME = "cibermonday"
 SET_NAME = "allow4"
@@ -37,6 +37,8 @@ _learn_lock = threading.Lock()
 _active_allowlist: list = []
 _rule_counter = 0
 _on_denied = None  # callback(qname) opcional
+_on_learned = None  # callback(apex) — related host del tráfico
+_active_learned: list = []
 
 
 def _run(cmd, timeout=15):
@@ -126,7 +128,7 @@ def compute_policy_mode(network_filter_enabled, allowlist, internet_session_info
     return "unrestricted"
 
 
-def build_allowed_remotes(mode, allowlist, server_url):
+def build_allowed_remotes(mode, allowlist, server_url, learned=None):
     remotes = set(PRIVATE_NETWORKS)
     server_host = host_from_server_url(server_url)
     if server_host:
@@ -138,9 +140,10 @@ def build_allowed_remotes(mode, allowlist, server_url):
             remotes |= resolve_domains([server_host])
 
     if mode == "allowlist":
-        names = expand_allowed_names(allowlist)
+        effective = merge_allowlists(allowlist, learned)
+        names = expand_allowed_names(effective)
         remotes |= resolve_domains(sorted(names))
-        for entry in allowlist or []:
+        for entry in effective:
             kind = classify_entry(entry)
             if not kind:
                 continue
@@ -383,9 +386,18 @@ def set_denied_callback(cb):
         _learner._on_denied = cb
 
 
-def _start_learner(allowlist):
-    global _learner, _active_allowlist
+def set_learned_callback(cb):
+    """Callback cuando el tráfico descubre un host related (allowlist_learned)."""
+    global _on_learned, _learner
+    _on_learned = cb
+    if _learner is not None:
+        _learner._on_learned = cb
+
+
+def _start_learner(allowlist, learned=None):
+    global _learner, _active_allowlist, _active_learned
     _active_allowlist = list(allowlist or [])
+    _active_learned = list(learned or [])
     _stop_learner()
     try:
         from dns_learner import DnsLearner
@@ -396,28 +408,35 @@ def _start_learner(allowlist):
         on_ips=_on_learned_ips,
         listen_port=DNS_REDIR_PORT,
         on_denied=_on_denied,
+        on_learned=_on_learned,
     )
-    if learner.start(_active_allowlist):
+    if learner.start(_active_allowlist, _active_learned):
         _learner = learner
 
 
-def apply_network_policy(mode, allowlist, server_url, on_denied=None):
-    global _last_fingerprint, _on_denied
+def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=None, on_learned=None):
+    global _last_fingerprint, _on_denied, _on_learned, _active_learned
     if on_denied is not None:
         _on_denied = on_denied
+    if on_learned is not None:
+        _on_learned = on_learned
+    if learned is not None:
+        _active_learned = list(learned or [])
     if mode == "unrestricted":
         return clear_network_policy()
 
-    remotes = build_allowed_remotes(mode, allowlist, server_url)
+    remotes = build_allowed_remotes(mode, allowlist, server_url, learned=_active_learned)
     enable_dns = mode == "allowlist"
-    # Incluir allowlist: al achicar la lista hay que rearmar el set (IPs aprendidas viejas).
     al_key = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
-    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|{'|'.join(remotes)}"
+    ln_key = "|".join(sorted(str(x).strip().lower() for x in (_active_learned or []) if str(x).strip()))
+    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|ln:{ln_key}|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
         if _learner and enable_dns:
-            _learner.update_allowlist(allowlist or [])
+            _learner.update_allowlist(allowlist or [], _active_learned)
             if _on_denied is not None:
                 _learner._on_denied = _on_denied
+            if _on_learned is not None:
+                _learner._on_learned = _on_learned
         return True
 
     backend = _detect_backend()
@@ -425,7 +444,10 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None):
         print("[NetPolicy] No hay nft ni iptables disponibles")
         return False
 
-    print(f"[NetPolicy] Aplicando modo={mode} backend={backend} seed={len(remotes)} dns_learn={enable_dns}")
+    print(
+        f"[NetPolicy] Aplicando modo={mode} backend={backend} "
+        f"seed={len(remotes)} learned={len(_active_learned or [])} dns_learn={enable_dns}"
+    )
     if backend == "nft":
         ok = _apply_nft(remotes, enable_dns)
     else:
@@ -434,7 +456,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None):
     if ok:
         _last_fingerprint = fingerprint
         if enable_dns:
-            _start_learner(allowlist)
+            _start_learner(allowlist, _active_learned)
         else:
             _stop_learner()
         _flush_conntrack()

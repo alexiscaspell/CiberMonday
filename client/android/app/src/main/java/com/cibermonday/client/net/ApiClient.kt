@@ -54,6 +54,7 @@ class ApiClient(private val store: SessionStore) {
                     .put("network_filter_enabled", store.networkFilterEnabled)
                     .put("internet_request_enabled", store.internetRequestEnabled)
                     .put("allowlist", JSONArray(store.getAllowlist()))
+                    .put("allowlist_learned", JSONArray(store.getAllowlistLearned()))
                     .put(
                         "config_updated_at",
                         store.configUpdatedAt ?: JSONObject.NULL
@@ -242,12 +243,16 @@ class ApiClient(private val store: SessionStore) {
      */
     fun reportAccessRequest(domain: String) {
         if (!store.internetRequestEnabled || !store.networkFilterEnabled) return
-        val name = domain.trim().lowercase().trimEnd('.')
-        if (name.isBlank() || name.length > 253) return
-        if (name == "localhost" || name.endsWith(".local") || name.endsWith(".lan")) return
-        if (name.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) return
-        val expanded = AllowlistDomains.expand(store.getAllowlist())
-        if (AllowlistDomains.hostAllowed(name, expanded)) return
+        val raw = domain.trim().lowercase().trimEnd('.')
+        if (raw.isBlank() || raw.length > 253) return
+        if (raw == "localhost" || raw.endsWith(".local") || raw.endsWith(".lan")) return
+        if (raw.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) return
+        val explicit = store.getAllowlist()
+        val learned = store.getAllowlistLearned()
+        if (AllowlistDomains.hostAllowed(raw, explicit, learned)) return
+        // Agrupar CDN subdominios → un pedido por apex
+        val name = AllowlistDomains.dnsApex(raw).ifBlank { raw }
+        if (AllowlistDomains.hostAllowed(name, explicit, learned)) return
 
         val now = System.currentTimeMillis()
         synchronized(accessReqLock) {
@@ -268,7 +273,7 @@ class ApiClient(private val store: SessionStore) {
                     if (!health(url)) continue
                     val resp = postJson("$url/api/client/$clientId/access-request", body)
                     if (resp?.code == 200) {
-                        android.util.Log.i(TAG, "AccessReq $name → $url")
+                        android.util.Log.i(TAG, "AccessReq $name (from $raw) → $url")
                     }
                 } catch (_: Exception) {
                 }

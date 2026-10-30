@@ -219,7 +219,7 @@ class NetworkFilterVpnService : VpnService() {
         }
     }
 
-    /** SNI learning: si el ClientHello nombra un host allowlist, excluir dest IP. */
+    /** SNI learning: allowlist + related del tráfico (implícito). */
     private fun maybeLearnFromPacket(buf: ByteArray, n: Int, store: SessionStore) {
         try {
             if ((buf[0].toInt() ushr 4) != 4) return // solo IPv4
@@ -236,9 +236,18 @@ class NetworkFilterVpnService : VpnService() {
             val hs = dataOff + 5
             if (hs >= n || (buf[hs].toInt() and 0xff) != 0x01) return // ClientHello
             val sni = extractSni(buf, hs, n) ?: return
-            val expanded = AllowlistDomains.expand(store.getAllowlist())
-            if (!AllowlistDomains.hostAllowed(sni, expanded)) {
-                // Best-effort: pedido de acceso si el admin activó notificar
+            val explicit = store.getAllowlist()
+            val learned = store.getAllowlistLearned()
+            val matchesExplicit = AllowlistDomains.matchesExplicit(sni, explicit)
+            var allowed = matchesExplicit || AllowlistDomains.hostAllowed(sni, explicit, learned)
+            if (!allowed && companionActive()) {
+                val apex = AllowlistDomains.dnsApex(sni)
+                if (apex.isNotBlank() && store.addAllowlistLearned(apex)) {
+                    Log.i(TAG, "related learned $apex (from $sni)")
+                }
+                allowed = true
+            }
+            if (!allowed) {
                 if (store.internetRequestEnabled && store.networkFilterEnabled) {
                     try {
                         ApiClient(store).reportAccessRequest(sni)
@@ -246,6 +255,9 @@ class NetworkFilterVpnService : VpnService() {
                     }
                 }
                 return
+            }
+            if (matchesExplicit) {
+                lastExplicitAllowAt = System.currentTimeMillis()
             }
             if (seededIps.add(dest)) {
                 Log.i(TAG, "SNI learn $sni → $dest")
@@ -381,6 +393,10 @@ class NetworkFilterVpnService : VpnService() {
         )
 
         private val seededIps = ConcurrentHashMap.newKeySet<String>()
+        @Volatile private var lastExplicitAllowAt: Long = 0L
+
+        private fun companionActive(): Boolean =
+            System.currentTimeMillis() - lastExplicitAllowAt <= AllowlistDomains.COMPANION_WINDOW_MS
 
         fun hasActiveTimedSession(store: SessionStore): Boolean {
             val info = store.getSessionInfo() ?: return false
@@ -391,7 +407,7 @@ class NetworkFilterVpnService : VpnService() {
 
         private fun policyFingerprint(store: SessionStore, mode: String): String {
             val allow = if (mode == SessionStore.MODE_ALLOWLIST) {
-                store.getAllowlist().sorted().joinToString(",")
+                store.effectiveAllowlist().sorted().joinToString(",")
             } else ""
             return "$mode|$allow"
         }
@@ -446,7 +462,7 @@ class NetworkFilterVpnService : VpnService() {
         }
 
         private fun refreshSeedIps(store: SessionStore) {
-            for (entry in AllowlistDomains.expand(store.getAllowlist())) {
+            for (entry in AllowlistDomains.expand(store.effectiveAllowlist())) {
                 if (entry.contains("/")) continue
                 if (entry.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))) {
                     seededIps.add(entry)
@@ -465,7 +481,7 @@ class NetworkFilterVpnService : VpnService() {
         }
 
         private fun relatedPackages(store: SessionStore): List<String> {
-            val expanded = AllowlistDomains.expand(store.getAllowlist())
+            val expanded = AllowlistDomains.expand(store.effectiveAllowlist())
             val pkgs = mutableListOf<String>()
             if (expanded.any { it.contains("youtube") || it == "youtu.be" || it.contains("googlevideo") }) {
                 pkgs += listOf(
