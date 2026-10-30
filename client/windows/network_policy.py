@@ -1,6 +1,6 @@
 """
 Política de red CiberMonday (Windows).
-Allowlist + corte outbound; DNS learning vía forwarder en 127.0.0.1.
+Allowlist + corte outbound; DNS learning; hostname CONNECT proxy (name-gate).
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ _on_learned = None  # callback(apex)
 _active_learned: list = []
 _active_allowlist: list = []
 _host_proxy = None
-_saved_win_proxy = None  # (enable, server, override)
+_saved_win_proxy = None  # snapshot for restore
 
 
 def _run(cmd, timeout=15):
@@ -144,12 +144,14 @@ def build_allowed_remotes(mode, allowlist, server_url, learned=None):
 
     if mode == "allowlist":
         # No sembrar IPs de dominios: HTTPS pasa por hostname proxy (CONNECT).
-        # Sembrar IPs compartidas (clients4 ≡ google.com) abriría Search.
+        # Sembrar IPs compartidas (youtube ≡ google edge) abriría Search.
         effective = merge_allowlists(allowlist, learned)
         for entry in effective:
             kind = classify_entry(entry)
             if kind and kind[0] in ("ip", "cidr"):
                 remotes.add(kind[1])
+    elif mode == "always_allowed":
+        pass
     return sorted(remotes)
 
 
@@ -196,11 +198,15 @@ def _set_outbound_block(enabled: bool):
                 timeout=10,
             )
     else:
-        saved = _saved_outbound_policy or {}
-        for p in profiles:
-            out = saved.get(p, "allow")
-            inbound = "blockinbound"
-            outbound = "blockoutbound" if out == "block" else "allowoutbound"
+        if _saved_outbound_policy is None:
+            for p in profiles:
+                _run(
+                    ["netsh", "advfirewall", "set", p, "firewallpolicy", "blockinbound,allowoutbound"],
+                    timeout=10,
+                )
+            return
+        for p, outbound in _saved_outbound_policy.items():
+            inbound = "block"
             _run(
                 ["netsh", "advfirewall", "set", p, "firewallpolicy", f"{inbound},{outbound}"],
                 timeout=10,
@@ -255,7 +261,6 @@ def _list_ipv4_interfaces():
             continue
         parts = line.split()
         if len(parts) >= 5 and parts[0].isdigit():
-            # Idx Met MTU State Name...
             name = " ".join(parts[4:])
             if name and name.lower() not in ("loopback*", "loopback"):
                 names.append(name)
@@ -273,7 +278,6 @@ def _save_and_set_dns_localhost():
         dns_list = []
         for line in (r.stdout or "").splitlines():
             line = line.strip()
-            # líneas con IPs
             try:
                 ipaddress.IPv4Address(line.split()[-1] if line.split() else "")
                 cand = line.split()[-1]
@@ -283,7 +287,6 @@ def _save_and_set_dns_localhost():
                 if "dhcp" in line.lower() or "dhcp" in (r.stdout or "").lower():
                     dns_list = ["dhcp"]
         if not dns_list:
-            # detectar DHCP en el bloque
             blob = (r.stdout or "").lower()
             dns_list = ["dhcp"] if "dhcp" in blob else []
         saved.append((iface, dns_list))
@@ -334,11 +337,12 @@ def _stop_learner():
 
 
 def set_denied_callback(cb):
-    """Registra callback para dominios DNS no allowlist (pedidos de acceso)."""
     global _on_denied, _learner
     _on_denied = cb
     if _learner is not None:
         _learner._on_denied = cb
+    if _host_proxy is not None:
+        _host_proxy.update_callbacks(on_denied=cb)
 
 
 def set_learned_callback(cb):
@@ -394,41 +398,132 @@ def _start_host_proxy():
         print("[NetPolicy] HostnameProxy no arrancó")
 
 
+def _read_proxy_values(key):
+    import winreg
+    try:
+        enable, _ = winreg.QueryValueEx(key, "ProxyEnable")
+    except OSError:
+        enable = 0
+    try:
+        server, _ = winreg.QueryValueEx(key, "ProxyServer")
+    except OSError:
+        server = ""
+    try:
+        override, _ = winreg.QueryValueEx(key, "ProxyOverride")
+    except OSError:
+        override = ""
+    return int(enable), str(server), str(override)
+
+
+def _write_proxy_values(key, enable, server, override):
+    import winreg
+    winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, int(enable))
+    winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, server or "")
+    winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, override or "")
+
+
+def _notify_proxy_changed():
+    """Avisa a WinINET que cambió el proxy (Chrome/Edge lo toman)."""
+    try:
+        import ctypes
+        internet_set_option = ctypes.windll.wininet.InternetSetOptionW
+        # INTERNET_OPTION_SETTINGS_CHANGED = 39, INTERNET_OPTION_REFRESH = 37
+        internet_set_option(0, 39, 0, 0)
+        internet_set_option(0, 37, 0, 0)
+    except Exception:
+        pass
+
+
 def _save_and_set_system_proxy():
-    """Apunta WinINET + WinHTTP al CONNECT proxy local (name-gate)."""
+    """Proxy machine-wide + todos los usuarios interactivos.
+
+    El cliente corre como servicio (SYSTEM): setear solo HKCU no afecta al
+    browser del niño. Forzamos ProxySettingsPerUser=0 + HKLM + cada HKU\\SID.
+    """
     global _saved_win_proxy
     if _saved_win_proxy is not None:
         return
+    import winreg
+
+    proxy_server = "127.0.0.1:18080"
+    proxy_override = "localhost;127.*;<local>;*.local"
+    snapshot = {"hkcu": None, "hklm": None, "policy": None, "users": {}}
+
     try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            0,
-            winreg.KEY_READ | winreg.KEY_SET_VALUE,
-        )
+        # Política: un solo proxy para toda la máquina
         try:
-            enable, _ = winreg.QueryValueEx(key, "ProxyEnable")
-        except OSError:
-            enable = 0
+            pol = winreg.CreateKeyEx(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings",
+                0,
+                winreg.KEY_READ | winreg.KEY_SET_VALUE,
+            )
+            try:
+                prev, _ = winreg.QueryValueEx(pol, "ProxySettingsPerUser")
+                snapshot["policy"] = int(prev)
+            except OSError:
+                snapshot["policy"] = None
+            winreg.SetValueEx(pol, "ProxySettingsPerUser", 0, winreg.REG_DWORD, 0)
+            winreg.CloseKey(pol)
+        except Exception as e:
+            print(f"[NetPolicy] policy ProxySettingsPerUser: {e}")
+
+        # HKLM (usado cuando ProxySettingsPerUser=0)
         try:
-            server, _ = winreg.QueryValueEx(key, "ProxyServer")
-        except OSError:
-            server = ""
+            hklm = winreg.CreateKeyEx(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
+                0,
+                winreg.KEY_READ | winreg.KEY_SET_VALUE,
+            )
+            snapshot["hklm"] = _read_proxy_values(hklm)
+            _write_proxy_values(hklm, 1, proxy_server, proxy_override)
+            winreg.CloseKey(hklm)
+        except Exception as e:
+            print(f"[NetPolicy] HKLM proxy: {e}")
+
+        # HKCU del proceso (SYSTEM / servicio)
         try:
-            override, _ = winreg.QueryValueEx(key, "ProxyOverride")
-        except OSError:
-            override = ""
-        _saved_win_proxy = (int(enable), str(server), str(override))
-        winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-        winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, "127.0.0.1:18080")
-        winreg.SetValueEx(
-            key, "ProxyOverride", 0, winreg.REG_SZ,
-            "localhost;127.*;<local>;*.local",
-        )
-        winreg.CloseKey(key)
-        _run(["netsh", "winhttp", "set", "proxy", "127.0.0.1:18080"], timeout=10)
-        print("[NetPolicy] System proxy → 127.0.0.1:18080 (hostname gate)")
+            hkcu = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                0,
+                winreg.KEY_READ | winreg.KEY_SET_VALUE,
+            )
+            snapshot["hkcu"] = _read_proxy_values(hkcu)
+            _write_proxy_values(hkcu, 1, proxy_server, proxy_override)
+            winreg.CloseKey(hkcu)
+        except Exception as e:
+            print(f"[NetPolicy] HKCU proxy: {e}")
+
+        # Cada usuario interactivo cargado
+        try:
+            i = 0
+            while True:
+                try:
+                    sid = winreg.EnumKey(winreg.HKEY_USERS, i)
+                except OSError:
+                    break
+                i += 1
+                if not sid.startswith("S-1-5-21-"):
+                    continue
+                path = sid + r"\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+                try:
+                    ukey = winreg.CreateKeyEx(
+                        winreg.HKEY_USERS, path, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE
+                    )
+                    snapshot["users"][sid] = _read_proxy_values(ukey)
+                    _write_proxy_values(ukey, 1, proxy_server, proxy_override)
+                    winreg.CloseKey(ukey)
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[NetPolicy] HKU proxy: {e}")
+
+        _saved_win_proxy = snapshot
+        _run(["netsh", "winhttp", "set", "proxy", proxy_server], timeout=10)
+        _notify_proxy_changed()
+        print(f"[NetPolicy] System proxy → {proxy_server} (machine-wide hostname gate)")
     except Exception as e:
         print(f"[NetPolicy] No se pudo setear proxy del sistema: {e}")
 
@@ -437,23 +532,67 @@ def _restore_system_proxy():
     global _saved_win_proxy
     if _saved_win_proxy is None:
         return
-    enable, server, override = _saved_win_proxy
+    import winreg
+    snap = _saved_win_proxy
     try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            0,
-            winreg.KEY_SET_VALUE,
-        )
-        winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, int(enable))
-        winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, server or "")
-        winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, override or "")
-        winreg.CloseKey(key)
-        if enable and server:
-            _run(["netsh", "winhttp", "set", "proxy", server], timeout=10)
-        else:
-            _run(["netsh", "winhttp", "reset", "proxy"], timeout=10)
+        if snap.get("policy") is not None or "policy" in snap:
+            try:
+                pol = winreg.CreateKeyEx(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings",
+                    0,
+                    winreg.KEY_SET_VALUE,
+                )
+                if snap.get("policy") is None:
+                    try:
+                        winreg.DeleteValue(pol, "ProxySettingsPerUser")
+                    except OSError:
+                        pass
+                else:
+                    winreg.SetValueEx(
+                        pol, "ProxySettingsPerUser", 0, winreg.REG_DWORD, int(snap["policy"])
+                    )
+                winreg.CloseKey(pol)
+            except Exception as e:
+                print(f"[NetPolicy] restore policy: {e}")
+
+        if snap.get("hklm"):
+            try:
+                hklm = winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
+                    0,
+                    winreg.KEY_SET_VALUE,
+                )
+                _write_proxy_values(hklm, *snap["hklm"])
+                winreg.CloseKey(hklm)
+            except Exception as e:
+                print(f"[NetPolicy] restore HKLM: {e}")
+
+        if snap.get("hkcu"):
+            try:
+                hkcu = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                    0,
+                    winreg.KEY_SET_VALUE,
+                )
+                _write_proxy_values(hkcu, *snap["hkcu"])
+                winreg.CloseKey(hkcu)
+            except Exception as e:
+                print(f"[NetPolicy] restore HKCU: {e}")
+
+        for sid, vals in (snap.get("users") or {}).items():
+            try:
+                path = sid + r"\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+                ukey = winreg.OpenKey(winreg.HKEY_USERS, path, 0, winreg.KEY_SET_VALUE)
+                _write_proxy_values(ukey, *vals)
+                winreg.CloseKey(ukey)
+            except Exception:
+                continue
+
+        _run(["netsh", "winhttp", "reset", "proxy"], timeout=10)
+        _notify_proxy_changed()
         print("[NetPolicy] System proxy restaurado")
     except Exception as e:
         print(f"[NetPolicy] restore proxy: {e}")
@@ -463,8 +602,6 @@ def _restore_system_proxy():
 def _add_program_allow_rule():
     """Permite outbound del proceso cliente (proxy dial-out)."""
     exe = sys.executable
-    if getattr(sys, "frozen", False):
-        exe = sys.executable
     name = f"{RULE_PREFIX} program"
     _run(
         [
@@ -503,10 +640,14 @@ def _start_learner(allowlist, learned=None):
     )
     if learner.start(allowlist or [], _active_learned):
         _learner = learner
-        if learner.listen_port_used == 53:
+        if getattr(learner, "listen_port_used", None) == 53:
             _save_and_set_dns_localhost()
         else:
-            print("[NetPolicy] DNS learner en puerto fallback; no se cambió DNS del sistema")
+            print(
+                f"[NetPolicy] DNS learner en puerto "
+                f"{getattr(learner, 'listen_port_used', '?')}; "
+                "no se cambió DNS del sistema"
+            )
 
 
 def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=None, on_learned=None):
@@ -525,7 +666,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     enable_dns = mode == "allowlist"
     al_key = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
     ln_key = "|".join(sorted(str(x).strip().lower() for x in (_active_learned or []) if str(x).strip()))
-    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|ln:{ln_key}|proxy|{'|'.join(remotes)}"
+    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|ln:{ln_key}|proxy2|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
         if _learner and enable_dns:
             _learner.update_allowlist(allowlist or [], _active_learned)
@@ -560,16 +701,19 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
         print("[NetPolicy] Ninguna regla allow se aplicó")
         return False
 
-    # Permitir DNS al upstream del learner siempre
     _add_allow_rule("dns-upstream", "1.1.1.1")
     if enable_dns:
         _add_program_allow_rule()
 
     _last_fingerprint = fingerprint
     if enable_dns:
-        _start_learner(allowlist, _active_learned)
+        # Proxy primero: aunque DNS falle, el name-gate queda activo
         _start_host_proxy()
         _save_and_set_system_proxy()
+        try:
+            _start_learner(allowlist, _active_learned)
+        except Exception as e:
+            print(f"[NetPolicy] DNS learner error: {e}")
         _run(["ipconfig", "/flushdns"], timeout=10)
     else:
         _stop_learner()

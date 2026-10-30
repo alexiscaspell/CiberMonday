@@ -21,7 +21,8 @@ from domain_match import (
 
 UPSTREAM = ("1.1.1.1", 53)
 LISTEN_HOST = "127.0.0.1"
-LISTEN_PORT = 5353
+LISTEN_PORT = 53
+LISTEN_PORT_FALLBACK = 5353
 
 
 def _parse_qname(data: bytes, offset: int) -> tuple[str, int]:
@@ -154,6 +155,7 @@ class DnsLearner:
         self._on_learned = on_learned
         self._listen_port = listen_port
         self._upstream = upstream
+        self.listen_port_used = listen_port
         self._allowlist: list = []
         self._learned: list = []
         self._sock: Optional[socket.socket] = None
@@ -166,19 +168,36 @@ class DnsLearner:
         self._allowlist = list(allowlist or [])
         self._learned = list(learned or [])
         self._stop.clear()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind((LISTEN_HOST, self._listen_port))
-        except OSError as e:
-            print(f"[DnsLearner] No se pudo bind {LISTEN_HOST}:{self._listen_port}: {e}")
-            sock.close()
+        ports = [self._listen_port]
+        if self._listen_port != LISTEN_PORT_FALLBACK:
+            ports.append(LISTEN_PORT_FALLBACK)
+        sock = None
+        bound = None
+        last_err = None
+        for port in ports:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((LISTEN_HOST, port))
+                sock = s
+                bound = port
+                break
+            except OSError as e:
+                last_err = e
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        if sock is None or bound is None:
+            print(f"[DnsLearner] No se pudo bind {LISTEN_HOST}:{ports}: {last_err}")
             return False
+        self._listen_port = bound
+        self.listen_port_used = bound
         sock.setblocking(False)
         self._sock = sock
         self._thread = threading.Thread(target=self._loop, name="cm-dns-learn", daemon=True)
         self._thread.start()
-        print(f"[DnsLearner] Escuchando {LISTEN_HOST}:{self._listen_port} → {self._upstream}")
+        print(f"[DnsLearner] Escuchando {LISTEN_HOST}:{bound} → {self._upstream}")
         return True
 
     def stop(self):
