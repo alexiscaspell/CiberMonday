@@ -444,15 +444,19 @@ def _proxy_note_allowed_host(name: str) -> None:
 
 
 def _proxy_sticky_authorize(dest: str) -> bool:
-    """Fallback sin MITM: permitir related mientras hay sesión sticky (no google.com)."""
+    """Solo CDN de media durante la ventana sticky (no sitios nuevos)."""
     global _sticky_until, _active_learned
     if time.time() > _sticky_until:
         return False
-    from domain_match import dns_apex, learn_host_target, name_is_allowed
-
+    from domain_match import (
+        is_traffic_learnable,
+        learn_host_target,
+        name_is_allowed,
+    )
     if name_is_allowed(dest, _active_allowlist, _active_learned):
         return True
-    if dns_apex(dest) in _STICKY_BLOCK_APEX:
+    # Nunca abrir la web entera tras visitar youtube/google — solo media CDN.
+    if not is_traffic_learnable(dest, referer_host=None):
         return False
     target = learn_host_target(dest)
     if not target:
@@ -466,32 +470,35 @@ def _proxy_sticky_authorize(dest: str) -> bool:
                 name="cm-sticky-learned",
                 daemon=True,
             ).start()
-    # Extender sticky mientras llegan CDNs
     _sticky_until = time.time() + _STICKY_SECONDS
     return True
 
 
-def _proxy_authorize_referer(dest: str, referer_host: str | None, origin_host: str | None) -> bool:
-    """MITM: permitir destino si Referer/Origin está bajo allowlist/learned."""
-    from domain_match import learn_host_target, name_is_allowed
+def _proxy_authorize_referer(dest: str, referer_host, origin_host) -> bool:
+    """MITM: auto-aprende CDN / same-site; navegación a otro apex → deny (+ pedido)."""
+    from domain_match import is_traffic_learnable, learn_host_target, name_is_allowed
 
     if name_is_allowed(dest, _active_allowlist, _active_learned):
         return True
     for src in (referer_host, origin_host):
         if not src:
             continue
-        if name_is_allowed(src, _active_allowlist, _active_learned):
-            target = learn_host_target(dest)
-            if target and target not in _active_learned:
-                _active_learned.append(target)
-                cb = _on_learned
-                if cb:
-                    threading.Thread(
-                        target=lambda t=target: _safe_on_learned(cb, t),
-                        name="cm-proxy-learned",
-                        daemon=True,
-                    ).start()
-            return True
+        if not name_is_allowed(src, _active_allowlist, _active_learned):
+            continue
+        if not is_traffic_learnable(dest, referer_host=src):
+            # Referer permitido pero destino es otro sitio (ej. google→scratch)
+            continue
+        target = learn_host_target(dest)
+        if target and target not in _active_learned:
+            _active_learned.append(target)
+            cb = _on_learned
+            if cb:
+                threading.Thread(
+                    target=lambda t=target: _safe_on_learned(cb, t),
+                    name="cm-proxy-learned",
+                    daemon=True,
+                ).start()
+        return True
     return False
 
 

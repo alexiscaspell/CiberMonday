@@ -138,6 +138,66 @@ _CDN_APEX_COLLAPSE = frozenset({
 })
 
 
+def is_cdn_media_host(qname: str) -> bool:
+    """True para PoPs/CDN de media (googlevideo, ytimg, …), no sitios nuevos."""
+    host = normalize_host(qname)
+    if not host:
+        return False
+    if dns_apex(host) in _CDN_APEX_COLLAPSE:
+        return True
+    parts = host.split(".")
+    if len(parts) >= 3:
+        head = parts[0]
+        if "---" in head or (head.startswith("rr") and len(head) > 2 and head[2:3].isdigit()):
+            return True
+    return False
+
+
+def is_traffic_learnable(dest: str, referer_host: str | None = None) -> bool:
+    """Qué se puede auto-permitir por sticky/MITM (no navegación a otro sitio).
+
+    - CDN de media (video YouTube, etc.)
+    - Mismo apex que el Referer/Origin (subrecurso same-site)
+    Nunca: click de google.com → scratch.mit.edu (eso es pedido de acceso).
+    """
+    host = normalize_host(dest)
+    if not host:
+        return False
+    if is_cdn_media_host(host):
+        return True
+    if referer_host:
+        ref = normalize_host(referer_host)
+        if ref and dns_apex(host) and dns_apex(host) == dns_apex(ref):
+            return True
+    return False
+
+
+def retain_learned_host(host: str, allowlist) -> bool:
+    """Filtra learned espurio (navegaciones pegadas por sticky/MITM viejo)."""
+    h = normalize_host(host)
+    if not h:
+        return False
+    if is_cdn_media_host(h):
+        return True
+    if name_is_allowed(h, allowlist, learned=None):
+        return True
+    ha = dns_apex(h)
+    for raw in allowlist or []:
+        e = normalize_host(raw)
+        if not e or e.startswith("*."):
+            continue
+        if dns_apex(e) == ha:
+            return True
+    return False
+
+
+def prune_learned(allowlist, learned) -> list[str]:
+    """Quita learned que no son CDN ni same-site de la allowlist explícita."""
+    return sanitize_learned(
+        [h for h in (learned or []) if retain_learned_host(h, allowlist)]
+    )
+
+
 def learn_host_target(qname: str) -> str | None:
     """Qué persistir al aprender un destino.
 

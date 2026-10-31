@@ -221,11 +221,19 @@ class CiberMondayClient(ABC):
         request_on = bool(cfg.get('internet_request_enabled', False))
         allowlist = cfg.get('allowlist') or []
         try:
-            from domain_match import sanitize_learned
-            learned = sanitize_learned(cfg.get('allowlist_learned') or [])
-            if learned != list(cfg.get('allowlist_learned') or []):
+            from domain_match import prune_learned, sanitize_learned
+            raw_learned = cfg.get('allowlist_learned') or []
+            # Quitar sticky/MITM espurios (scratch vía google, etc.)
+            learned = prune_learned(allowlist, sanitize_learned(raw_learned))
+            if learned != list(raw_learned):
                 cfg['allowlist_learned'] = learned
                 self.save_config(cfg)
+                # Re-descubrir subrecursos HTML de la allowlist
+                self._allow_discover_fp = None
+                print(
+                    f"[NetPolicy] allowlist_learned podado "
+                    f"{len(raw_learned)} → {len(learned)}"
+                )
         except Exception:
             learned = cfg.get('allowlist_learned') or []
         session_info = self.get_session_info()
@@ -367,13 +375,21 @@ class CiberMondayClient(ABC):
             return
 
         try:
-            from domain_match import name_is_allowed, dns_apex
+            from domain_match import (
+                is_cdn_media_host,
+                learn_host_target,
+                name_is_allowed,
+                normalize_host,
+            )
             explicit = cfg.get('allowlist') or []
             learned = cfg.get('allowlist_learned') or []
             if name_is_allowed(raw, explicit, learned):
                 return
-            # Agrupar CDN subdominios → un pedido por apex
-            name = dns_apex(raw) or raw
+            # CDN → apex; sitios nuevos → FQDN (no colapsar scratch.mit.edu→mit.edu)
+            if is_cdn_media_host(raw):
+                name = learn_host_target(raw) or raw
+            else:
+                name = normalize_host(raw) or raw
             if name_is_allowed(name, explicit, learned):
                 return
         except Exception:
@@ -1549,7 +1565,7 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
-CLIENT_VERSION = "0.7.25"
+CLIENT_VERSION = "0.7.26"
 
 
 def _make_diagnostic_handler(client):
