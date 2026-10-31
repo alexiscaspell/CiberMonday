@@ -121,6 +121,18 @@ def _looks_media_cdn(target: str) -> bool:
     return any(p.endswith("video") or p.startswith("ytimg") for p in parts)
 
 
+# Apexes compartidos: se puede aprender el FQDN exacto, nunca el apex de 2 labels.
+_SHARED_PLATFORM_APEX = frozenset({
+    "googleapis.com",
+    "gstatic.com",
+    "googleusercontent.com",
+    "fbcdn.net",
+    "amazonaws.com",
+    "cloudfront.net",
+    "azurewebsites.net",
+})
+
+
 def discovery_learn_target(qname: str) -> str | None:
     """Qué persistir desde el scan HTML (subrecursos / APIs del sitio).
 
@@ -134,6 +146,11 @@ def discovery_learn_target(qname: str) -> str | None:
     apex = dns_apex(target)
     if apex in _NEVER_EXPAND_APEX or apex == "google.com":
         head = target.split(".", 1)[0]
+        if head in _NAV_FIRST_LABELS:
+            return None
+        # S3/CloudFront/googleapis: FQDN exacto (github-cloud.s3.amazonaws.com)
+        if apex in _SHARED_PLATFORM_APEX:
+            return target
         if head.startswith("youtube") or "youtube" in target:
             return target
         if head in ("ytimg", "ggpht", "fonts") or _looks_media_cdn(target):
@@ -148,10 +165,10 @@ def discovery_learn_target(qname: str) -> str | None:
 
 
 def media_cdn_learn_target(qname: str) -> str | None:
-    """Aprender CDN de media/API de video desde DNS/SNI denegado (sin ventana).
+    """Aprender CDN de media/API desde DNS/SNI denegado (sin ventana).
 
-    p.ej. *.googlevideo.com, i.ytimg.com, youtubei.googleapis.com.
-    Nunca google.com / accounts.google.com / github.com.
+    p.ej. *.googlevideo.com, i.ytimg.com, githubassets, *.s3.amazonaws.com.
+    Nunca google.com / accounts.google.com.
     """
     target = related_learn_target(qname)
     if not target:
@@ -159,6 +176,10 @@ def media_cdn_learn_target(qname: str) -> str | None:
     apex = dns_apex(target)
     if apex in _NEVER_EXPAND_APEX:
         head = target.split(".", 1)[0]
+        if head in _NAV_FIRST_LABELS:
+            return None
+        if apex in _SHARED_PLATFORM_APEX:
+            return target
         if head.startswith("youtube") or "youtube" in target:
             return target
         if head in ("ytimg", "ggpht", "fonts") or _looks_media_cdn(target):

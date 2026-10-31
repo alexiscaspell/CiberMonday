@@ -25,6 +25,11 @@ object AllowlistDomains {
         "amazonaws.com", "cloudfront.net", "azurewebsites.net",
     )
 
+    private val SHARED_PLATFORM_APEX = setOf(
+        "googleapis.com", "gstatic.com", "googleusercontent.com", "fbcdn.net",
+        "amazonaws.com", "cloudfront.net", "azurewebsites.net",
+    )
+
     private val NAVIGATION_BLOCKLIST = setOf(
         "google.com", "www.google.com", "accounts.google.com", "mail.google.com",
         "play.google.com", "facebook.com", "www.facebook.com",
@@ -96,6 +101,8 @@ object AllowlistDomains {
         val apex = dnsApex(target)
         if (apex in NEVER_EXPAND_APEX || apex == "google.com") {
             val head = target.substringBefore('.')
+            if (head in NAV_FIRST_LABELS) return null
+            if (apex in SHARED_PLATFORM_APEX) return target
             if (head.startsWith("youtube") || "youtube" in target) return target
             if (head in DISCOVERY_GOOGLE_HEADS || looksMediaCdn(target)) return target
             return null
@@ -108,6 +115,8 @@ object AllowlistDomains {
         val apex = dnsApex(target)
         if (apex in NEVER_EXPAND_APEX) {
             val head = target.substringBefore('.')
+            if (head in NAV_FIRST_LABELS) return null
+            if (apex in SHARED_PLATFORM_APEX) return target
             if (head.startsWith("youtube") || "youtube" in target) return target
             if (head in setOf("ytimg", "ggpht", "fonts") || looksMediaCdn(target)) return target
             return null
