@@ -84,9 +84,10 @@ for f in network_policy.py domain_match.py dns_learner.py allowlist_discover.py 
         exit 1
     fi
 done
-# config_gui / client_updater opcionales en modo servicio
+# config_gui / updater opcionales en modo servicio
 [ -f "$SCRIPT_DIR/config_gui.py" ] && cp "$SCRIPT_DIR/config_gui.py" "$INSTALL_DIR/"
 [ -f "$SCRIPT_DIR/client_updater.py" ] && cp "$SCRIPT_DIR/client_updater.py" "$INSTALL_DIR/"
+[ -f "$SCRIPT_DIR/update_linux.sh" ] && cp "$SCRIPT_DIR/update_linux.sh" "$INSTALL_DIR/" && chmod 755 "$INSTALL_DIR/update_linux.sh"
 
 chmod 755 "$INSTALL_DIR"/*.py
 echo "  Archivos copiados."

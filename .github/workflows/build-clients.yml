@@ -145,9 +145,9 @@ jobs:
              client/linux/mitm_tls.py client/linux/client_log.py client/linux/client_updater.py \
              client/linux/config_gui.py \
              client/linux/install_linux.sh client/linux/uninstall_linux.sh \
-             client/linux/show_logs.sh \
+             client/linux/update_linux.sh client/linux/show_logs.sh \
              client/linux/cibermonday-client.service cibermonday-linux/
-          chmod +x cibermonday-linux/show_logs.sh
+          chmod +x cibermonday-linux/show_logs.sh cibermonday-linux/update_linux.sh
           chmod +x cibermonday-linux/install_linux.sh cibermonday-linux/uninstall_linux.sh
           tar czf CiberMondayClient-Linux.tar.gz cibermonday-linux/
       - uses: actions/upload-artifact@v4
