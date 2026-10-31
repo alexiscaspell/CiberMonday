@@ -1,8 +1,8 @@
 """
 DNS forwarder local: aprende IPs allowlist + refinamientos bajo apexes conocidos.
 
-Hosts related nuevos (CDN de otro apex) vienen del scan HTML (allowlist_discover),
-no de una ventana temporal tras visitar un sitio permitido.
+Hosts related nuevos (CDN de otro apex) vienen del scan HTML (allowlist_discover)
+o del live-learn en DNS/CONNECT — no de una ventana temporal.
 """
 
 from __future__ import annotations
@@ -11,18 +11,21 @@ import select
 import socket
 import struct
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Iterable, Optional
 
 from domain_match import (
     live_learn_target,
     name_is_allowed,
-    name_matches_explicit,
 )
 
 UPSTREAM = ("1.1.1.1", 53)
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 53
 LISTEN_PORT_FALLBACK = 5353
+_CACHE_TTL = 30.0
+_POOL_WORKERS = 32
 
 
 def _parse_qname(data: bytes, offset: int) -> tuple[str, int]:
@@ -141,6 +144,14 @@ def _extract_a_records(packet: bytes) -> tuple[str, list[str]]:
     return qname, ips
 
 
+def _with_txid(resp: bytes, query: bytes) -> bytes:
+    if len(resp) < 2 or len(query) < 2:
+        return resp
+    out = bytearray(resp)
+    out[0:2] = query[0:2]
+    return bytes(out)
+
+
 class DnsLearner:
     def __init__(
         self,
@@ -160,14 +171,19 @@ class DnsLearner:
         self._learned: list = []
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
+        self._pool: Optional[ThreadPoolExecutor] = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self._cache: dict[str, tuple[float, bytes]] = {}
+        self._cache_lock = threading.Lock()
 
     def start(self, allowlist, learned=None) -> bool:
         self.stop()
         self._allowlist = list(allowlist or [])
         self._learned = list(learned or [])
         self._stop.clear()
+        with self._cache_lock:
+            self._cache.clear()
         ports = [self._listen_port]
         if self._listen_port != LISTEN_PORT_FALLBACK:
             ports.append(LISTEN_PORT_FALLBACK)
@@ -195,13 +211,23 @@ class DnsLearner:
         self.listen_port_used = bound
         sock.setblocking(False)
         self._sock = sock
+        self._pool = ThreadPoolExecutor(max_workers=_POOL_WORKERS, thread_name_prefix="cm-dns")
         self._thread = threading.Thread(target=self._loop, name="cm-dns-learn", daemon=True)
         self._thread.start()
-        print(f"[DnsLearner] Escuchando {LISTEN_HOST}:{bound} → {self._upstream}")
+        print(f"[DnsLearner] Escuchando {LISTEN_HOST}:{bound} → {self._upstream} (parallel)")
         return True
 
     def stop(self):
         self._stop.set()
+        pool = self._pool
+        self._pool = None
+        if pool:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                pool.shutdown(wait=False)
+            except Exception:
+                pass
         sock = self._sock
         self._sock = None
         if sock:
@@ -213,11 +239,38 @@ class DnsLearner:
         self._thread = None
         if t and t.is_alive():
             t.join(timeout=2)
+        with self._cache_lock:
+            self._cache.clear()
 
     def update_allowlist(self, allowlist, learned=None):
-        self._allowlist = list(allowlist or [])
-        if learned is not None:
-            self._learned = list(learned or [])
+        with self._lock:
+            self._allowlist = list(allowlist or [])
+            if learned is not None:
+                self._learned = list(learned or [])
+        # Allowlist cambió: no servir respuestas cacheadas de otro modo
+        with self._cache_lock:
+            self._cache.clear()
+
+    def _send(self, payload: bytes, addr) -> None:
+        try:
+            sock = self._sock
+            if sock:
+                sock.sendto(payload, addr)
+        except Exception:
+            pass
+
+    def _emit_learned(self, target: str) -> None:
+        cb = self._on_learned
+        if not cb:
+            return
+
+        def _run():
+            try:
+                cb(target)
+            except Exception as e:
+                print(f"[DnsLearner] on_learned: {e}")
+
+        threading.Thread(target=_run, name="cm-dns-learned", daemon=True).start()
 
     def _loop(self):
         while not self._stop.is_set() and self._sock:
@@ -228,45 +281,28 @@ class DnsLearner:
                 data, addr = self._sock.recvfrom(4096)
                 if not data:
                     continue
-                self._handle(data, addr)
+                pool = self._pool
+                if pool is not None:
+                    pool.submit(self._handle, data, addr)
+                else:
+                    self._handle(data, addr)
             except Exception as e:
                 if not self._stop.is_set():
                     print(f"[DnsLearner] loop: {e}")
 
     def _handle(self, data: bytes, addr):
         qname, qtype, _ = _question_end(data)
-        if qtype == 28:  # AAAA — firewall solo IPv4
-            try:
-                if self._sock:
-                    self._sock.sendto(_nodata_response(data), addr)
-            except Exception:
-                pass
-            return
-        try:
-            up = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            up.settimeout(3)
-            up.sendto(data, self._upstream)
-            resp, _ = up.recvfrom(4096)
-            up.close()
-        except Exception as e:
-            print(f"[DnsLearner] upstream: {e}")
+        if qtype == 28:  # AAAA — firewall/proxy solo IPv4
+            self._send(_nodata_response(data), addr)
             return
 
-        resp_qname, ips = _extract_a_records(resp)
-        name = resp_qname or qname
-        if not name:
-            try:
-                if self._sock:
-                    self._sock.sendto(resp, addr)
-            except Exception:
-                pass
-            return
+        name = (qname or "").strip().lower().rstrip(".")
+        with self._lock:
+            allowlist = list(self._allowlist)
+            learned = list(self._learned)
 
-        explicit = name_matches_explicit(name, self._allowlist)
-        allowed = explicit or name_is_allowed(name, self._allowlist, self._learned)
-
-        # Related: refinamiento bajo known, o CDN de media (sin ventana temporal).
-        target = live_learn_target(name, self._allowlist, self._learned)
+        allowed = bool(name) and name_is_allowed(name, allowlist, learned)
+        target = live_learn_target(name, allowlist, learned) if name else None
         if target:
             with self._lock:
                 if target not in self._learned:
@@ -277,28 +313,46 @@ class DnsLearner:
             allowed = True
             if learned_new:
                 print(f"[DnsLearner] related {target} (from {name})")
-                if self._on_learned:
-                    try:
-                        self._on_learned(target)
-                    except Exception as e:
-                        print(f"[DnsLearner] on_learned: {e}")
+                self._emit_learned(target)
 
-        if allowed and ips:
+        if not allowed:
+            if name and self._on_denied:
+                try:
+                    self._on_denied(name)
+                except Exception as e:
+                    print(f"[DnsLearner] on_denied: {e}")
+            # Sin round-trip al upstream: no saturar la cola con denegados
+            self._send(_nxdomain_response(data), addr)
+            return
+
+        now = time.time()
+        with self._cache_lock:
+            ent = self._cache.get(name)
+            if ent and ent[0] > now:
+                self._send(_with_txid(ent[1], data), addr)
+                return
+
+        try:
+            up = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            up.settimeout(3)
+            up.sendto(data, self._upstream)
+            resp, _ = up.recvfrom(4096)
+            up.close()
+        except Exception as e:
+            print(f"[DnsLearner] upstream: {e}")
+            return
+
+        _resp_qname, ips = _extract_a_records(resp)
+        if ips:
             try:
                 self._on_ips(ips)
                 print(f"[DnsLearner] allow {name} → {', '.join(ips)}")
             except Exception as e:
                 print(f"[DnsLearner] on_ips: {e}")
-        elif not allowed and self._on_denied:
-            try:
-                self._on_denied(name)
-            except Exception as e:
-                print(f"[DnsLearner] on_denied: {e}")
 
-        try:
-            if self._sock:
-                # Denegados: NXDOMAIN (no filtrar IP compartida de Google/YouTube).
-                out = resp if allowed else _nxdomain_response(data)
-                self._sock.sendto(out, addr)
-        except Exception:
-            return
+        with self._cache_lock:
+            self._cache[name] = (now + _CACHE_TTL, resp)
+            if len(self._cache) > 500:
+                self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
+
+        self._send(resp, addr)

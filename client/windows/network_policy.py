@@ -362,12 +362,22 @@ def _proxy_host_allowed(name: str) -> bool:
         return False
     if target not in _active_learned:
         _active_learned.append(target)
-        if _on_learned:
-            try:
-                _on_learned(target)
-            except Exception:
-                pass
+        cb = _on_learned
+        if cb:
+            # No bloquear CONNECT con save_config a disco
+            threading.Thread(
+                target=lambda t=target: _safe_on_learned(cb, t),
+                name="cm-proxy-learned",
+                daemon=True,
+            ).start()
     return True
+
+
+def _safe_on_learned(cb, target: str):
+    try:
+        cb(target)
+    except Exception:
+        pass
 
 
 def _stop_host_proxy():
