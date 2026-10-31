@@ -198,6 +198,39 @@ def prune_learned(allowlist, learned) -> list[str]:
     )
 
 
+# Infra / media que se auto-aprende (sticky, MITM same-site o HTML discover).
+# Nunca generar "pedir acceso" por estos — solo por sitios rechazados de verdad.
+_SKIP_ACCESS_REQUEST_APEX = _CDN_APEX_COLLAPSE | frozenset({
+    "googleapis.com",
+    "gstatic.com",
+    "googleusercontent.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+    "googletagmanager.com",
+    "youtube.com",  # ya allowlist o subdominio; no pedir por PoP raros
+    "youtu.be",
+})
+
+
+def should_create_access_request(qname: str, allowlist, learned=None) -> bool:
+    """True solo si el bloqueo es una navegación a sitio nuevo (no auto-aprendible)."""
+    host = normalize_host(qname)
+    if not host:
+        return False
+    if name_is_allowed(host, allowlist, learned):
+        return False
+    if is_cdn_media_host(host) or is_traffic_learnable(host):
+        return False
+    apex = dns_apex(host)
+    if apex in _SKIP_ACCESS_REQUEST_APEX:
+        return False
+    # Ya cubierto por allowlist explícita (mismo apex / subdominio)
+    if retain_learned_host(host, allowlist):
+        return False
+    return True
+
+
 def learn_host_target(qname: str) -> str | None:
     """Qué persistir al aprender un destino.
 

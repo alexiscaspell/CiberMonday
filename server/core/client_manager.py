@@ -1061,6 +1061,14 @@ class ClientManager:
         out.sort(key=lambda r: r.get('created_at') or '')
         return out
 
+    # Media/infra auto-aprendible: no crear pedidos (el cliente también filtra).
+    _SKIP_ACCESS_REQUEST_APEX = frozenset({
+        'googlevideo.com', 'ytimg.com', 'ggpht.com', 'gvt1.com', 'gvt2.com',
+        'googleapis.com', 'gstatic.com', 'googleusercontent.com',
+        'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
+        'googletagmanager.com', 'youtube.com', 'youtu.be',
+    })
+
     def create_access_request(self, client_id, domain):
         """Cliente reporta dominio bloqueado. Dedup por (client, domain) pending."""
         if client_id not in self.clients_db:
@@ -1068,6 +1076,18 @@ class ClientManager:
         domain = self._normalize_access_domain(domain)
         if not domain:
             return {'success': False, 'message': 'Dominio inválido'}
+
+        # Ignorar CDN/infra (auto-learn); solo sitios rechazados de verdad.
+        parts = [p for p in domain.lstrip('*.').split('.') if p]
+        apex = '.'.join(parts[-2:]) if len(parts) >= 2 else domain
+        head = parts[0] if parts else ''
+        if apex in self._SKIP_ACCESS_REQUEST_APEX or '---' in head:
+            return {
+                'success': True,
+                'message': 'Dominio auto-aprendible; pedido omitido',
+                'created': False,
+                'skipped': True,
+            }
 
         for req in self.access_requests.values():
             if (

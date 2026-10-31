@@ -112,9 +112,22 @@ class LinuxClient(CiberMondayClient):
                 continue
         return False
 
+    def _target_user(self):
+        """Usuario objetivo (install --user); None = cualquier sesión gráfica."""
+        try:
+            cfg = self.load_config() or {}
+            u = (cfg.get('target_user') or '').strip()
+            return u or None
+        except Exception:
+            return None
+
     def _get_graphical_sessions(self):
-        """Obtiene IDs de sesiones gráficas (x11/wayland/tty)."""
+        """Obtiene IDs de sesiones gráficas (x11/wayland/tty).
+
+        Si hay target_user en config, solo sesiones de ese usuario.
+        """
         sessions = []
+        want = self._target_user()
         try:
             r = subprocess.run(
                 ['loginctl', 'list-sessions', '--no-legend'],
@@ -125,6 +138,9 @@ class LinuxClient(CiberMondayClient):
                 if not parts:
                     continue
                 sid = parts[0]
+                user = parts[2] if len(parts) >= 3 else None
+                if want and user and user != want:
+                    continue
                 try:
                     show = subprocess.run(
                         ['loginctl', 'show-session', sid, '-p', 'Type'],
@@ -143,6 +159,7 @@ class LinuxClient(CiberMondayClient):
 
     def _get_active_user_env(self):
         """Detecta el usuario logueado y su entorno para enviar notificaciones."""
+        want = self._target_user()
         try:
             r = subprocess.run(
                 ['loginctl', 'list-sessions', '--no-legend'],
@@ -154,6 +171,8 @@ class LinuxClient(CiberMondayClient):
                     continue
                 sid = parts[0]
                 user = parts[2] if len(parts) >= 3 else None
+                if want and user and user != want:
+                    continue
 
                 try:
                     show = subprocess.run(
@@ -181,6 +200,14 @@ class LinuxClient(CiberMondayClient):
                     continue
         except Exception:
             pass
+        # Fallback: usuario objetivo aunque no haya sesión activa aún
+        if want:
+            try:
+                import pwd
+                uid = pwd.getpwnam(want).pw_uid
+                return want, ':0', f"unix:path=/run/user/{uid}/bus"
+            except Exception:
+                return want, ':0', ''
         return None, ':0', ''
 
     def show_alert(self, title, message, is_warning=False):

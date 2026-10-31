@@ -346,14 +346,20 @@ class CiberMondayClient(ABC):
             print(f"[NetPolicy] Error guardando related: {e}")
 
     def _on_dns_denied(self, qname: str):
-        """Callback DnsLearner: dominio bloqueado → pedido a servidores (debounce)."""
-        try:
-            self.request_access_for_domain(qname)
-        except Exception as e:
-            print(f"[AccessReq] Error: {e}")
+        """Dominio bloqueado → pedido de acceso (tras breve espera por auto-learn)."""
+        import threading
+
+        def _later(name=qname):
+            try:
+                self.request_access_for_domain(name)
+            except Exception as e:
+                print(f"[AccessReq] Error: {e}")
+
+        # Da tiempo a sticky/MITM/discover a aprender CDN/related antes de pedir.
+        threading.Timer(2.0, _later).start()
 
     def request_access_for_domain(self, domain: str):
-        """POST /access-request (apex) a todos los servers — descubrimiento por tráfico."""
+        """POST /access-request solo para sitios rechazados (no auto-aprendibles)."""
         import re
         import threading
         import time
@@ -375,23 +381,13 @@ class CiberMondayClient(ABC):
             return
 
         try:
-            from domain_match import (
-                is_cdn_media_host,
-                learn_host_target,
-                name_is_allowed,
-                normalize_host,
-            )
+            from domain_match import normalize_host, should_create_access_request
             explicit = cfg.get('allowlist') or []
             learned = cfg.get('allowlist_learned') or []
-            if name_is_allowed(raw, explicit, learned):
+            if not should_create_access_request(raw, explicit, learned):
                 return
-            # CDN → apex; sitios nuevos → FQDN (no colapsar scratch.mit.edu→mit.edu)
-            if is_cdn_media_host(raw):
-                name = learn_host_target(raw) or raw
-            else:
-                name = normalize_host(raw) or raw
-            if name_is_allowed(name, explicit, learned):
-                return
+            # Sitios nuevos → FQDN (no colapsar scratch.mit.edu → mit.edu)
+            name = normalize_host(raw) or raw
         except Exception:
             name = raw
 
@@ -1565,7 +1561,7 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
-CLIENT_VERSION = "0.7.27"
+CLIENT_VERSION = "0.7.28"
 
 
 def _make_diagnostic_handler(client):

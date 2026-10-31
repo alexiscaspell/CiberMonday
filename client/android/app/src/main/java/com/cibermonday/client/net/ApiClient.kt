@@ -251,15 +251,21 @@ class ApiClient(private val store: SessionStore) {
         val explicit = store.getAllowlist()
         val learned = store.getAllowlistLearned()
         if (AllowlistDomains.hostAllowed(raw, explicit, learned)) return
-        // Agrupar CDN subdominios → un pedido por apex
-        val name = AllowlistDomains.dnsApex(raw).ifBlank { raw }
+        // Solo sitios rechazados: no pedir por CDN/media auto-aprendible
+        if (AllowlistDomains.mediaCdnLearnTarget(raw) != null) return
+        val apex = AllowlistDomains.dnsApex(raw)
+        if (apex in SKIP_ACCESS_REQUEST_APEX) return
+        val head = raw.substringBefore('.')
+        if ("---" in head) return
+        // FQDN del sitio nuevo (no colapsar scratch.mit.edu → mit.edu)
+        val name = AllowlistDomains.normalize(raw) ?: raw
         if (AllowlistDomains.hostAllowed(name, explicit, learned)) return
 
         val now = System.currentTimeMillis()
         synchronized(accessReqLock) {
             val last = accessReqCooldown[name] ?: 0L
             if (now - last < ACCESS_REQ_COOLDOWN_MS) return
-            accessReqCooldown[name] = now
+            accessReqData[name] = now
         }
 
         val clientId = store.clientId ?: return
@@ -370,8 +376,14 @@ class ApiClient(private val store: SessionStore) {
         const val DIAGNOSTIC_PORT = 5002
         private const val TAG = "ApiClient"
         private const val ACCESS_REQ_COOLDOWN_MS = 10 * 60 * 1000L
+        private val SKIP_ACCESS_REQUEST_APEX = setOf(
+            "googlevideo.com", "ytimg.com", "ggpht.com", "gvt1.com", "gvt2.com",
+            "googleapis.com", "gstatic.com", "googleusercontent.com",
+            "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+            "googletagmanager.com", "youtube.com", "youtu.be",
+        )
         private val accessReqLock = Any()
-        private val accessReqCooldown = mutableMapOf<String, Long>()
+        private val accessReqData = mutableMapOf<String, Long>()
 
         fun deviceName(): String {
             val model = Build.MODEL ?: "Android"
