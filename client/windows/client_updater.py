@@ -276,7 +276,7 @@ def install_linux(bundle: dict, progress_cb: ProgressCb = None) -> None:
                 continue
             tf.extract(m, path=dest_dir)
 
-    for script in ("install_linux.sh", "uninstall_linux.sh", "show_logs.sh"):
+    for script in ("install_linux.sh", "uninstall_linux.sh", "update_linux.sh", "show_logs.sh"):
         p = os.path.join(dest_dir, script)
         if os.path.isfile(p):
             try:
