@@ -106,14 +106,27 @@ def _splice(a: socket.socket, b: socket.socket, timeout: float = 300.0):
                 pass
 
 
-def _set_mark(sock: socket.socket):
+def _set_mark(sock: socket.socket) -> bool:
+    """Marca el socket para que nft no redirija nuestro propio tcp/443.
+
+    SO_MARK exige bytes (u32); pasar int lanza TypeError y, si se traga,
+    el dial queda sin mark → bucle redirect → NS_ERROR_NET_RESET.
+    """
+    packed = struct.pack("=I", PROXY_MARK)
     try:
-        sock.setsockopt(socket.SOL_SOCKET, SO_MARK, PROXY_MARK)
-    except Exception:
+        sock.setsockopt(socket.SOL_SOCKET, SO_MARK, packed)
+        return True
+    except OSError as e:
+        # CAP_NET_ADMIN / root requerido
         try:
-            sock.setsockopt(socket.SOL_IP, SO_MARK, PROXY_MARK)
-        except Exception:
-            pass
+            sock.setsockopt(socket.SOL_IP, SO_MARK, packed)
+            return True
+        except Exception as e2:
+            print(f"[HostProxy] SO_MARK failed: {e}; fallback: {e2}")
+            return False
+    except Exception as e:
+        print(f"[HostProxy] SO_MARK failed: {e}")
+        return False
 
 
 def _original_dst(conn: socket.socket) -> Optional[tuple[str, int]]:
@@ -256,7 +269,14 @@ class HostnameProxy:
             s = None
             try:
                 s = socket.socket(family, socktype, proto)
-                _set_mark(s)
+                if not _set_mark(s):
+                    # Sin mark el connect sería redirigido a nosotros mismos.
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                    last_err = OSError("SO_MARK unavailable (need CAP_NET_ADMIN)")
+                    continue
                 s.settimeout(10)
                 s.connect(sockaddr)
                 return s

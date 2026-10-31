@@ -392,13 +392,12 @@ def _ensure_mitm_ca() -> bool:
             mitm_tls.set_ca_dir(os.path.join(os.path.expanduser("~"), ".cibermonday"))
         mitm_tls.ensure_ca()
         if not mitm_tls.install_ca_trust():
-            _mitm_error = "install_ca_trust failed (certutil/update-ca)"
-            _mitm_failed = True
-            print(f"[NetPolicy] MITM CA: {_mitm_error}")
-            return False
+            print("[NetPolicy] MITM CA: install_ca_trust failed (proxy MITM sigue activo)")
+            _mitm_error = "install_ca_trust failed (MITM on without system trust)"
+        else:
+            _mitm_error = None
         _mitm_ready = True
         _mitm_failed = False
-        _mitm_error = None
         return True
     except Exception as e:
         _mitm_error = str(e)

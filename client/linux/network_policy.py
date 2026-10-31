@@ -431,14 +431,15 @@ def _ensure_mitm_ca() -> bool:
             return False
         mitm_tls.set_ca_dir(_mitm_ca_dir or os.path.join(os.path.expanduser("~"), ".cibermonday"))
         mitm_tls.ensure_ca()
+        # CA local basta para MITM del proxy; trust de sistema puede fallar
+        # bajo ProtectSystem sin ReadWritePaths (o browsers NSS).
         if not mitm_tls.install_ca_trust():
-            _mitm_error = "install_ca_trust failed"
-            _mitm_failed = True
-            print(f"[NetPolicy] MITM CA: {_mitm_error}")
-            return False
+            print("[NetPolicy] MITM CA: install_ca_trust failed (proxy MITM sigue activo)")
+            _mitm_error = "install_ca_trust failed (MITM on without system trust)"
+        else:
+            _mitm_error = None
         _mitm_ready = True
         _mitm_failed = False
-        _mitm_error = None
         return True
     except Exception as e:
         _mitm_error = str(e)

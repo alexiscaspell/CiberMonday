@@ -11,6 +11,7 @@ from __future__ import annotations
 import select
 import socket
 import struct
+import sys
 import threading
 from typing import Callable, Optional
 
@@ -106,14 +107,24 @@ def _splice(a: socket.socket, b: socket.socket, timeout: float = 300.0):
                 pass
 
 
-def _set_mark(sock: socket.socket):
+def _set_mark(sock: socket.socket) -> bool:
+    """Linux: marca u32 en bytes. Windows: no-op (True)."""
+    if sys.platform == "win32":
+        return True
+    packed = struct.pack("=I", PROXY_MARK)
     try:
-        sock.setsockopt(socket.SOL_SOCKET, SO_MARK, PROXY_MARK)
-    except Exception:
+        sock.setsockopt(socket.SOL_SOCKET, SO_MARK, packed)
+        return True
+    except OSError as e:
         try:
-            sock.setsockopt(socket.SOL_IP, SO_MARK, PROXY_MARK)
-        except Exception:
-            pass
+            sock.setsockopt(socket.SOL_IP, SO_MARK, packed)
+            return True
+        except Exception as e2:
+            print(f"[HostProxy] SO_MARK failed: {e}; fallback: {e2}")
+            return False
+    except Exception as e:
+        print(f"[HostProxy] SO_MARK failed: {e}")
+        return False
 
 
 def _original_dst(conn: socket.socket) -> Optional[tuple[str, int]]:
@@ -253,7 +264,13 @@ class HostnameProxy:
             s = None
             try:
                 s = socket.socket(family, socktype, proto)
-                _set_mark(s)
+                if not _set_mark(s):
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                    last_err = OSError("SO_MARK unavailable")
+                    continue
                 s.settimeout(10)
                 s.connect(sockaddr)
                 return s
