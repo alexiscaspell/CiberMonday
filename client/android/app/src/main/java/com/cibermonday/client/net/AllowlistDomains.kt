@@ -22,6 +22,7 @@ object AllowlistDomains {
         "google.com", "googleapis.com", "gstatic.com", "googleusercontent.com",
         "facebook.com", "instagram.com", "fbcdn.net",
         "twitter.com", "x.com", "reddit.com", "wikipedia.org",
+        "amazonaws.com", "cloudfront.net", "azurewebsites.net",
     )
 
     private val NAVIGATION_BLOCKLIST = setOf(
@@ -78,10 +79,16 @@ object AllowlistDomains {
 
     fun companionLearnTarget(qname: String): String? = relatedLearnTarget(qname)
 
+    private val CDN_HINTS = listOf(
+        "cdn", "assets", "static", "usercontent", "ggpht", "ytimg",
+        "img", "media", "video", "cloudfront",
+    )
+
     private fun looksMediaCdn(target: String): Boolean {
         val parts = target.lowercase().split('.').filter { it.isNotBlank() }
         if (parts.any { it in MEDIA_LABELS }) return true
-        return parts.any { it.endsWith("video") || it.startsWith("ytimg") || "ggpht" in it }
+        if (parts.any { p -> CDN_HINTS.any { h -> h in p } }) return true
+        return parts.any { it.endsWith("video") || it.startsWith("ytimg") }
     }
 
     fun discoveryLearnTarget(qname: String): String? {

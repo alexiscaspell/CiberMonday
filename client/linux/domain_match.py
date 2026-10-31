@@ -33,6 +33,10 @@ _NEVER_EXPAND_APEX = frozenset({
     "x.com",
     "reddit.com",
     "wikipedia.org",
+    # Cloud providers: aprender FQDN (s3.amazonaws.com), nunca el apex entero
+    "amazonaws.com",
+    "cloudfront.net",
+    "azurewebsites.net",
 })
 
 
@@ -100,14 +104,21 @@ _MEDIA_LABELS = frozenset({
     "stream", "hls", "dash", "playback", "static",
 })
 
+# Substrings en un label: githubassets, githubusercontent, fbcdn, …
+_CDN_HINTS = (
+    "cdn", "assets", "static", "usercontent", "ggpht", "ytimg",
+    "img", "media", "video", "cloudfront",
+)
+
 
 def _looks_media_cdn(target: str) -> bool:
-    """True para googlevideo / ytimg / cdn.example — no para gstatic ni google.com."""
+    """True para googlevideo / githubassets / *.cdn.example — no google.com."""
     parts = [p for p in (target or "").lower().split(".") if p]
     if any(p in _MEDIA_LABELS for p in parts):
         return True
-    # googlevideo, fbcdn-video, …
-    return any(p.endswith("video") or p.startswith("ytimg") or "ggpht" in p for p in parts)
+    if any(h in p for p in parts for h in _CDN_HINTS):
+        return True
+    return any(p.endswith("video") or p.startswith("ytimg") for p in parts)
 
 
 def discovery_learn_target(qname: str) -> str | None:

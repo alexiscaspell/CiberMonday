@@ -94,7 +94,12 @@ def _nodata_response(query: bytes) -> bytes:
 
 
 def _nxdomain_response(query: bytes) -> bytes:
-    """NXDOMAIN: no filtrar IPs reales de hosts denegados (IP sharing Google)."""
+    """Denegado: REFUSED (no NXDOMAIN).
+
+    NXDOMAIN lo cachean Chrome/Windows y deja el host ‘muerto’ varios minutos
+    aunque después lo aprendamos (p.ej. githubassets al agregar github.com).
+    REFUSED no se cachea como negativo y no filtra IPs reales (IP sharing).
+    """
     if len(query) < 12:
         return query
     _qname, _qtype, qend = _question_end(query)
@@ -104,7 +109,7 @@ def _nxdomain_response(query: bytes) -> bytes:
     header = struct.pack(
         "!HHHHHH",
         struct.unpack("!H", query[0:2])[0],
-        0x8183,  # QR|RD|RA + RCODE=3 NXDOMAIN
+        0x8185,  # QR|RD|RA + RCODE=5 REFUSED
         qdcount,
         0,
         0,
@@ -243,13 +248,18 @@ class DnsLearner:
             self._cache.clear()
 
     def update_allowlist(self, allowlist, learned=None):
+        new_allow = list(allowlist or [])
         with self._lock:
-            self._allowlist = list(allowlist or [])
+            old_allow = list(self._allowlist)
+            old_learned = list(self._learned)
+            self._allowlist = new_allow
             if learned is not None:
                 self._learned = list(learned or [])
-        # Allowlist cambió: no servir respuestas cacheadas de otro modo
-        with self._cache_lock:
-            self._cache.clear()
+            new_learned = list(self._learned)
+        # Solo invalidar cache si cambió el conjunto (el monitor refresca cada 1s)
+        if old_allow != new_allow or old_learned != new_learned:
+            with self._cache_lock:
+                self._cache.clear()
 
     def _send(self, payload: bytes, addr) -> None:
         try:

@@ -315,6 +315,17 @@ class CiberMondayClient(ABC):
             cfg['allowlist_learned'] = learned
             self.save_config(cfg)
             print(f"[NetPolicy] related aprendido: {name} (total {len(learned)})")
+            # Por si quedó NXDOMAIN cacheado de un intento previo
+            try:
+                import subprocess
+                import sys
+                flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                subprocess.run(
+                    ["ipconfig", "/flushdns"],
+                    capture_output=True, timeout=10, creationflags=flags,
+                )
+            except Exception:
+                pass
         except Exception as e:
             print(f"[NetPolicy] Error guardando related: {e}")
 
@@ -1530,7 +1541,7 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
-CLIENT_VERSION = "0.7.15"
+CLIENT_VERSION = "0.7.16"
 
 
 def _make_diagnostic_handler(client):
