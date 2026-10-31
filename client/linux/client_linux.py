@@ -21,7 +21,8 @@ class LinuxClient(CiberMondayClient):
     def __init__(self):
         self._config_dir = self.CONFIG_DIR_ROOT if os.geteuid() == 0 else self.CONFIG_DIR_USER
         os.makedirs(self._config_dir, exist_ok=True)
-        # Log en dir escribible bajo ProtectSystem=strict (no /opt).
+        # Log / MITM CA en dir escribible bajo ProtectSystem=strict (no /opt).
+        self.mitm_ca_dir = os.path.join(self._config_dir, "mitm_ca")
         try:
             from client_log import setup_client_logging
             setup_client_logging(self._config_dir, tee=True)

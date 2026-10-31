@@ -401,17 +401,24 @@ def _stop_learner():
 _mitm_ca_dir = None
 _mitm_ready = False
 _mitm_error = None
+_mitm_failed = False  # no reintentar/spam en cada refresh
 
 
 def configure_mitm(ca_dir=None):
-    global _mitm_ca_dir
+    global _mitm_ca_dir, _mitm_ready, _mitm_failed, _mitm_error
+    if ca_dir != _mitm_ca_dir:
+        _mitm_ready = False
+        _mitm_failed = False
+        _mitm_error = None
     _mitm_ca_dir = ca_dir
 
 
 def _ensure_mitm_ca() -> bool:
-    global _mitm_ready, _mitm_error
+    global _mitm_ready, _mitm_error, _mitm_failed
     if _mitm_ready:
         return True
+    if _mitm_failed:
+        return False
     try:
         import mitm_tls
         import os
@@ -419,19 +426,23 @@ def _ensure_mitm_ca() -> bool:
             from cryptography import x509 as _x509  # noqa: F401
         except ImportError as ie:
             _mitm_error = f"cryptography import: {ie}"
+            _mitm_failed = True
             print(f"[NetPolicy] MITM CA: {_mitm_error}")
             return False
         mitm_tls.set_ca_dir(_mitm_ca_dir or os.path.join(os.path.expanduser("~"), ".cibermonday"))
         mitm_tls.ensure_ca()
         if not mitm_tls.install_ca_trust():
             _mitm_error = "install_ca_trust failed"
+            _mitm_failed = True
             print(f"[NetPolicy] MITM CA: {_mitm_error}")
             return False
         _mitm_ready = True
+        _mitm_failed = False
         _mitm_error = None
         return True
     except Exception as e:
         _mitm_error = str(e)
+        _mitm_failed = True
         print(f"[NetPolicy] MITM CA: {e}")
         return False
 

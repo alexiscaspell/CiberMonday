@@ -207,7 +207,12 @@ class CiberMondayClient(ABC):
             return
 
         try:
-            configure_mitm(os.path.join(self.base_path, "mitm_ca"))
+            # Preferir dir de config escribible (systemd ProtectSystem=strict
+            # deja /opt de solo lectura — ahí fallaba mitm_ca).
+            ca_dir = getattr(self, "mitm_ca_dir", None) or os.path.join(
+                self.base_path, "mitm_ca"
+            )
+            configure_mitm(ca_dir)
         except Exception as e:
             print(f"[NetPolicy] configure_mitm: {e}")
 
@@ -1544,7 +1549,7 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
-CLIENT_VERSION = "0.7.22"
+CLIENT_VERSION = "0.7.23"
 
 
 def _make_diagnostic_handler(client):

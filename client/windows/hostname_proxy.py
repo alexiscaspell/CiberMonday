@@ -238,13 +238,35 @@ class HostnameProxy:
             return False
 
     def _dial(self, host: str, port: int) -> Optional[socket.socket]:
+        """Conecta al origen con SO_MARK *antes* del handshake (Linux nft).
+
+        En Windows el mark es no-op; se mantiene el mismo orden por simetría.
+        """
         try:
-            remote = socket.create_connection((host, port), timeout=10)
-            _set_mark(remote)
-            return remote
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         except Exception as e:
-            print(f"[HostProxy] dial {host}:{port}: {e}")
+            print(f"[HostProxy] dial resolve {host}:{port}: {e}")
             return None
+        infos = sorted(infos, key=lambda x: 0 if x[0] == socket.AF_INET else 1)
+        last_err: Optional[BaseException] = None
+        for family, socktype, proto, _, sockaddr in infos:
+            s = None
+            try:
+                s = socket.socket(family, socktype, proto)
+                _set_mark(s)
+                s.settimeout(10)
+                s.connect(sockaddr)
+                return s
+            except Exception as e:
+                last_err = e
+                if s is not None:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+        if last_err is not None:
+            print(f"[HostProxy] dial {host}:{port}: {last_err}")
+        return None
 
     def _serve_connect(self, sock: socket.socket):
         while not self._stop.is_set():
