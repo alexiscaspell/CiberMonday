@@ -33,10 +33,51 @@ echo "  $PYTHON_VERSION encontrado."
 # [2/7] Instalar dependencias Python
 echo
 echo "[2/7] Instalando dependencias Python..."
-pip3 install requests 2>/dev/null || python3 -m pip install requests 2>/dev/null || {
-    echo "  ADVERTENCIA: No se pudo instalar 'requests' via pip."
-    echo "  Intenta: sudo apt install python3-requests  (Debian/Ubuntu)"
-}
+if python3 -c "import requests" 2>/dev/null; then
+    echo "  'requests' ya disponible."
+else
+    installed=0
+    # Preferir paquete del distro (pip a system Python suele fallar por PEP 668)
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "  Instalando python3-requests via apt..."
+        if apt-get install -y python3-requests; then
+            installed=1
+        fi
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "  Instalando python3-requests via dnf..."
+        if dnf install -y python3-requests; then
+            installed=1
+        fi
+    elif command -v yum >/dev/null 2>&1; then
+        echo "  Instalando python3-requests via yum..."
+        if yum install -y python3-requests; then
+            installed=1
+        fi
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "  Instalando python-requests via pacman..."
+        if pacman -Sy --noconfirm python-requests; then
+            installed=1
+        fi
+    fi
+
+    if [ "$installed" -eq 0 ]; then
+        echo "  Intentando pip (fallback)..."
+        if python3 -m pip install --break-system-packages requests 2>/dev/null \
+            || pip3 install --break-system-packages requests 2>/dev/null \
+            || python3 -m pip install requests 2>/dev/null \
+            || pip3 install requests 2>/dev/null; then
+            installed=1
+        fi
+    fi
+
+    if ! python3 -c "import requests" 2>/dev/null; then
+        echo "ERROR: No se pudo instalar el módulo Python 'requests'."
+        echo "  Debian/Ubuntu: sudo apt install python3-requests"
+        echo "  Fedora/RHEL:   sudo dnf install python3-requests"
+        exit 1
+    fi
+    echo "  'requests' instalado."
+fi
 echo "  Dependencias verificadas."
 
 # [3/7] Copiar archivos
