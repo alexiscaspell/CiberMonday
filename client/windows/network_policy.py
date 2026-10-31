@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -354,6 +355,7 @@ def set_learned_callback(cb):
 
 _mitm_ca_dir: str | None = None
 _mitm_ready = False
+_mitm_error: str | None = None
 
 
 def configure_mitm(ca_dir: str | None) -> None:
@@ -363,23 +365,50 @@ def configure_mitm(ca_dir: str | None) -> None:
 
 
 def _ensure_mitm_ca() -> bool:
-    global _mitm_ready
+    global _mitm_ready, _mitm_error
     if _mitm_ready:
         return True
     try:
         import mitm_tls
+        # Fail-fast si cryptography no está en el bundle (PyInstaller).
+        try:
+            from cryptography import x509 as _x509  # noqa: F401
+        except ImportError as ie:
+            _mitm_error = f"cryptography import: {ie}"
+            print(f"[NetPolicy] MITM CA: {_mitm_error}")
+            return False
         if _mitm_ca_dir:
             mitm_tls.set_ca_dir(_mitm_ca_dir)
         else:
             import os
             mitm_tls.set_ca_dir(os.path.join(os.path.expanduser("~"), ".cibermonday"))
         mitm_tls.ensure_ca()
-        mitm_tls.install_ca_trust()
+        if not mitm_tls.install_ca_trust():
+            _mitm_error = "install_ca_trust failed (certutil/update-ca)"
+            print(f"[NetPolicy] MITM CA: {_mitm_error}")
+            return False
         _mitm_ready = True
+        _mitm_error = None
         return True
     except Exception as e:
+        _mitm_error = str(e)
         print(f"[NetPolicy] MITM CA: {e}")
         return False
+
+
+def _enable_mitm_on_proxy_if_ready() -> None:
+    """Si el proxy ya corre sin MITM y la CA acaba de quedar lista, activarlo."""
+    if _host_proxy is None:
+        return
+    if getattr(_host_proxy, "_mitm_enabled", False):
+        return
+    if not _ensure_mitm_ca():
+        return
+    _host_proxy.update_callbacks(
+        authorize_referer=_proxy_authorize_referer,
+        mitm_enabled=True,
+    )
+    print("[NetPolicy] HostnameProxy MITM hot-enabled")
 
 
 def _proxy_host_allowed(name: str) -> bool:
@@ -387,6 +416,49 @@ def _proxy_host_allowed(name: str) -> bool:
     from domain_match import name_is_allowed
 
     return name_is_allowed(name, _active_allowlist, _active_learned)
+
+
+_sticky_until = 0.0
+_STICKY_SECONDS = 90.0
+# Apexes que no se abren por sticky (navegación general).
+_STICKY_BLOCK_APEX = frozenset({"google.com"})
+
+
+def _proxy_note_allowed_host(name: str) -> None:
+    """Tras túnel a un host de la allowlist explícita, abre ventana sticky para CDNs."""
+    global _sticky_until
+    from domain_match import name_is_allowed
+
+    if name_is_allowed(name, _active_allowlist, learned=None):
+        _sticky_until = time.time() + _STICKY_SECONDS
+
+
+def _proxy_sticky_authorize(dest: str) -> bool:
+    """Fallback sin MITM: permitir related mientras hay sesión sticky (no google.com)."""
+    global _sticky_until, _active_learned
+    if time.time() > _sticky_until:
+        return False
+    from domain_match import dns_apex, learn_host_target, name_is_allowed
+
+    if name_is_allowed(dest, _active_allowlist, _active_learned):
+        return True
+    if dns_apex(dest) in _STICKY_BLOCK_APEX:
+        return False
+    target = learn_host_target(dest)
+    if not target:
+        return False
+    if target not in _active_learned:
+        _active_learned.append(target)
+        cb = _on_learned
+        if cb:
+            threading.Thread(
+                target=lambda t=target: _safe_on_learned(cb, t),
+                name="cm-sticky-learned",
+                daemon=True,
+            ).start()
+    # Extender sticky mientras llegan CDNs
+    _sticky_until = time.time() + _STICKY_SECONDS
+    return True
 
 
 def _proxy_authorize_referer(dest: str, referer_host: str | None, origin_host: str | None) -> bool:
@@ -442,13 +514,18 @@ def _start_host_proxy():
         mitm_ok = _ensure_mitm_ca()
         proxy = HostnameProxy(
             is_allowed=_proxy_host_allowed,
+            on_allowed=_proxy_note_allowed_host,
             on_denied=_on_denied,
             authorize_referer=_proxy_authorize_referer if mitm_ok else None,
+            sticky_authorize=_proxy_sticky_authorize,
             mitm_enabled=mitm_ok,
         )
         if proxy.start():
             _host_proxy = proxy
-            print(f"[NetPolicy] HostnameProxy MITM={'on' if mitm_ok else 'off'}")
+            print(
+                f"[NetPolicy] HostnameProxy MITM={'on' if mitm_ok else 'off'}"
+                f"{'' if mitm_ok else f' err={_mitm_error}'}"
+            )
         else:
             print("[NetPolicy] HostnameProxy no arrancó")
     except Exception as e:
@@ -659,16 +736,32 @@ def _restore_system_proxy():
 
 def _add_program_allow_rule():
     """Permite outbound del proceso cliente (proxy dial-out)."""
-    exe = sys.executable
-    name = f"{RULE_PREFIX} program"
-    _run(
-        [
-            "netsh", "advfirewall", "firewall", "add", "rule",
-            f"name={name}", "dir=out", "action=allow", "enable=yes", "profile=any",
-            f"program={exe}", "description=CiberMonday hostname proxy dial-out",
-        ],
-        timeout=10,
-    )
+    import os
+
+    candidates = []
+    for p in (sys.executable, sys.argv[0] if sys.argv else ""):
+        if not p:
+            continue
+        ap = os.path.abspath(p)
+        if ap not in candidates and os.path.isfile(ap):
+            candidates.append(ap)
+        # Mismo dir: Client + Service (el servicio spawnea el client)
+        d = os.path.dirname(ap)
+        for name in ("CiberMondayClient.exe", "CiberMondayService.exe"):
+            alt = os.path.join(d, name)
+            if os.path.isfile(alt) and alt not in candidates:
+                candidates.append(alt)
+    for i, exe in enumerate(candidates or [sys.executable]):
+        suffix = "program" if i == 0 else f"program-{i}"
+        _run(
+            [
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={RULE_PREFIX} {suffix}", "dir=out", "action=allow",
+                "enable=yes", "profile=any",
+                f"program={exe}", "description=CiberMonday hostname proxy dial-out",
+            ],
+            timeout=10,
+        )
     # Bloquear QUIC (bypass del proxy CONNECT)
     _run(
         [
@@ -746,6 +839,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
                     on_denied=_on_denied,
                     authorize_referer=_proxy_authorize_referer,
                 )
+                _enable_mitm_on_proxy_if_ready()
             return True
 
     print(

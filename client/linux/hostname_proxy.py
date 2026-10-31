@@ -135,12 +135,14 @@ class HostnameProxy:
         on_allowed: Optional[Callable[[str], None]] = None,
         on_denied: Optional[Callable[[str], None]] = None,
         authorize_referer: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None,
+        sticky_authorize: Optional[Callable[[str], bool]] = None,
         mitm_enabled: bool = True,
     ):
         self._is_allowed = is_allowed
         self._on_allowed = on_allowed
         self._on_denied = on_denied
         self._authorize_referer = authorize_referer
+        self._sticky_authorize = sticky_authorize
         self._mitm_enabled = mitm_enabled
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -195,6 +197,7 @@ class HostnameProxy:
         on_allowed: Optional[Callable[[str], None]] = None,
         on_denied: Optional[Callable[[str], None]] = None,
         authorize_referer: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None,
+        sticky_authorize: Optional[Callable[[str], bool]] = None,
         mitm_enabled: Optional[bool] = None,
     ):
         if is_allowed is not None:
@@ -205,6 +208,8 @@ class HostnameProxy:
             self._on_denied = on_denied
         if authorize_referer is not None:
             self._authorize_referer = authorize_referer
+        if sticky_authorize is not None:
+            self._sticky_authorize = sticky_authorize
         if mitm_enabled is not None:
             self._mitm_enabled = mitm_enabled
 
@@ -299,7 +304,28 @@ class HostnameProxy:
                 remote = None
                 return
 
-            if not self._mitm_enabled or self._authorize_referer is None:
+                        # Sin MITM: ventana sticky tras visitar un apex allowlist (CDNs de video).
+            if (not self._mitm_enabled or self._authorize_referer is None) and self._sticky_authorize:
+                try:
+                    sticky_ok = bool(self._sticky_authorize(host))
+                except Exception as e:
+                    print(f"[HostProxy] sticky_authorize: {e}")
+                    sticky_ok = False
+                if sticky_ok:
+                    remote = self._dial(host, port)
+                    if not remote:
+                        conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                        return
+                    conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    self._notify_allowed(host)
+                    conn.settimeout(None)
+                    remote.settimeout(None)
+                    _splice(conn, remote)
+                    conn = None
+                    remote = None
+                    return
+
+if not self._mitm_enabled or self._authorize_referer is None:
                 self._notify_denied(host)
                 conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
                 return

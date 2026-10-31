@@ -71,7 +71,10 @@ jobs:
             --hidden-import "hostname_proxy" `
             --hidden-import "mitm_tls" `
             --hidden-import "cryptography" `
+            --hidden-import "cryptography.hazmat.bindings._rust" `
+            --hidden-import "_cffi_backend" `
             --collect-all "cryptography" `
+            --collect-all "cffi" `
             --hidden-import "firewall_manager" `
             --hidden-import "tkinter" `
             --hidden-import "tkinter.ttk" `
@@ -97,7 +100,10 @@ jobs:
             --hidden-import "hostname_proxy" `
             --hidden-import "mitm_tls" `
             --hidden-import "cryptography" `
+            --hidden-import "cryptography.hazmat.bindings._rust" `
+            --hidden-import "_cffi_backend" `
             --collect-all "cryptography" `
+            --collect-all "cffi" `
             --hidden-import "ctypes" `
             --hidden-import "ctypes.wintypes" `
             service.py

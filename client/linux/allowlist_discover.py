@@ -111,11 +111,17 @@ def _host_from_url(url: str) -> Optional[str]:
 
 def _fetch(url: str, timeout: float = 8.0) -> Optional[str]:
     try:
-        # Sin proxy del sistema: el HostnameProxy aún puede no conocer related.
+        # Preferir proxy local (CONNECT allowlist) frente al outbound-block.
         from urllib.request import build_opener, ProxyHandler
         req = Request(url, headers={"User-Agent": _UA, "Accept": "text/html,*/*"})
-        opener = build_opener(ProxyHandler({}))
-        with opener.open(req, timeout=timeout) as resp:
+        proxies = {"http": "http://127.0.0.1:18080", "https": "http://127.0.0.1:18080"}
+        opener = build_opener(ProxyHandler(proxies))
+        try:
+            resp_ctx = opener.open(req, timeout=timeout)
+        except Exception:
+            opener = build_opener(ProxyHandler({}))
+            resp_ctx = opener.open(req, timeout=timeout)
+        with resp_ctx as resp:
             ctype = (resp.headers.get("Content-Type") or "").lower()
             raw = resp.read(2_000_000)
         # Solo parsear como HTML si parece texto
@@ -211,6 +217,9 @@ def discover_hosts_for_entry(entry: str) -> list[str]:
     for h in sorted(found):
         # No aprender el propio apex allowlist (ya está)
         if h == apex or h == e or h in (f"www.{apex}", f"m.{apex}"):
+            continue
+        # No abrir Search/Accounts vía HTML; MITM+Referer cubre lo puntual.
+        if dns_apex(h) == "google.com":
             continue
         target = learn_host_target(h)
         if not target or target in seen:

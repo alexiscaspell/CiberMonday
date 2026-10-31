@@ -11,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import threading
+import time
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -399,6 +400,7 @@ def _stop_learner():
 
 _mitm_ca_dir = None
 _mitm_ready = False
+_mitm_error = None
 
 
 def configure_mitm(ca_dir=None):
@@ -407,25 +409,87 @@ def configure_mitm(ca_dir=None):
 
 
 def _ensure_mitm_ca() -> bool:
-    global _mitm_ready
+    global _mitm_ready, _mitm_error
     if _mitm_ready:
         return True
     try:
         import mitm_tls
         import os
+        try:
+            from cryptography import x509 as _x509  # noqa: F401
+        except ImportError as ie:
+            _mitm_error = f"cryptography import: {ie}"
+            print(f"[NetPolicy] MITM CA: {_mitm_error}")
+            return False
         mitm_tls.set_ca_dir(_mitm_ca_dir or os.path.join(os.path.expanduser("~"), ".cibermonday"))
         mitm_tls.ensure_ca()
-        mitm_tls.install_ca_trust()
+        if not mitm_tls.install_ca_trust():
+            _mitm_error = "install_ca_trust failed"
+            print(f"[NetPolicy] MITM CA: {_mitm_error}")
+            return False
         _mitm_ready = True
+        _mitm_error = None
         return True
     except Exception as e:
+        _mitm_error = str(e)
         print(f"[NetPolicy] MITM CA: {e}")
         return False
+
+
+def _enable_mitm_on_proxy_if_ready():
+    if _host_proxy is None:
+        return
+    if getattr(_host_proxy, "_mitm_enabled", False):
+        return
+    if not _ensure_mitm_ca():
+        return
+    _host_proxy.update_callbacks(
+        authorize_referer=_proxy_authorize_referer,
+        mitm_enabled=True,
+    )
+    print("[NetPolicy] HostnameProxy MITM hot-enabled")
 
 
 def _proxy_host_allowed(name: str) -> bool:
     from domain_match import name_is_allowed
     return name_is_allowed(name, _active_allowlist, _active_learned)
+
+
+_sticky_until = 0.0
+_STICKY_SECONDS = 90.0
+_STICKY_BLOCK_APEX = frozenset({"google.com"})
+
+
+def _proxy_note_allowed_host(name: str) -> None:
+    global _sticky_until
+    from domain_match import name_is_allowed
+    if name_is_allowed(name, _active_allowlist, learned=None):
+        _sticky_until = time.time() + _STICKY_SECONDS
+
+
+def _proxy_sticky_authorize(dest: str) -> bool:
+    global _sticky_until, _active_learned
+    if time.time() > _sticky_until:
+        return False
+    from domain_match import dns_apex, learn_host_target, name_is_allowed
+    if name_is_allowed(dest, _active_allowlist, _active_learned):
+        return True
+    if dns_apex(dest) in _STICKY_BLOCK_APEX:
+        return False
+    target = learn_host_target(dest)
+    if not target:
+        return False
+    if target not in _active_learned:
+        _active_learned.append(target)
+        cb = _on_learned
+        if cb:
+            threading.Thread(
+                target=lambda t=target: _safe_on_learned(cb, t),
+                name="cm-sticky-learned",
+                daemon=True,
+            ).start()
+    _sticky_until = time.time() + _STICKY_SECONDS
+    return True
 
 
 def _proxy_authorize_referer(dest: str, referer_host, origin_host) -> bool:
@@ -480,13 +544,18 @@ def _start_host_proxy():
         mitm_ok = _ensure_mitm_ca()
         proxy = HostnameProxy(
             is_allowed=_proxy_host_allowed,
+            on_allowed=_proxy_note_allowed_host,
             on_denied=_on_denied,
             authorize_referer=_proxy_authorize_referer if mitm_ok else None,
+            sticky_authorize=_proxy_sticky_authorize,
             mitm_enabled=mitm_ok,
         )
         if proxy.start():
             _host_proxy = proxy
-            print(f"[NetPolicy] HostnameProxy MITM={'on' if mitm_ok else 'off'}")
+            print(
+                f"[NetPolicy] HostnameProxy MITM={'on' if mitm_ok else 'off'}"
+                f"{'' if mitm_ok else f' err={_mitm_error}'}"
+            )
         else:
             print("[NetPolicy] HostnameProxy no arrancó (CONNECT)")
     except Exception as e:
@@ -567,6 +636,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
                     on_denied=_on_denied,
                     authorize_referer=_proxy_authorize_referer,
                 )
+                _enable_mitm_on_proxy_if_ready()
             return True
 
     backend = _detect_backend()

@@ -1547,7 +1547,7 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
-CLIENT_VERSION = "0.7.18"
+CLIENT_VERSION = "0.7.19"
 
 
 def _make_diagnostic_handler(client):
@@ -1857,10 +1857,12 @@ def _make_diagnostic_handler(client):
                 cfg = {}
             host_proxy = False
             mitm_ready = False
+            mitm_error = None
             try:
                 import network_policy as np
                 host_proxy = getattr(np, '_host_proxy', None) is not None
                 mitm_ready = bool(getattr(np, '_mitm_ready', False))
+                mitm_error = getattr(np, '_mitm_error', None)
             except Exception:
                 pass
             self._json({
@@ -1873,6 +1875,7 @@ def _make_diagnostic_handler(client):
                 'network_policy_module': net_policy_ok,
                 'hostname_proxy_active': host_proxy,
                 'mitm_ready': mitm_ready,
+                'mitm_error': mitm_error,
                 'known_servers': servers,
                 'allowlist': list(cfg.get('allowlist') or []),
                 'allowlist_learned': list(cfg.get('allowlist_learned') or []),

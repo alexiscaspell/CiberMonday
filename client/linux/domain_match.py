@@ -128,5 +128,18 @@ def name_matches_explicit(qname: str, allowlist) -> bool:
 
 
 def learn_host_target(qname: str) -> str | None:
-    """Qué persistir al aprender un destino (FQDN normalizado)."""
-    return normalize_host(qname)
+    """Qué persistir al aprender un destino.
+
+    FQDN por defecto. Edges de CDN (rr5---sn-…googlevideo.com) se colapsan
+    al apex para no MITM-ear cada PoP en paralelo (evita NS_ERROR_NET_RESET).
+    """
+    host = normalize_host(qname)
+    if not host:
+        return None
+    parts = host.split(".")
+    if len(parts) >= 3:
+        head = parts[0]
+        # googlevideo PoPs: rr5---sn-… / r5---sn-…
+        if "---" in head or (head.startswith("rr") and head[2:3].isdigit()):
+            return dns_apex(host) or host
+    return host
