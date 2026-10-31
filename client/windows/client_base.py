@@ -1557,7 +1557,7 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
-CLIENT_VERSION = "0.7.24"
+CLIENT_VERSION = "0.7.25"
 
 
 def _make_diagnostic_handler(client):

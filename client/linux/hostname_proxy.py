@@ -348,8 +348,9 @@ class HostnameProxy:
                 remote = None
                 return
 
-            # Sin MITM: ventana sticky tras visitar un apex allowlist (CDNs de video).
-            if (not self._mitm_enabled or self._authorize_referer is None) and self._sticky_authorize:
+            # Sticky CDN (googlevideo, etc.) — también con MITM on: el media
+            # suele ir sin Referer usable / HTTP2 y MITM solo no alcanza.
+            if self._sticky_authorize:
                 try:
                     sticky_ok = bool(self._sticky_authorize(host))
                 except Exception as e:
@@ -494,7 +495,13 @@ class HostnameProxy:
             if not sni:
                 print("[HostProxy] DENY (no SNI)")
                 return
-            if not self._pre_allowed(sni):
+            allowed = self._pre_allowed(sni)
+            if not allowed and self._sticky_authorize:
+                try:
+                    allowed = bool(self._sticky_authorize(sni))
+                except Exception as e:
+                    print(f"[HostProxy] sni sticky: {e}")
+            if not allowed:
                 self._notify_denied(sni)
                 return
 

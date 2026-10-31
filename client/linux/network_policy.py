@@ -468,7 +468,7 @@ def _proxy_host_allowed(name: str) -> bool:
 
 
 _sticky_until = 0.0
-_STICKY_SECONDS = 90.0
+_STICKY_SECONDS = 180.0  # video CDN PoPs llegan segundos después del watch page
 _STICKY_BLOCK_APEX = frozenset({"google.com"})
 
 

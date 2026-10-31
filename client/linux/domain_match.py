@@ -127,6 +127,17 @@ def name_matches_explicit(qname: str, allowlist) -> bool:
     return name_is_allowed(qname, allowlist, learned=None)
 
 
+# Apex de CDN de video/media que conviene persistir colapsado (un entry
+# cubre todos los PoP rr*---sn-*.googlevideo.com).
+_CDN_APEX_COLLAPSE = frozenset({
+    "googlevideo.com",
+    "ytimg.com",
+    "ggpht.com",
+    "gvt1.com",
+    "gvt2.com",
+})
+
+
 def learn_host_target(qname: str) -> str | None:
     """Qué persistir al aprender un destino.
 
@@ -136,10 +147,13 @@ def learn_host_target(qname: str) -> str | None:
     host = normalize_host(qname)
     if not host:
         return None
+    apex = dns_apex(host)
+    if apex in _CDN_APEX_COLLAPSE:
+        return apex
     parts = host.split(".")
     if len(parts) >= 3:
         head = parts[0]
         # googlevideo PoPs: rr5---sn-… / r5---sn-…
         if "---" in head or (head.startswith("rr") and head[2:3].isdigit()):
-            return dns_apex(host) or host
+            return apex or host
     return host
