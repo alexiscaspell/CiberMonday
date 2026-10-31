@@ -76,11 +76,11 @@ cp "$SCRIPT_DIR/client.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/client_base.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/client_linux.py" "$INSTALL_DIR/"
 # Allowlist / corte de internet (nft/iptables) — obligatorio para el timer
-for f in network_policy.py domain_match.py dns_learner.py allowlist_discover.py hostname_proxy.py mitm_tls.py; do
+for f in network_policy.py domain_match.py dns_learner.py allowlist_discover.py hostname_proxy.py mitm_tls.py client_log.py; do
     if [ -f "$SCRIPT_DIR/$f" ]; then
         cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/"
     else
-        echo "  ERROR: falta $f (corte de internet / DNS learning / MITM no funcionará)."
+        echo "  ERROR: falta $f (corte de internet / DNS learning / MITM / logs no funcionará)."
         exit 1
     fi
 done
@@ -185,5 +185,7 @@ echo "  sudo systemctl start cibermonday-client    - Iniciar"
 echo "  sudo systemctl stop cibermonday-client     - Detener"
 echo "  sudo systemctl restart cibermonday-client  - Reiniciar"
 echo "  sudo systemctl status cibermonday-client   - Estado"
-echo "  journalctl -u cibermonday-client -f        - Ver logs"
+echo "  journalctl -u cibermonday-client -f        - Ver logs (journal)"
+echo "  tail -f /etc/cibermonday/CiberMondayClient.log - Log archivo"
+echo "  curl -s localhost:5002/api/logs | jq       - Últimas líneas vía diagnostic"
 echo

@@ -4,11 +4,11 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
-import android.util.Log
 import com.cibermonday.client.lock.LockController
 import com.cibermonday.client.service.ClientService
 import com.cibermonday.client.service.SessionAlarmScheduler
 import com.cibermonday.client.session.SessionStore
+import com.cibermonday.client.util.AppLog
 
 class CiberMondayApp : Application() {
     lateinit var store: SessionStore
@@ -17,6 +17,7 @@ class CiberMondayApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        AppLog.init(this)
         store = SessionStore(this)
         createNotificationChannels()
         recoverIfNeeded()
@@ -34,14 +35,14 @@ class CiberMondayApp : Application() {
         try {
             SessionAlarmScheduler.rescheduleAll(this, store)
         } catch (e: Exception) {
-            Log.w(TAG, "reschedule: ${e.message}")
+            AppLog.w(TAG, "reschedule: ${e.message}")
         }
         ClientService.start(this, enable = true)
         if (expired) {
             try {
                 LockController(this).lockWorkstation(forceSystemLock = true)
             } catch (e: Exception) {
-                Log.w(TAG, "recover lock: ${e.message}")
+                AppLog.w(TAG, "recover lock: ${e.message}")
             }
         }
     }

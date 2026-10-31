@@ -1,6 +1,5 @@
 package com.cibermonday.client.net
 
-import android.util.Log
 import java.io.BufferedInputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -9,6 +8,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import com.cibermonday.client.util.AppLog
 
 /**
  * Proxy HTTP CONNECT local: decide por hostname (no por IP).
@@ -45,10 +45,10 @@ class HostnameProxy(
                 it.isDaemon = true
                 it.start()
             }
-            Log.i(TAG, "listening 127.0.0.1:$port")
+            AppLog.i(TAG, "listening 127.0.0.1:$port")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "start: ${e.message}")
+            AppLog.e(TAG, "start: ${e.message}")
             false
         }
     }
@@ -85,7 +85,7 @@ class HostnameProxy(
             }
             host = host.trim().trim('[', ']').lowercase()
             if (!isAllowed(host)) {
-                Log.i(TAG, "DENY $host")
+                AppLog.i(TAG, "DENY $host")
                 onDenied?.invoke(host)
                 client.getOutputStream().write(
                     "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n".toByteArray()
@@ -108,7 +108,7 @@ class HostnameProxy(
             pipe(input, b.getOutputStream())
             t.join(1000)
         } catch (e: Exception) {
-            Log.d(TAG, "handle: ${e.message}")
+            AppLog.d(TAG, "handle: ${e.message}")
         } finally {
             try {
                 client.close()

@@ -11,7 +11,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.cibermonday.client.CiberMondayApp
@@ -22,6 +21,7 @@ import java.io.FileInputStream
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import com.cibermonday.client.util.AppLog
 
 /**
  * VPN local (CGNAT-safe) + hostname gate.
@@ -146,7 +146,7 @@ class NetworkFilterVpnService : VpnService() {
 
             tunInterface = builder.establish()
             if (tunInterface == null) {
-                Log.e(TAG, "VPN establish() null — ¿permiso VPN?")
+                AppLog.e(TAG, "VPN establish() null — ¿permiso VPN?")
                 running.set(false)
                 activeFingerprint = null
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -166,9 +166,9 @@ class NetworkFilterVpnService : VpnService() {
             } else {
                 discoverFpDone = null
             }
-            Log.i(TAG, "VPN ready mode=$mode hostProxy=${mode == SessionStore.MODE_ALLOWLIST}")
+            AppLog.i(TAG, "VPN ready mode=$mode hostProxy=${mode == SessionStore.MODE_ALLOWLIST}")
         } catch (e: Exception) {
-            Log.e(TAG, "ensureTunnel: ${e.message}", e)
+            AppLog.e(TAG, "ensureTunnel: ${e.message}", e)
             running.set(false)
             activeFingerprint = null
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -211,7 +211,7 @@ class NetworkFilterVpnService : VpnService() {
         } catch (_: Exception) {
         }
         tunInterface = null
-        Log.i(TAG, "VPN torn down")
+        AppLog.i(TAG, "VPN torn down")
     }
 
     private fun startHostProxy(store: SessionStore) {
@@ -263,7 +263,7 @@ class NetworkFilterVpnService : VpnService() {
             } catch (_: InterruptedException) {
                 break
             } catch (e: Exception) {
-                if (running.get()) Log.d(TAG, "drainLoop: ${e.message}")
+                if (running.get()) AppLog.d(TAG, "drainLoop: ${e.message}")
             }
         }
     }
@@ -292,7 +292,7 @@ class NetworkFilterVpnService : VpnService() {
             val learnTarget = AllowlistDomains.liveLearnTarget(sni, explicit, learned)
             if (learnTarget != null) {
                 if (store.addAllowlistLearned(learnTarget)) {
-                    Log.i(TAG, "related learned $learnTarget (from $sni)")
+                    AppLog.i(TAG, "related learned $learnTarget (from $sni)")
                 }
                 allowed = true
             }
@@ -307,7 +307,7 @@ class NetworkFilterVpnService : VpnService() {
             }
             // Name-gate via CONNECT proxy; no excluir IP (evitar abrir google.com
             // en el mismo edge). Solo log / related learning.
-            Log.i(TAG, "SNI seen $sni → $dest (proxy name-gate; no IP exclude)")
+            AppLog.i(TAG, "SNI seen $sni → $dest (proxy name-gate; no IP exclude)")
         } catch (_: Exception) {
         }
     }
@@ -362,13 +362,13 @@ class NetworkFilterVpnService : VpnService() {
                     val before = seededIps.toSet()
                     refreshSeedIps(CiberMondayApp.instance.store)
                     if (seededIps != before) {
-                        Log.i(TAG, "Allowlist IPs changed ${before.size}→${seededIps.size}, rebuild")
+                        AppLog.i(TAG, "Allowlist IPs changed ${before.size}→${seededIps.size}, rebuild")
                         scheduleRebuild()
                     }
                 } catch (_: InterruptedException) {
                     break
                 } catch (e: Exception) {
-                    Log.d(TAG, "resolver: ${e.message}")
+                    AppLog.d(TAG, "resolver: ${e.message}")
                 }
             }
         }, "cm-vpn-resolve").also {
@@ -464,7 +464,7 @@ class NetworkFilterVpnService : VpnService() {
                 cancelConsentNotification(app)
                 seededIps.clear()
                 stopVpn(app)
-                Log.i(TAG, "No active timed session — VPN off")
+                AppLog.i(TAG, "No active timed session — VPN off")
                 return
             }
 
@@ -478,7 +478,7 @@ class NetworkFilterVpnService : VpnService() {
             if (prep != null) {
                 store.vpnConsentNeeded = true
                 store.vpnConsentGranted = false
-                Log.i(TAG, "VPN consent required (want mode=$mode)")
+                AppLog.i(TAG, "VPN consent required (want mode=$mode)")
                 postConsentNotification(app)
                 return
             }
@@ -500,7 +500,7 @@ class NetworkFilterVpnService : VpnService() {
                     Intent(app, NetworkFilterVpnService::class.java).setAction(ACTION_STOP)
                 )
             } catch (e: Exception) {
-                Log.w(TAG, "stopVpn: ${e.message}")
+                AppLog.w(TAG, "stopVpn: ${e.message}")
             }
         }
 
@@ -531,7 +531,7 @@ class NetworkFilterVpnService : VpnService() {
                 if (hosts.isEmpty()) return@discoverAsync
                 discoverFpDone = fp
                 if (!store.mergeAllowlistLearned(hosts)) return@discoverAsync
-                Log.i(TAG, "discover merged ${hosts.size} related")
+                AppLog.i(TAG, "discover merged ${hosts.size} related")
                 val before = seededIps.toSet()
                 refreshSeedIps(store)
                 if (seededIps != before) {
@@ -542,7 +542,7 @@ class NetworkFilterVpnService : VpnService() {
                         if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i)
                         else app.startService(i)
                     } catch (e: Exception) {
-                        Log.w(TAG, "discover rebuild: ${e.message}")
+                        AppLog.w(TAG, "discover rebuild: ${e.message}")
                     }
                 }
             }
@@ -585,7 +585,7 @@ class NetworkFilterVpnService : VpnService() {
             try {
                 NotificationManagerCompat.from(context).notify(CONSENT_NOTIFICATION_ID, notification)
             } catch (e: Exception) {
-                Log.w(TAG, "consent notify: ${e.message}")
+                AppLog.w(TAG, "consent notify: ${e.message}")
             }
         }
 

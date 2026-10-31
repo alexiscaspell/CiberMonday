@@ -10,7 +10,6 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.cibermonday.client.CiberMondayApp
@@ -25,6 +24,7 @@ import com.cibermonday.client.net.PushServer
 import com.cibermonday.client.session.SessionStore
 import com.cibermonday.client.ui.StatusActivity
 import java.util.concurrent.atomic.AtomicBoolean
+import com.cibermonday.client.util.AppLog
 
 class ClientService : Service() {
 
@@ -73,14 +73,14 @@ class ClientService : Service() {
         }
         // Sesión local (activa/expirada) o serviceEnabled; tras Detener no hay sesión → salir
         if (!store.shouldKeepAlive() && !store.serviceEnabled) {
-            Log.i(TAG, "Start ignored — no local session and service disabled")
+            AppLog.i(TAG, "Start ignored — no local session and service disabled")
             stopSelf()
             return START_NOT_STICKY
         }
         if (store.hasWatchableSession()) {
             store.serviceEnabled = true
         } else if (!store.serviceEnabled) {
-            Log.i(TAG, "Start ignored — waiting mode disabled")
+            AppLog.i(TAG, "Start ignored — waiting mode disabled")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -109,14 +109,14 @@ class ClientService : Service() {
         // 1) Tiempo asignado → reabrir FGS en background (countdown local)
         // 2) Detener / sin tiempo → quedar cerrado
         if (!store.shouldKeepAlive()) {
-            Log.i(TAG, "Task removed — no local session, shutting down service")
+            AppLog.i(TAG, "Task removed — no local session, shutting down service")
             store.serviceEnabled = false
             SessionAlarmScheduler.cancelAll(this)
             stopSelf()
             return
         }
 
-        Log.w(TAG, "Task removed — restarting (local end_time still watchable)")
+        AppLog.w(TAG, "Task removed — restarting (local end_time still watchable)")
         store.serviceEnabled = true
         SessionAlarmScheduler.rescheduleAll(this, store)
         start(this, enable = true)
@@ -169,7 +169,7 @@ class ClientService : Service() {
                 registerReceiver(unlockReceiver, filter)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "registerUnlockReceiver: ${e.message}")
+            AppLog.w(TAG, "registerUnlockReceiver: ${e.message}")
         }
     }
 
@@ -204,7 +204,7 @@ class ClientService : Service() {
      * Para volver a usar: abrir la app en el teléfono y luego asignar tiempo.
      */
     private fun shutdownAfterAdminStop() {
-        Log.i(TAG, "Admin stop — full client shutdown")
+        AppLog.i(TAG, "Admin stop — full client shutdown")
         store.serviceEnabled = false
         running.set(false)
         lockController.dismissLockIfNeeded()
@@ -240,7 +240,7 @@ class ClientService : Service() {
 
     private fun startMonitorLoop() {
         monitorThread = Thread({
-            Log.i(TAG, "Monitor loop started")
+            AppLog.i(TAG, "Monitor loop started")
             while (running.get()) {
                 try {
                     val info = store.getSessionInfo()
@@ -281,7 +281,7 @@ class ClientService : Service() {
                             acquireWifiLock()
                         }
                         if (firstExpiry) {
-                            Log.i(TAG, "Session expired — restore network + lock")
+                            AppLog.i(TAG, "Session expired — restore network + lock")
                             lockController.lockWorkstation(forceSystemLock = true)
                         } else if (lockController.isScreenInteractive()) {
                             lockController.enforceLock()
@@ -316,7 +316,7 @@ class ClientService : Service() {
                 } catch (e: InterruptedException) {
                     break
                 } catch (e: Exception) {
-                    Log.e(TAG, "Monitor error: ${e.message}")
+                    AppLog.e(TAG, "Monitor error: ${e.message}")
                     Thread.sleep(1000)
                 }
             }
@@ -325,7 +325,7 @@ class ClientService : Service() {
 
     private fun startSyncLoop() {
         syncThread = Thread({
-            Log.i(TAG, "Sync loop started")
+            AppLog.i(TAG, "Sync loop started")
             while (running.get()) {
                 try {
                     val clientId = store.ensureClientId()
@@ -336,12 +336,12 @@ class ClientService : Service() {
                     }
                     // Siempre syncAllServers: registra en todos + barrido LAN si el primario cayó
                     if (api.syncAllServers(clientId)) {
-                        Log.i(TAG, "Adopted session from server sync")
+                        AppLog.i(TAG, "Adopted session from server sync")
                         handleSessionStateChange()
                     }
                     registered = true
                 } catch (e: Exception) {
-                    Log.w(TAG, "Sync error: ${e.message}")
+                    AppLog.w(TAG, "Sync error: ${e.message}")
                     registered = false
                 }
                 val info = store.getSessionInfo()
@@ -482,9 +482,9 @@ class ClientService : Service() {
                 setReferenceCounted(false)
                 acquire()
             }
-            Log.i(TAG, "WifiLock acquired")
+            AppLog.i(TAG, "WifiLock acquired")
         } catch (e: Exception) {
-            Log.w(TAG, "WifiLock failed: ${e.message}")
+            AppLog.w(TAG, "WifiLock failed: ${e.message}")
         }
     }
 
@@ -527,7 +527,7 @@ class ClientService : Service() {
                     // Countdown/bloqueo local offline → siempre revivir (como Windows SessionData)
                     app.store.serviceEnabled = true
                 } else if (!app.store.serviceEnabled) {
-                    Log.i(TAG, "Skip start — disabled by admin stop and no local session")
+                    AppLog.i(TAG, "Skip start — disabled by admin stop and no local session")
                     return
                 }
             }

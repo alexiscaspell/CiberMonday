@@ -8,8 +8,8 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
 import android.telephony.TelephonyManager
-import android.util.Log
 import java.lang.reflect.Method
+import com.cibermonday.client.util.AppLog
 
 /**
  * Al expirar la sesión, si el usuario apaga Wi‑Fi/datos el teléfono queda
@@ -58,7 +58,7 @@ object ConnectivityRestorer {
         val app = context.applicationContext
         if (hasUsableNetwork(app)) return true
 
-        Log.i(TAG, "No usable network — restoring Wi‑Fi / mobile data")
+        AppLog.i(TAG, "No usable network — restoring Wi‑Fi / mobile data")
         var changed = false
 
         if (isAirplaneModeOn(app)) {
@@ -80,7 +80,7 @@ object ConnectivityRestorer {
         }
 
         val ok = hasUsableNetwork(app)
-        Log.i(TAG, "ensureOnline → network=$ok wifi=${isWifiEnabled(app)} airplane=${isAirplaneModeOn(app)}")
+        AppLog.i(TAG, "ensureOnline → network=$ok wifi=${isWifiEnabled(app)} airplane=${isAirplaneModeOn(app)}")
         return ok
     }
 
@@ -90,10 +90,10 @@ object ConnectivityRestorer {
             val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             if (wifi.isWifiEnabled) return true
             val ok = wifi.setWifiEnabled(true)
-            Log.i(TAG, "setWifiEnabled(true) → $ok")
+            AppLog.i(TAG, "setWifiEnabled(true) → $ok")
             ok || wifi.isWifiEnabled
         } catch (e: Exception) {
-            Log.w(TAG, "enableWifi: ${e.message}")
+            AppLog.w(TAG, "enableWifi: ${e.message}")
             false
         }
     }
@@ -112,12 +112,12 @@ object ConnectivityRestorer {
                 if (method != null) {
                     method.isAccessible = true
                     method.invoke(tm, true)
-                    Log.i(TAG, "TelephonyManager.setDataEnabled(true)")
+                    AppLog.i(TAG, "TelephonyManager.setDataEnabled(true)")
                     return true
                 }
             }
         } catch (e: Exception) {
-            Log.d(TAG, "setDataEnabled: ${e.message}")
+            AppLog.d(TAG, "setDataEnabled: ${e.message}")
         }
 
         // 2) Settings.Global.mobile_data (WRITE_SECURE_SETTINGS)
@@ -126,11 +126,11 @@ object ConnectivityRestorer {
             val before = Settings.Global.getInt(cr, "mobile_data", 1)
             if (before == 0) {
                 Settings.Global.putInt(cr, "mobile_data", 1)
-                Log.i(TAG, "Settings.Global mobile_data=1")
+                AppLog.i(TAG, "Settings.Global mobile_data=1")
                 return true
             }
         } catch (e: Exception) {
-            Log.d(TAG, "mobile_data setting: ${e.message}")
+            AppLog.d(TAG, "mobile_data setting: ${e.message}")
         }
 
         // 3) Reflection ConnectivityManager (APIs antiguas)
@@ -145,10 +145,10 @@ object ConnectivityRestorer {
             )
             method.isAccessible = true
             method.invoke(service, true)
-            Log.i(TAG, "ConnectivityManager.setMobileDataEnabled(true)")
+            AppLog.i(TAG, "ConnectivityManager.setMobileDataEnabled(true)")
             return true
         } catch (e: Exception) {
-            Log.d(TAG, "setMobileDataEnabled: ${e.message}")
+            AppLog.d(TAG, "setMobileDataEnabled: ${e.message}")
         }
         return false
     }
@@ -165,10 +165,10 @@ object ConnectivityRestorer {
                 putExtra("state", enabled)
             }
             context.sendBroadcast(intent)
-            Log.i(TAG, "airplane_mode → $enabled")
+            AppLog.i(TAG, "airplane_mode → $enabled")
             true
         } catch (e: Exception) {
-            Log.d(TAG, "airplane_mode: ${e.message}")
+            AppLog.d(TAG, "airplane_mode: ${e.message}")
             false
         }
     }

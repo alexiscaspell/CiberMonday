@@ -3,10 +3,10 @@ package com.cibermonday.client.lock
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
 import com.cibermonday.client.CiberMondayApp
 import com.cibermonday.client.service.ClientService
 import com.cibermonday.client.service.SessionAlarmScheduler
+import com.cibermonday.client.util.AppLog
 
 /**
  * - SCREEN_OFF: limpiar overlay (ahorro; no despertar).
@@ -29,13 +29,13 @@ class UnlockReceiver : BroadcastReceiver() {
         when (action) {
             Intent.ACTION_SCREEN_OFF -> {
                 if (lock.isLockNeeded()) {
-                    Log.d(TAG, "Screen off while expired — stay asleep")
+                    AppLog.d(TAG, "Screen off while expired — stay asleep")
                     lock.onScreenOff()
                 }
                 return
             }
             Intent.ACTION_SCREEN_ON -> {
-                Log.d(TAG, "Screen on — waiting for unlock")
+                AppLog.d(TAG, "Screen on — waiting for unlock")
                 return
             }
             Intent.ACTION_USER_PRESENT,
@@ -44,7 +44,7 @@ class UnlockReceiver : BroadcastReceiver() {
                 ClientService.start(appContext, enable = true)
                 SessionAlarmScheduler.rescheduleAll(appContext, store)
                 if (!lock.isLockNeeded()) return
-                Log.i(TAG, "User unlocked while expired — lock UI ($action)")
+                AppLog.i(TAG, "User unlocked while expired — lock UI ($action)")
                 lock.onUserUnlocked()
             }
         }

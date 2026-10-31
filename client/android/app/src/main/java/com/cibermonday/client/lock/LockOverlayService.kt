@@ -7,13 +7,13 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
-import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.WindowManager
 import com.cibermonday.client.R
 import com.cibermonday.client.ui.LockActivity
+import com.cibermonday.client.util.AppLog
 
 /**
  * Overlay a pantalla completa cuando la sesión expiró.
@@ -45,7 +45,7 @@ class LockOverlayService : Service() {
 
     private fun showOverlay() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            Log.w(TAG, "Overlay permission missing")
+            AppLog.w(TAG, "Overlay permission missing")
             return
         }
         if (overlayView != null) return
@@ -79,9 +79,9 @@ class LockOverlayService : Service() {
         try {
             windowManager?.addView(view, params)
             overlayView = view
-            Log.i(TAG, "Overlay shown")
+            AppLog.i(TAG, "Overlay shown")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to add overlay: ${e.message}")
+            AppLog.e(TAG, "Failed to add overlay: ${e.message}")
         }
     }
 

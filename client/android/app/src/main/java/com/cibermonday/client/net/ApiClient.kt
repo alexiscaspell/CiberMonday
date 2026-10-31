@@ -12,6 +12,7 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.URL
 import java.util.Collections
+import com.cibermonday.client.util.AppLog
 
 class ApiClient(private val store: SessionStore) {
 
@@ -273,7 +274,7 @@ class ApiClient(private val store: SessionStore) {
                     if (!health(url)) continue
                     val resp = postJson("$url/api/client/$clientId/access-request", body)
                     if (resp?.code == 200) {
-                        android.util.Log.i(TAG, "AccessReq $name (from $raw) → $url")
+                        AppLog.i(TAG, "AccessReq $name (from $raw) → $url")
                     }
                 } catch (_: Exception) {
                 }

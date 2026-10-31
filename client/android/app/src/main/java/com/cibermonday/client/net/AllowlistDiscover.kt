@@ -1,11 +1,11 @@
 package com.cibermonday.client.net
 
-import android.util.Log
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.regex.Pattern
+import com.cibermonday.client.util.AppLog
 
 /**
  * Descubre hosts related fetchando el HTML de apexes allowlist y extrayendo
@@ -40,10 +40,10 @@ object AllowlistDiscover {
         executor.execute {
             try {
                 val hosts = discoverHosts(allowlist)
-                Log.i(TAG, "related ${hosts.size}: ${hosts.take(20).joinToString()}${if (hosts.size > 20) "…" else ""}")
+                AppLog.i(TAG, "related ${hosts.size}: ${hosts.take(20).joinToString()}${if (hosts.size > 20) "…" else ""}")
                 onDone(hosts)
             } catch (e: Exception) {
-                Log.w(TAG, "error: ${e.message}")
+                AppLog.w(TAG, "error: ${e.message}")
             } finally {
                 inflight.remove(fp)
             }
@@ -111,7 +111,7 @@ object AllowlistDiscover {
             if (conn.responseCode !in 200..399) return null
             conn.inputStream.bufferedReader().use { it.readText().take(2_000_000) }
         } catch (e: Exception) {
-            Log.d(TAG, "fetch $url: ${e.message}")
+            AppLog.d(TAG, "fetch $url: ${e.message}")
             null
         } finally {
             conn?.disconnect()

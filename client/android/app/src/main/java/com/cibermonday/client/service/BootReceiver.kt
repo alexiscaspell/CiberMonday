@@ -7,9 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.PowerManager
-import android.util.Log
 import com.cibermonday.client.CiberMondayApp
 import com.cibermonday.client.lock.LockController
+import com.cibermonday.client.util.AppLog
 
 /**
  * Restaura servicio, alarmas y bloqueo tras reinicio del teléfono
@@ -37,7 +37,7 @@ class BootReceiver : BroadcastReceiver() {
                 scheduleBootRetry(appContext, 60_000L, 4202)
                 scheduleBootRetry(appContext, 120_000L, 4203)
             } catch (e: Exception) {
-                Log.e(TAG, "Boot restore failed: ${e.message}")
+                AppLog.e(TAG, "Boot restore failed: ${e.message}")
             } finally {
                 try {
                     if (wakeLock.isHeld) wakeLock.release()
@@ -63,28 +63,28 @@ class BootReceiver : BroadcastReceiver() {
             val store = try {
                 CiberMondayApp.instance.store
             } catch (_: Exception) {
-                Log.w(TAG, "App not ready ($reason)")
+                AppLog.w(TAG, "App not ready ($reason)")
                 return
             }
             if (!store.setupComplete) {
-                Log.i(TAG, "Setup incomplete — skip ($reason)")
+                AppLog.i(TAG, "Setup incomplete — skip ($reason)")
                 return
             }
             // Tras "Detener" no hay end_time local → no reiniciar.
             // Con sesión local (activa/expirada) → revivir aunque no haya red.
             if (!store.shouldKeepAlive()) {
-                Log.i(TAG, "No local session — skip restore ($reason)")
+                AppLog.i(TAG, "No local session — skip restore ($reason)")
                 SessionAlarmScheduler.cancelAll(context)
                 return
             }
-            Log.i(TAG, "Restoring client after boot ($reason) — local end_time")
+            AppLog.i(TAG, "Restoring client after boot ($reason) — local end_time")
             store.serviceEnabled = true
             SessionAlarmScheduler.rescheduleAll(context, store)
             ClientService.start(context, enable = true)
 
             val lock = LockController(context)
             if (lock.isLockNeeded()) {
-                Log.i(TAG, "Session already expired after boot — locking")
+                AppLog.i(TAG, "Session already expired after boot — locking")
                 lock.lockWorkstation(forceSystemLock = true)
             }
         }
@@ -108,7 +108,7 @@ class BootReceiver : BroadcastReceiver() {
                     am.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pi)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Boot retry alarm failed: ${e.message}")
+                AppLog.w(TAG, "Boot retry alarm failed: ${e.message}")
                 am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
             }
         }

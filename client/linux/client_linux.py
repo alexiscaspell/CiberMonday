@@ -21,6 +21,12 @@ class LinuxClient(CiberMondayClient):
     def __init__(self):
         self._config_dir = self.CONFIG_DIR_ROOT if os.geteuid() == 0 else self.CONFIG_DIR_USER
         os.makedirs(self._config_dir, exist_ok=True)
+        # Log en dir escribible bajo ProtectSystem=strict (no /opt).
+        try:
+            from client_log import setup_client_logging
+            setup_client_logging(self._config_dir, tee=True)
+        except Exception as e:
+            print(f"[Log] setup: {e}")
         super().__init__()
 
     # ==================== JSON file helpers ====================

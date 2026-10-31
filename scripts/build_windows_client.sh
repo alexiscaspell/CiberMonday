@@ -58,6 +58,7 @@ $PYTHON_CMD -m PyInstaller --onefile \
     --hidden-import "allowlist_discover" \
     --hidden-import "hostname_proxy" \
     --hidden-import "mitm_tls" \
+    --hidden-import "client_log" \
     --hidden-import "cryptography" \
     --collect-all "cryptography" \
     --hidden-import "requests" \
@@ -82,6 +83,7 @@ $PYTHON_CMD -m PyInstaller --onefile \
     --hidden-import "allowlist_discover" \
     --hidden-import "hostname_proxy" \
     --hidden-import "mitm_tls" \
+    --hidden-import "client_log" \
     --hidden-import "cryptography" \
     --collect-all "cryptography" \
     --hidden-import "ctypes" \

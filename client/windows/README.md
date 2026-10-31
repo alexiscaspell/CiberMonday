@@ -161,7 +161,8 @@ CiberMondayService.exe remove
 show_logs.bat
 
 # Ubicación del log
-%INSTALL_DIR%\cibermonday_client.log
+%INSTALL_DIR%\CiberMondayClient.log
+# También: http://127.0.0.1:5002/api/logs?lines=120
 ```
 
 ## Solución de problemas

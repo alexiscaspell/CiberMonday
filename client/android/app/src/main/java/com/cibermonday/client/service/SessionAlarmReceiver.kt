@@ -4,9 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.PowerManager
-import android.util.Log
 import com.cibermonday.client.CiberMondayApp
 import com.cibermonday.client.lock.LockController
+import com.cibermonday.client.util.AppLog
 
 /**
  * Despierta el proceso cuando expira la sesión o el watchdog periódico dispara,
@@ -49,7 +49,7 @@ class SessionAlarmReceiver : BroadcastReceiver() {
 
             when (action) {
                 SessionAlarmScheduler.ACTION_SESSION_EXPIRED -> {
-                    Log.i(TAG, "Session expiry alarm → restore network + lock")
+                    AppLog.i(TAG, "Session expiry alarm → restore network + lock")
                     if (lock.isLockNeeded()) {
                         lock.lockWorkstation(forceSystemLock = true)
                     }
@@ -59,7 +59,7 @@ class SessionAlarmReceiver : BroadcastReceiver() {
                         SessionAlarmScheduler.cancelAll(appContext)
                         return
                     }
-                    Log.d(TAG, "Watchdog tick — keep client alive offline")
+                    AppLog.d(TAG, "Watchdog tick — keep client alive offline")
                     SessionAlarmScheduler.rescheduleAll(appContext, store)
                     if (lock.isLockNeeded()) {
                         try {

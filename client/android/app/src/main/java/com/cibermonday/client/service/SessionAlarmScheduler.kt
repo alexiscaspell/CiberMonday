@@ -5,8 +5,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.util.Log
 import com.cibermonday.client.session.SessionStore
+import com.cibermonday.client.util.AppLog
 
 /**
  * Alarmas exactas para bloquear al expirar aunque el proceso de la app haya sido
@@ -53,9 +53,9 @@ object SessionAlarmScheduler {
                 @Suppress("DEPRECATION")
                 am.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pi)
             }
-            Log.i(TAG, "Expiry alarm at $triggerAt")
+            AppLog.i(TAG, "Expiry alarm at $triggerAt")
         } catch (e: Exception) {
-            Log.w(TAG, "setExact failed, fallback: ${e.message}")
+            AppLog.w(TAG, "setExact failed, fallback: ${e.message}")
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
         }
     }
@@ -82,7 +82,7 @@ object SessionAlarmScheduler {
                 )
             )
         }
-        Log.i(TAG, "All alarms cancelled")
+        AppLog.i(TAG, "All alarms cancelled")
     }
 
     fun scheduleWatchdog(context: Context, enabled: Boolean, expiredInterval: Boolean = false) {
@@ -103,7 +103,7 @@ object SessionAlarmScheduler {
                 am.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pi)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Watchdog exact failed: ${e.message}")
+            AppLog.w(TAG, "Watchdog exact failed: ${e.message}")
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
         }
     }

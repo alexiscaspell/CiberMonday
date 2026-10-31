@@ -2,7 +2,6 @@ package com.cibermonday.client.net
 
 import android.content.Context
 import android.net.wifi.WifiManager
-import android.util.Log
 import com.cibermonday.client.session.SessionStore
 import org.json.JSONObject
 import java.net.DatagramPacket
@@ -17,6 +16,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import com.cibermonday.client.util.AppLog
 
 /**
  * Escucha broadcasts UDP :5001 y, si no hay resultado, barre la LAN por HTTP /api/health.
@@ -63,7 +63,7 @@ class DiscoveryListener(
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Discovery failed: ${e.message}")
+                AppLog.e(TAG, "Discovery failed: ${e.message}")
                 onStatus?.invoke("Error de descubrimiento: ${e.message}")
             } finally {
                 if (!continuous) {
@@ -87,7 +87,7 @@ class DiscoveryListener(
             soTimeout = 2000
         }
         socket = sock
-        Log.i(TAG, "Continuous UDP listen on $DISCOVERY_PORT")
+        AppLog.i(TAG, "Continuous UDP listen on $DISCOVERY_PORT")
         val buffer = ByteArray(2048)
         while (running.get()) {
             try {
@@ -101,7 +101,7 @@ class DiscoveryListener(
                 // continue
             } catch (e: Exception) {
                 if (running.get()) {
-                    Log.w(TAG, "UDP receive error: ${e.message}")
+                    AppLog.w(TAG, "UDP receive error: ${e.message}")
                 }
             }
         }
@@ -131,7 +131,7 @@ class DiscoveryListener(
             soTimeout = 500
         }
         socket = sock
-        Log.i(TAG, "Listening UDP on $DISCOVERY_PORT")
+        AppLog.i(TAG, "Listening UDP on $DISCOVERY_PORT")
         onStatus?.invoke("Escuchando UDP $DISCOVERY_PORT…")
         val buffer = ByteArray(2048)
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -147,7 +147,7 @@ class DiscoveryListener(
                 // keep waiting until deadline
             } catch (e: Exception) {
                 if (running.get()) {
-                    Log.w(TAG, "UDP receive error: ${e.message}")
+                    AppLog.w(TAG, "UDP receive error: ${e.message}")
                 }
             }
         }
@@ -163,7 +163,7 @@ class DiscoveryListener(
             store.serverUrl = url
         }
         onServerFound?.invoke(url)
-        Log.i(TAG, "Discovered server: $url")
+        AppLog.i(TAG, "Discovered server: $url")
     }
 
     private fun parsePayload(text: String, fromIp: String?): String? {
@@ -177,7 +177,7 @@ class DiscoveryListener(
             }.trimEnd('/')
             url.ifBlank { null }
         } catch (e: Exception) {
-            Log.w(TAG, "Invalid discovery payload: ${e.message}")
+            AppLog.w(TAG, "Invalid discovery payload: ${e.message}")
             null
         }
     }
@@ -279,7 +279,7 @@ class DiscoveryListener(
                 acquire()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "MulticastLock failed: ${e.message}")
+            AppLog.w(TAG, "MulticastLock failed: ${e.message}")
         }
     }
 

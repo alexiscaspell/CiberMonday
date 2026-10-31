@@ -5,13 +5,13 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.cibermonday.client.CiberMondayApp
 import com.cibermonday.client.net.ConnectivityRestorer
 import com.cibermonday.client.service.ClientService
 import com.cibermonday.client.service.SessionAlarmScheduler
+import com.cibermonday.client.util.AppLog
 
 /**
  * Vigila ventanas y re-bloquea si la sesión expiró.
@@ -45,7 +45,7 @@ class LockAccessibilityService : AccessibilityService() {
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "softWatch: ${e.message}")
+                AppLog.w(TAG, "softWatch: ${e.message}")
             }
             handler.postDelayed(this, 3_000L)
         }
@@ -66,7 +66,7 @@ class LockAccessibilityService : AccessibilityService() {
                     handler.post { tryEnableWifiViaQuickSettings() }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "maybeRestoreNetwork: ${e.message}")
+                AppLog.w(TAG, "maybeRestoreNetwork: ${e.message}")
             }
         }, "cibermonday-net-restore").start()
     }
@@ -78,18 +78,18 @@ class LockAccessibilityService : AccessibilityService() {
     private fun tryEnableWifiViaQuickSettings() {
         try {
             if (ConnectivityRestorer.isWifiEnabled(this)) return
-            Log.i(TAG, "Trying Wi‑Fi via Quick Settings")
+            AppLog.i(TAG, "Trying Wi‑Fi via Quick Settings")
             performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
             handler.postDelayed({
                 try {
                     clickWifiTileIfOff(rootInActiveWindow)
                     performGlobalAction(GLOBAL_ACTION_BACK)
                 } catch (e: Exception) {
-                    Log.w(TAG, "QS wifi click: ${e.message}")
+                    AppLog.w(TAG, "QS wifi click: ${e.message}")
                 }
             }, 900L)
         } catch (e: Exception) {
-            Log.w(TAG, "tryEnableWifiViaQuickSettings: ${e.message}")
+            AppLog.w(TAG, "tryEnableWifiViaQuickSettings: ${e.message}")
         }
     }
 
@@ -115,7 +115,7 @@ class LockAccessibilityService : AccessibilityService() {
                 text.contains("desactiv") || !node.isChecked
             if (node.isCheckable && node.isChecked) continue
             if (looksOff || node.isCheckable) {
-                Log.i(TAG, "Clicking Wi‑Fi tile: $text")
+                AppLog.i(TAG, "Clicking Wi‑Fi tile: $text")
                 node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 return true
             }
@@ -136,7 +136,7 @@ class LockAccessibilityService : AccessibilityService() {
         try {
             lockController = LockController(this)
             instance = this
-            Log.i(TAG, "Accessibility service connected")
+            AppLog.i(TAG, "Accessibility service connected")
             registerUnlockReceiver()
             val store = try {
                 CiberMondayApp.instance.store
@@ -158,7 +158,7 @@ class LockAccessibilityService : AccessibilityService() {
             handler.removeCallbacks(softWatch)
             handler.postDelayed(softWatch, 3_000L)
         } catch (e: Exception) {
-            Log.e(TAG, "onServiceConnected failed: ${e.message}", e)
+            AppLog.e(TAG, "onServiceConnected failed: ${e.message}", e)
         }
     }
 
@@ -182,11 +182,11 @@ class LockAccessibilityService : AccessibilityService() {
             if (now - lastEnforceMs < 1_000L) return
             lastEnforceMs = now
 
-            Log.i(TAG, "Window change while expired ($pkg) — re-locking")
+            AppLog.i(TAG, "Window change while expired ($pkg) — re-locking")
             ClientService.start(this, enable = true)
             lockController.enforceLock()
         } catch (e: Exception) {
-            Log.w(TAG, "onAccessibilityEvent: ${e.message}")
+            AppLog.w(TAG, "onAccessibilityEvent: ${e.message}")
         }
     }
 
@@ -219,7 +219,7 @@ class LockAccessibilityService : AccessibilityService() {
                 registerReceiver(unlockReceiver, filter)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "registerUnlockReceiver: ${e.message}")
+            AppLog.w(TAG, "registerUnlockReceiver: ${e.message}")
         }
     }
 

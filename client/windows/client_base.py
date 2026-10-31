@@ -37,6 +37,13 @@ class CiberMondayClient(ABC):
         if self.configure_only:
             self.is_service = False
 
+        try:
+            from client_log import setup_client_logging
+            # Servicio Windows ya redirige stdout al .log; evitar doble escritura.
+            setup_client_logging(self.base_path, tee=not self.is_service)
+        except Exception as e:
+            print(f"[Log] setup: {e}")
+
         self.server_url = self.DEFAULT_SERVER_URL
         self.check_interval = self.DEFAULT_CHECK_INTERVAL
         self.sync_interval = self.DEFAULT_SYNC_INTERVAL
@@ -1547,7 +1554,7 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
-CLIENT_VERSION = "0.7.19"
+CLIENT_VERSION = "0.7.20"
 
 
 def _make_diagnostic_handler(client):
@@ -1562,6 +1569,8 @@ def _make_diagnostic_handler(client):
             path = self.path.split('?')[0]
             if path == '/api/diagnostic':
                 self._send_diagnostic()
+            elif path == '/api/logs':
+                self._send_logs()
             elif path == '/api/servers':
                 self._send_servers()
             elif path == '/api/status':
@@ -1820,6 +1829,33 @@ def _make_diagnostic_handler(client):
                         s['available'] = False
             self._json({'success': True, 'servers': servers, 'count': len(servers)})
 
+        def _send_logs(self):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                n = int((qs.get('lines') or ['120'])[0])
+            except Exception:
+                n = 120
+            lines = []
+            log_file = None
+            try:
+                from client_log import tail_lines, log_path, LOG_FILENAME
+                log_file = log_path()
+                if not log_file:
+                    # Servicio Windows: mismo nombre junto al exe
+                    cand = os.path.join(client.base_path, LOG_FILENAME)
+                    if os.path.isfile(cand):
+                        log_file = cand
+                lines = tail_lines(n, path=log_file)
+            except Exception as e:
+                lines = [f"[Log] error: {e}"]
+            self._json({
+                'success': True,
+                'path': log_file,
+                'lines': lines,
+                'count': len(lines),
+            })
+
         def _send_diagnostic(self):
             cid = client.load_client_id()
             si = client.get_session_info()
@@ -1865,6 +1901,14 @@ def _make_diagnostic_handler(client):
                 mitm_error = getattr(np, '_mitm_error', None)
             except Exception:
                 pass
+            log_file = None
+            log_tail = []
+            try:
+                from client_log import tail_lines, log_path, LOG_FILENAME
+                log_file = log_path() or os.path.join(client.base_path, LOG_FILENAME)
+                log_tail = tail_lines(40, path=log_file if os.path.isfile(log_file) else None)
+            except Exception:
+                pass
             self._json({
                 'success': True, 'client_id': cid,
                 'client_version': CLIENT_VERSION,
@@ -1876,6 +1920,8 @@ def _make_diagnostic_handler(client):
                 'hostname_proxy_active': host_proxy,
                 'mitm_ready': mitm_ready,
                 'mitm_error': mitm_error,
+                'log_path': log_file,
+                'log_tail': log_tail,
                 'known_servers': servers,
                 'allowlist': list(cfg.get('allowlist') or []),
                 'allowlist_learned': list(cfg.get('allowlist_learned') or []),

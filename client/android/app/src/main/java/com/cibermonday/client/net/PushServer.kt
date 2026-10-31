@@ -1,10 +1,10 @@
 package com.cibermonday.client.net
 
-import android.util.Log
 import com.cibermonday.client.session.SessionStore
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
+import com.cibermonday.client.util.AppLog
 
 class PushServer(
     private val store: SessionStore,
@@ -20,10 +20,10 @@ class PushServer(
         if (!started.compareAndSet(false, true)) return
         try {
             start(SOCKET_READ_TIMEOUT, false)
-            Log.i(TAG, "Push server listening on :$listeningPort")
+            AppLog.i(TAG, "Push server listening on :$listeningPort")
         } catch (e: Exception) {
             started.set(false)
-            Log.e(TAG, "Failed to start push server: ${e.message}")
+            AppLog.e(TAG, "Failed to start push server: ${e.message}")
         }
     }
 
@@ -42,6 +42,7 @@ class PushServer(
             when {
                 session.method == Method.GET && path == "/api/status" -> json(statusPayload())
                 session.method == Method.GET && path == "/api/diagnostic" -> json(diagnosticPayload())
+                session.method == Method.GET && path == "/api/logs" -> json(logsPayload(session))
                 session.method == Method.GET && path == "/api/servers" -> json(serversPayload())
                 session.method == Method.POST && path == "/api/push/session" -> handlePushSession(session)
                 session.method == Method.POST && path == "/api/push/config" -> handlePushConfig(session)
@@ -55,7 +56,7 @@ class PushServer(
                 else -> json(JSONObject().put("error", "Not found"), Response.Status.NOT_FOUND)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Request error: ${e.message}")
+            AppLog.e(TAG, "Request error: ${e.message}")
             json(JSONObject().put("success", false).put("message", e.message), Response.Status.INTERNAL_ERROR)
         }
     }
@@ -75,7 +76,7 @@ class PushServer(
         }
         // applySessionFromPush ya pone serviceEnabled=true y persiste end_time local
         store.applySessionFromPush(tl, rem)
-        Log.i(TAG, "Push session: ${rem}s remaining (${tl}s total)")
+        AppLog.i(TAG, "Push session: ${rem}s remaining (${tl}s total)")
         onSessionChanged()
         propagateAsync()
         return json(JSONObject().put("success", true).put("message", "Sesión actualizada: ${rem}s restantes"))
@@ -87,7 +88,7 @@ class PushServer(
             Response.Status.BAD_REQUEST
         )
         store.applyServerConfig(ApiClient.jsonObjectToMap(data))
-        Log.i(TAG, "Push config received")
+        AppLog.i(TAG, "Push config received")
         onSessionChanged()
         propagateAsync()
         return json(JSONObject().put("success", true).put("message", "Configuración actualizada"))
@@ -97,7 +98,7 @@ class PushServer(
         store.serviceEnabled = false
         store.clearSession()
         store.clearInternetSession()
-        Log.i(TAG, "Push stop: session cleared — shutting down client")
+        AppLog.i(TAG, "Push stop: session cleared — shutting down client")
         onSessionChanged()
         onStoppedByAdmin?.invoke()
         // No sync/reportZero: renovaría last_seen y el panel seguiría en "conectado"
@@ -111,7 +112,7 @@ class PushServer(
         )
         if (data.optBoolean("cleared", false)) {
             store.clearInternetSession()
-            Log.i(TAG, "Push internet cleared")
+            AppLog.i(TAG, "Push internet cleared")
             onSessionChanged()
             propagateAsync()
             return json(JSONObject().put("success", true).put("message", "Internet detenido"))
@@ -125,7 +126,7 @@ class PushServer(
             )
         }
         store.applyInternetFromPush(if (tl > 0) tl else rem, rem)
-        Log.i(TAG, "Push internet: ${rem}s remaining")
+        AppLog.i(TAG, "Push internet: ${rem}s remaining")
         onSessionChanged()
         propagateAsync()
         return json(JSONObject().put("success", true).put("message", "Internet actualizado: ${rem}s"))
@@ -151,10 +152,23 @@ class PushServer(
     }
 
     private fun diagnosticPayload(): JSONObject {
+        val tail = AppLog.tail(40)
         return statusPayload()
             .put("sync_interval", store.syncInterval)
             .put("lock_recheck_interval", store.lockRecheckInterval)
             .put("known_servers", ApiClient.serversToJson(store.loadServers()))
+            .put("log_path", AppLog.path())
+            .put("log_tail", org.json.JSONArray(tail))
+    }
+
+    private fun logsPayload(session: IHTTPSession): JSONObject {
+        val linesParam = session.parms["lines"]?.toIntOrNull() ?: 120
+        val lines = AppLog.tail(linesParam)
+        return JSONObject()
+            .put("success", true)
+            .put("path", AppLog.path())
+            .put("lines", org.json.JSONArray(lines))
+            .put("count", lines.size)
     }
 
     private fun serversPayload(): JSONObject {

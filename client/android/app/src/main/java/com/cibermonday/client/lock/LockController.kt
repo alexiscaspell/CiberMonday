@@ -10,10 +10,10 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
-import android.util.Log
 import com.cibermonday.client.CiberMondayApp
 import com.cibermonday.client.net.ConnectivityRestorer
 import com.cibermonday.client.ui.LockActivity
+import com.cibermonday.client.util.AppLog
 
 class LockController(private val context: Context) {
 
@@ -64,13 +64,13 @@ class LockController(private val context: Context) {
      */
     fun lockWorkstation(forceSystemLock: Boolean = false) {
         if (!isLockNeeded()) return
-        Log.i(TAG, "Session lock → ensure network, then screen off")
+        AppLog.i(TAG, "Session lock → ensure network, then screen off")
 
         // Si apagaron Wi‑Fi/datos al vencer, reactivar antes del bloqueo
         try {
             ConnectivityRestorer.ensureOnline(context)
         } catch (e: Exception) {
-            Log.w(TAG, "ensureOnline: ${e.message}")
+            AppLog.w(TAG, "ensureOnline: ${e.message}")
         }
 
         // Quitar overlay/activity que puedan mantener o despertar la pantalla
@@ -81,7 +81,7 @@ class LockController(private val context: Context) {
                 dpm.lockNow()
                 didSystemLock = true
             } catch (e: Exception) {
-                Log.w(TAG, "lockNow failed: ${e.message}")
+                AppLog.w(TAG, "lockNow failed: ${e.message}")
                 // Sin Device Admin: si la pantalla ya está encendida, mostrar UI
                 if (isScreenInteractive()) {
                     showLockUi()
@@ -112,7 +112,7 @@ class LockController(private val context: Context) {
     /** Usuario desbloqueó el PIN: mostrar bloqueo de sesión. */
     fun onUserUnlocked() {
         if (!isLockNeeded()) return
-        Log.i(TAG, "User unlocked while expired — showing lock UI")
+        AppLog.i(TAG, "User unlocked while expired — showing lock UI")
         showLockUi()
     }
 
@@ -171,7 +171,7 @@ class LockController(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "moveToFront failed: ${e.message}")
+            AppLog.w(TAG, "moveToFront failed: ${e.message}")
         }
     }
 
