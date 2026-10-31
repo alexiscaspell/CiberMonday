@@ -489,7 +489,9 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     if on_learned is not None:
         _on_learned = on_learned
     if learned is not None:
-        _active_learned = list(learned or [])
+        # Unión con memoria: el save a disco puede ir atrasado respecto del live-learn.
+        incoming = list(learned or [])
+        _active_learned = list(dict.fromkeys(incoming + list(_active_learned or [])))
     _active_allowlist = list(allowlist or [])
     if mode == "unrestricted":
         return clear_network_policy()
@@ -497,8 +499,8 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     remotes = build_allowed_remotes(mode, allowlist, server_url, learned=_active_learned)
     enable_dns = mode == "allowlist"
     al_key = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
-    ln_key = "|".join(sorted(str(x).strip().lower() for x in (_active_learned or []) if str(x).strip()))
-    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|ln:{ln_key}|sni|{'|'.join(remotes)}"
+    # learned fuera del fingerprint: evita tumbar nft/iptables en cada related nuevo.
+    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|sni|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
         if _learner and enable_dns:
             _learner.update_allowlist(allowlist or [], _active_learned)
