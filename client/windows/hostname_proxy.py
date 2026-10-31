@@ -149,11 +149,13 @@ class HostnameProxy:
     def start(self) -> bool:
         self.stop()
         self._stop.clear()
-        ok = True
-        for label, addr, handler in (
-            ("connect", LISTEN_CONNECT, self._serve_connect),
-            ("sni", LISTEN_SNI, self._serve_sni),
-        ):
+        # Windows solo usa system proxy → CONNECT. SNI (18443) es Linux TPROXY.
+        import sys
+
+        listeners = [("connect", LISTEN_CONNECT, self._serve_connect)]
+        if sys.platform != "win32":
+            listeners.append(("sni", LISTEN_SNI, self._serve_sni))
+        for label, addr, handler in listeners:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -169,8 +171,10 @@ class HostnameProxy:
                 print(f"[HostProxy] listening {addr[0]}:{addr[1]} ({label})")
             except OSError as e:
                 print(f"[HostProxy] bind {addr}: {e}")
-                ok = False
-        return ok
+                if label == "connect":
+                    self.stop()
+                    return False
+        return True
 
     def stop(self):
         self._stop.set()

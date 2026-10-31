@@ -149,7 +149,7 @@ class HostnameProxy:
     def start(self) -> bool:
         self.stop()
         self._stop.clear()
-        ok = True
+        connect_ok = False
         for label, addr, handler in (
             ("connect", LISTEN_CONNECT, self._serve_connect),
             ("sni", LISTEN_SNI, self._serve_sni),
@@ -167,10 +167,15 @@ class HostnameProxy:
                 t.start()
                 self._threads.append(t)
                 print(f"[HostProxy] listening {addr[0]}:{addr[1]} ({label})")
+                if label == "connect":
+                    connect_ok = True
             except OSError as e:
                 print(f"[HostProxy] bind {addr}: {e}")
-                ok = False
-        return ok
+                # CONNECT es obligatorio; SNI (redirect transparente) es best-effort.
+                if label == "connect":
+                    self.stop()
+                    return False
+        return connect_ok
 
     def stop(self):
         self._stop.set()

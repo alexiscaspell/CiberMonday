@@ -438,18 +438,22 @@ def _start_host_proxy():
     except ImportError as e:
         print(f"[NetPolicy] hostname_proxy no disponible: {e}")
         return
-    mitm_ok = _ensure_mitm_ca()
-    proxy = HostnameProxy(
-        is_allowed=_proxy_host_allowed,
-        on_denied=_on_denied,
-        authorize_referer=_proxy_authorize_referer if mitm_ok else None,
-        mitm_enabled=mitm_ok,
-    )
-    if proxy.start():
-        _host_proxy = proxy
-        print(f"[NetPolicy] HostnameProxy MITM={'on' if mitm_ok else 'off'}")
-    else:
-        print("[NetPolicy] HostnameProxy no arrancó")
+    try:
+        mitm_ok = _ensure_mitm_ca()
+        proxy = HostnameProxy(
+            is_allowed=_proxy_host_allowed,
+            on_denied=_on_denied,
+            authorize_referer=_proxy_authorize_referer if mitm_ok else None,
+            mitm_enabled=mitm_ok,
+        )
+        if proxy.start():
+            _host_proxy = proxy
+            print(f"[NetPolicy] HostnameProxy MITM={'on' if mitm_ok else 'off'}")
+        else:
+            print("[NetPolicy] HostnameProxy no arrancó")
+    except Exception as e:
+        print(f"[NetPolicy] HostnameProxy error: {e}")
+        _host_proxy = None
 
 
 def _read_proxy_values(key):
@@ -726,19 +730,23 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     # reventaba firewall/proxy a mitad de carga y YouTube nunca terminaba de abrir.
     fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|proxy-mitm|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
-        if _learner and enable_dns:
-            _learner.update_allowlist(allowlist or [], _active_learned)
-            if _on_denied is not None:
-                _learner._on_denied = _on_denied
-            if _on_learned is not None:
-                _learner._on_learned = _on_learned
-        if _host_proxy and enable_dns:
-            _host_proxy.update_callbacks(
-                is_allowed=_proxy_host_allowed,
-                on_denied=_on_denied,
-                authorize_referer=_proxy_authorize_referer,
-            )
-        return True
+        # Si el proxy murió, no hacer early-return: rearmar (evita browser → :18080 muerto).
+        if enable_dns and _host_proxy is None:
+            print("[NetPolicy] HostnameProxy ausente; reaplicando política")
+        else:
+            if _learner and enable_dns:
+                _learner.update_allowlist(allowlist or [], _active_learned)
+                if _on_denied is not None:
+                    _learner._on_denied = _on_denied
+                if _on_learned is not None:
+                    _learner._on_learned = _on_learned
+            if _host_proxy and enable_dns:
+                _host_proxy.update_callbacks(
+                    is_allowed=_proxy_host_allowed,
+                    on_denied=_on_denied,
+                    authorize_referer=_proxy_authorize_referer,
+                )
+            return True
 
     print(
         f"[NetPolicy] Aplicando modo={mode} destinos={len(remotes)} "
@@ -769,9 +777,13 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
 
     _last_fingerprint = fingerprint
     if enable_dns:
-        # Proxy primero: aunque DNS falle, el name-gate queda activo
+        # Proxy primero; solo setear system proxy si CONNECT está vivo
         _start_host_proxy()
-        _save_and_set_system_proxy()
+        if _host_proxy is not None:
+            _save_and_set_system_proxy()
+        else:
+            print("[NetPolicy] Sin HostnameProxy: no se setea system proxy (evita NS_BINDING_ABORTED)")
+            _restore_system_proxy()
         try:
             _start_learner(allowlist, _active_learned)
         except Exception as e:
