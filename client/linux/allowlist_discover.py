@@ -19,9 +19,8 @@ from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from domain_match import (
-    discovery_learn_target,
     dns_apex,
-    media_cdn_learn_target,
+    learn_host_target,
     normalize_host,
     sanitize_learned,
 )
@@ -162,12 +161,12 @@ def _hosts_from_html(html: str, base_url: str) -> tuple[set[str], list[str]]:
 
 
 def _hosts_from_script(body: str) -> set[str]:
-    """URLs embebidas en JS del sitio — solo CDNs de media / APIs de video."""
+    """URLs embebidas en JS del sitio (cualquier host de subrecurso)."""
     found: set[str] = set()
     for m in _URL_IN_TEXT.finditer(body or ""):
         raw = m.group(0)
         h = _host_from_url(raw if "://" in raw else "https:" + raw)
-        if h and media_cdn_learn_target(h):
+        if h and learn_host_target(h):
             found.add(h)
     return found
 
@@ -213,11 +212,11 @@ def discover_hosts_for_entry(entry: str) -> list[str]:
         # No aprender el propio apex allowlist (ya está)
         if h == apex or h == e or h in (f"www.{apex}", f"m.{apex}"):
             continue
-        target = discovery_learn_target(h)
+        target = learn_host_target(h)
         if not target or target in seen:
             continue
-        # Tampoco re-agregar el apex explícito
-        if target == apex or target == e:
+        # Ya cubierto por la allowlist explícita (apex y subdominios)
+        if target == apex or target == e or target.endswith("." + apex):
             continue
         seen.add(target)
         learned.append(target)

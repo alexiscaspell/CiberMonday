@@ -4,5 +4,6 @@ flask-cors==4.0.0
 
 # Dependencias del cliente
 requests==2.31.0
+cryptography>=41.0.0  # MITM CA / leaf certs (allowlist Referer)
 pywin32==306; platform_system == "Windows"  # Solo para Windows - necesario para el servicio
 pyinstaller==6.3.0; platform_system == "Windows"  # Solo para Windows - para compilar .exe

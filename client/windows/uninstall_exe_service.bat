@@ -99,3 +99,6 @@ echo Nota: Los archivos ejecutables no fueron eliminados.
 echo Puedes eliminar esta carpeta manualmente si lo deseas.
 echo.
 pause
+
+echo Removing MITM CA...
+certutil -delstore Root "CiberMonday Local MITM CA" >nul 2>&1

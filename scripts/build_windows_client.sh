@@ -37,7 +37,7 @@ fi
 
 echo "Usando: $PYTHON_CMD en $(pwd)"
 $PIP_CMD uninstall -y typing pathlib 2>/dev/null || true
-$PIP_CMD install pyinstaller
+$PIP_CMD install pyinstaller cryptography
 
 $PYTHON_CMD -m PyInstaller --onefile \
     --name "CiberMondayClient" \
@@ -52,6 +52,14 @@ $PYTHON_CMD -m PyInstaller --onefile \
     --hidden-import "protection" \
     --hidden-import "registry_manager" \
     --hidden-import "config_gui" \
+    --hidden-import "network_policy" \
+    --hidden-import "domain_match" \
+    --hidden-import "dns_learner" \
+    --hidden-import "allowlist_discover" \
+    --hidden-import "hostname_proxy" \
+    --hidden-import "mitm_tls" \
+    --hidden-import "cryptography" \
+    --collect-all "cryptography" \
     --hidden-import "requests" \
     --hidden-import "ctypes" \
     --hidden-import "ctypes.wintypes" \
@@ -68,6 +76,14 @@ $PYTHON_CMD -m PyInstaller --onefile \
     --hidden-import "win32timezone" \
     --hidden-import "protection" \
     --hidden-import "firewall_manager" \
+    --hidden-import "network_policy" \
+    --hidden-import "domain_match" \
+    --hidden-import "dns_learner" \
+    --hidden-import "allowlist_discover" \
+    --hidden-import "hostname_proxy" \
+    --hidden-import "mitm_tls" \
+    --hidden-import "cryptography" \
+    --collect-all "cryptography" \
     --hidden-import "ctypes" \
     --hidden-import "ctypes.wintypes" \
     service.py

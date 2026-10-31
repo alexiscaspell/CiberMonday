@@ -397,24 +397,58 @@ def _stop_learner():
         _learner = None
 
 
-def _proxy_host_allowed(name: str) -> bool:
-    from domain_match import live_learn_target, name_is_allowed
+_mitm_ca_dir = None
+_mitm_ready = False
 
-    if name_is_allowed(name, _active_allowlist, _active_learned):
+
+def configure_mitm(ca_dir=None):
+    global _mitm_ca_dir
+    _mitm_ca_dir = ca_dir
+
+
+def _ensure_mitm_ca() -> bool:
+    global _mitm_ready
+    if _mitm_ready:
         return True
-    target = live_learn_target(name, _active_allowlist, _active_learned)
-    if not target:
+    try:
+        import mitm_tls
+        import os
+        mitm_tls.set_ca_dir(_mitm_ca_dir or os.path.join(os.path.expanduser("~"), ".cibermonday"))
+        mitm_tls.ensure_ca()
+        mitm_tls.install_ca_trust()
+        _mitm_ready = True
+        return True
+    except Exception as e:
+        print(f"[NetPolicy] MITM CA: {e}")
         return False
-    if target not in _active_learned:
-        _active_learned.append(target)
-        cb = _on_learned
-        if cb:
-            threading.Thread(
-                target=lambda t=target: _safe_on_learned(cb, t),
-                name="cm-proxy-learned",
-                daemon=True,
-            ).start()
-    return True
+
+
+def _proxy_host_allowed(name: str) -> bool:
+    from domain_match import name_is_allowed
+    return name_is_allowed(name, _active_allowlist, _active_learned)
+
+
+def _proxy_authorize_referer(dest: str, referer_host, origin_host) -> bool:
+    from domain_match import learn_host_target, name_is_allowed
+
+    if name_is_allowed(dest, _active_allowlist, _active_learned):
+        return True
+    for src in (referer_host, origin_host):
+        if not src:
+            continue
+        if name_is_allowed(src, _active_allowlist, _active_learned):
+            target = learn_host_target(dest)
+            if target and target not in _active_learned:
+                _active_learned.append(target)
+                cb = _on_learned
+                if cb:
+                    threading.Thread(
+                        target=lambda t=target: _safe_on_learned(cb, t),
+                        name="cm-proxy-learned",
+                        daemon=True,
+                    ).start()
+            return True
+    return False
 
 
 def _safe_on_learned(cb, target: str):
@@ -442,13 +476,16 @@ def _start_host_proxy():
     except ImportError as e:
         print(f"[NetPolicy] hostname_proxy no disponible: {e}")
         return
+    mitm_ok = _ensure_mitm_ca()
     proxy = HostnameProxy(
         is_allowed=_proxy_host_allowed,
         on_denied=_on_denied,
-        on_allowed=None,
+        authorize_referer=_proxy_authorize_referer if mitm_ok else None,
+        mitm_enabled=mitm_ok,
     )
     if proxy.start():
         _host_proxy = proxy
+        print(f"[NetPolicy] HostnameProxy MITM={'on' if mitm_ok else 'off'}")
     else:
         print("[NetPolicy] HostnameProxy no arrancó (SNI gate degradado)")
 
@@ -486,8 +523,9 @@ def _start_learner(allowlist, learned=None):
         listen_port=DNS_REDIR_PORT,
         on_denied=_on_denied,
         on_learned=_on_learned,
+        passthrough=True,
     )
-    if learner.start(_active_allowlist, _active_learned):
+    if learner.start(_active_allowlist, _active_learned, passthrough=True):
         _learner = learner
 
 
@@ -498,7 +536,6 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     if on_learned is not None:
         _on_learned = on_learned
     if learned is not None:
-        # Unión con memoria: el save a disco puede ir atrasado respecto del live-learn.
         incoming = list(learned or [])
         _active_learned = list(dict.fromkeys(incoming + list(_active_learned or [])))
     _active_allowlist = list(allowlist or [])
@@ -508,8 +545,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     remotes = build_allowed_remotes(mode, allowlist, server_url, learned=_active_learned)
     enable_dns = mode == "allowlist"
     al_key = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
-    # learned fuera del fingerprint: evita tumbar nft/iptables en cada related nuevo.
-    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|sni|{'|'.join(remotes)}"
+    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|sni-mitm|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
         if _learner and enable_dns:
             _learner.update_allowlist(allowlist or [], _active_learned)
@@ -518,7 +554,11 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
             if _on_learned is not None:
                 _learner._on_learned = _on_learned
         if _host_proxy and enable_dns:
-            _host_proxy.update_callbacks(is_allowed=_proxy_host_allowed, on_denied=_on_denied)
+            _host_proxy.update_callbacks(
+                is_allowed=_proxy_host_allowed,
+                on_denied=_on_denied,
+                authorize_referer=_proxy_authorize_referer,
+            )
         return True
 
     backend = _detect_backend()
@@ -529,7 +569,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     print(
         f"[NetPolicy] Aplicando modo={mode} backend={backend} "
         f"seed={len(remotes)} learned={len(_active_learned or [])} "
-        f"dns_learn={enable_dns} sni_proxy={enable_dns}"
+        f"dns_passthrough={enable_dns} host_proxy={enable_dns}"
     )
     if backend == "nft":
         ok = _apply_nft(remotes, enable_dns)
@@ -572,6 +612,16 @@ def clear_network_policy(force: bool = False):
     _learned_ips = set()
     _last_fingerprint = "unrestricted"
     return True
+
+
+def clear_mitm_trust():
+    global _mitm_ready
+    try:
+        import mitm_tls
+        mitm_tls.uninstall_ca_trust()
+    except Exception as e:
+        print(f"[NetPolicy] clear MITM trust: {e}")
+    _mitm_ready = False
 
 
 def internet_session_info_from_data(data):

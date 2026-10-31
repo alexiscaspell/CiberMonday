@@ -15,10 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Iterable, Optional
 
-from domain_match import (
-    live_learn_target,
-    name_is_allowed,
-)
+from domain_match import name_is_allowed
 
 UPSTREAM = ("1.1.1.1", 53)
 LISTEN_HOST = "127.0.0.1"
@@ -165,10 +162,13 @@ class DnsLearner:
         upstream: tuple[str, int] = UPSTREAM,
         on_denied: Optional[Callable[[str], None]] = None,
         on_learned: Optional[Callable[[str], None]] = None,
+        passthrough: bool = False,
     ):
         self._on_ips = on_ips
         self._on_denied = on_denied
         self._on_learned = on_learned
+        # Con HostnameProxy+MITM el name-gate es CONNECT: DNS solo resuelve.
+        self._passthrough = bool(passthrough)
         self._listen_port = listen_port
         self._upstream = upstream
         self.listen_port_used = listen_port
@@ -182,10 +182,12 @@ class DnsLearner:
         self._cache: dict[str, tuple[float, bytes]] = {}
         self._cache_lock = threading.Lock()
 
-    def start(self, allowlist, learned=None) -> bool:
+    def start(self, allowlist, learned=None, passthrough: Optional[bool] = None) -> bool:
         self.stop()
         self._allowlist = list(allowlist or [])
         self._learned = list(learned or [])
+        if passthrough is not None:
+            self._passthrough = bool(passthrough)
         self._stop.clear()
         with self._cache_lock:
             self._cache.clear()
@@ -219,7 +221,8 @@ class DnsLearner:
         self._pool = ThreadPoolExecutor(max_workers=_POOL_WORKERS, thread_name_prefix="cm-dns")
         self._thread = threading.Thread(target=self._loop, name="cm-dns-learn", daemon=True)
         self._thread.start()
-        print(f"[DnsLearner] Escuchando {LISTEN_HOST}:{bound} → {self._upstream} (parallel)")
+        mode = "passthrough" if self._passthrough else "filter"
+        print(f"[DnsLearner] Escuchando {LISTEN_HOST}:{bound} → {self._upstream} ({mode})")
         return True
 
     def stop(self):
@@ -307,37 +310,26 @@ class DnsLearner:
             return
 
         name = (qname or "").strip().lower().rstrip(".")
-        with self._lock:
-            allowlist = list(self._allowlist)
-            learned = list(self._learned)
 
-        allowed = bool(name) and name_is_allowed(name, allowlist, learned)
-        target = live_learn_target(name, allowlist, learned) if name else None
-        if target:
+        # Passthrough: el name-gate es CONNECT/MITM; DNS solo resuelve.
+        if not self._passthrough:
             with self._lock:
-                if target not in self._learned:
-                    self._learned.append(target)
-                    learned_new = True
-                else:
-                    learned_new = False
-            allowed = True
-            if learned_new:
-                print(f"[DnsLearner] related {target} (from {name})")
-                self._emit_learned(target)
-
-        if not allowed:
-            if name and self._on_denied:
-                try:
-                    self._on_denied(name)
-                except Exception as e:
-                    print(f"[DnsLearner] on_denied: {e}")
-            # Sin round-trip al upstream: no saturar la cola con denegados
-            self._send(_nxdomain_response(data), addr)
-            return
+                allowlist = list(self._allowlist)
+                learned = list(self._learned)
+            allowed = bool(name) and name_is_allowed(name, allowlist, learned)
+            if not allowed:
+                if name and self._on_denied:
+                    try:
+                        self._on_denied(name)
+                    except Exception as e:
+                        print(f"[DnsLearner] on_denied: {e}")
+                self._send(_nxdomain_response(data), addr)
+                return
 
         now = time.time()
+        cache_key = name or "_"
         with self._cache_lock:
-            ent = self._cache.get(name)
+            ent = self._cache.get(cache_key)
             if ent and ent[0] > now:
                 self._send(_with_txid(ent[1], data), addr)
                 return
@@ -353,15 +345,14 @@ class DnsLearner:
             return
 
         _resp_qname, ips = _extract_a_records(resp)
-        if ips:
+        if ips and not self._passthrough:
             try:
                 self._on_ips(ips)
-                print(f"[DnsLearner] allow {name} → {', '.join(ips)}")
             except Exception as e:
                 print(f"[DnsLearner] on_ips: {e}")
 
         with self._cache_lock:
-            self._cache[name] = (now + _CACHE_TTL, resp)
+            self._cache[cache_key] = (now + _CACHE_TTL, resp)
             if len(self._cache) > 500:
                 self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
 

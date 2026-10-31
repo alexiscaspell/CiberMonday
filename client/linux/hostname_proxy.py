@@ -1,8 +1,9 @@
 """
-Proxy local por hostname (CONNECT + SNI transparente).
+Proxy local por hostname (CONNECT + SNI transparente) con MITM opcional.
 
-Permite clients4.google.com y bloquea google.com aunque compartan IP:
-la decisión es el nombre (CONNECT host o SNI del ClientHello), no el IP.
+- Destinos ya allowlist/learned: túnel TCP (rápido).
+- Destinos desconocidos: MITM TLS (ALPN http/1.1), lee Referer/Origin,
+  permite y aprende si el origen es un sitio allowlist/learned.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ LISTEN_SNI = ("127.0.0.1", 18443)
 SO_MARK = 36  # Linux
 PROXY_MARK = 0xC1BE00D1
 
-# SO_ORIGINAL_DST (Linux)
 SOL_IP = 0
 SO_ORIGINAL_DST = 80
 
@@ -28,16 +28,13 @@ def extract_sni(data: bytes) -> Optional[str]:
     try:
         if len(data) < 5 or data[0] != 0x16:
             return None
-        # TLS record header
-        rec_len = (data[3] << 8) | data[4]
         hs = 5
-        if hs >= len(data) or data[hs] != 0x01:  # ClientHello
+        if hs >= len(data) or data[hs] != 0x01:
             return None
-        p = hs + 4  # skip handshake hdr
+        p = hs + 4
         if p + 2 + 32 >= len(data):
             return None
-        p += 2  # client version
-        p += 32  # random
+        p += 2 + 32
         if p >= len(data):
             return None
         sid_len = data[p]
@@ -61,7 +58,7 @@ def extract_sni(data: bytes) -> Optional[str]:
             p += 4
             if p + ln > end:
                 break
-            if typ == 0 and ln >= 5:  # server_name
+            if typ == 0 and ln >= 5:
                 q = p + 2
                 if q >= p + ln:
                     break
@@ -122,7 +119,6 @@ def _set_mark(sock: socket.socket):
 def _original_dst(conn: socket.socket) -> Optional[tuple[str, int]]:
     try:
         raw = conn.getsockopt(SOL_IP, SO_ORIGINAL_DST, 16)
-        # sockaddr_in
         port = struct.unpack("!H", raw[2:4])[0]
         ip = socket.inet_ntoa(raw[4:8])
         return ip, port
@@ -131,17 +127,21 @@ def _original_dst(conn: socket.socket) -> Optional[tuple[str, int]]:
 
 
 class HostnameProxy:
-    """CONNECT (:18080) + transparent SNI (:18443)."""
+    """CONNECT (:18080) + transparent SNI (:18443), MITM para Referer."""
 
     def __init__(
         self,
         is_allowed: Callable[[str], bool],
         on_allowed: Optional[Callable[[str], None]] = None,
         on_denied: Optional[Callable[[str], None]] = None,
+        authorize_referer: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None,
+        mitm_enabled: bool = True,
     ):
         self._is_allowed = is_allowed
         self._on_allowed = on_allowed
         self._on_denied = on_denied
+        self._authorize_referer = authorize_referer
+        self._mitm_enabled = mitm_enabled
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._socks: list[socket.socket] = []
@@ -189,6 +189,8 @@ class HostnameProxy:
         is_allowed: Optional[Callable[[str], bool]] = None,
         on_allowed: Optional[Callable[[str], None]] = None,
         on_denied: Optional[Callable[[str], None]] = None,
+        authorize_referer: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None,
+        mitm_enabled: Optional[bool] = None,
     ):
         if is_allowed is not None:
             self._is_allowed = is_allowed
@@ -196,30 +198,35 @@ class HostnameProxy:
             self._on_allowed = on_allowed
         if on_denied is not None:
             self._on_denied = on_denied
+        if authorize_referer is not None:
+            self._authorize_referer = authorize_referer
+        if mitm_enabled is not None:
+            self._mitm_enabled = mitm_enabled
 
-    def _check(self, host: str) -> bool:
+    def _notify_allowed(self, name: str):
+        if self._on_allowed:
+            try:
+                self._on_allowed(name)
+            except Exception:
+                pass
+
+    def _notify_denied(self, name: str):
+        print(f"[HostProxy] DENY {name}")
+        if self._on_denied:
+            try:
+                self._on_denied(name)
+            except Exception:
+                pass
+
+    def _pre_allowed(self, host: str) -> bool:
         name = (host or "").strip().lower().rstrip(".")
         if not name:
             return False
-        allowed = False
         try:
-            allowed = bool(self._is_allowed(name))
+            return bool(self._is_allowed(name))
         except Exception as e:
             print(f"[HostProxy] is_allowed: {e}")
-        if allowed:
-            if self._on_allowed:
-                try:
-                    self._on_allowed(name)
-                except Exception:
-                    pass
-        else:
-            print(f"[HostProxy] DENY {name}")
-            if self._on_denied:
-                try:
-                    self._on_denied(name)
-                except Exception:
-                    pass
-        return allowed
+            return False
 
     def _dial(self, host: str, port: int) -> Optional[socket.socket]:
         try:
@@ -246,6 +253,8 @@ class HostnameProxy:
 
     def _handle_connect(self, conn: socket.socket):
         remote = None
+        browser_tls = None
+        origin_tls = None
         try:
             conn.settimeout(15)
             buf = b""
@@ -263,27 +272,103 @@ class HostnameProxy:
             target = parts[1]
             if ":" in target:
                 host, port_s = target.rsplit(":", 1)
-                port = int(port_s)
+                try:
+                    port = int(port_s)
+                except ValueError:
+                    port = 443
             else:
                 host, port = target, 443
             host = host.strip("[]").lower()
-            if not self._check(host):
+
+            if self._pre_allowed(host):
+                remote = self._dial(host, port)
+                if not remote:
+                    conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                    return
+                conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                self._notify_allowed(host)
+                conn.settimeout(None)
+                remote.settimeout(None)
+                _splice(conn, remote)
+                conn = None
+                remote = None
+                return
+
+            if not self._mitm_enabled or self._authorize_referer is None:
+                self._notify_denied(host)
                 conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
                 return
-            remote = self._dial(host, port)
-            if not remote:
-                conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+
+            try:
+                import mitm_tls
+            except ImportError as e:
+                print(f"[HostProxy] mitm_tls no disponible: {e}")
+                self._notify_denied(host)
+                conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
                 return
+
             conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            conn.settimeout(None)
-            remote.settimeout(None)
-            _splice(conn, remote)
+            ctx_c = mitm_tls.client_facing_ssl_context(host)
+            conn.settimeout(20)
+            browser_tls = ctx_c.wrap_socket(conn, server_side=True)
             conn = None
-            remote = None
+
+            req = b""
+            while b"\r\n\r\n" not in req and len(req) < 65536:
+                chunk = browser_tls.recv(4096)
+                if not chunk:
+                    return
+                req += chunk
+            headers, _rest = mitm_tls.parse_http11_request_head(req)
+            if not headers.get(":method_line"):
+                self._notify_denied(host)
+                try:
+                    browser_tls.sendall(
+                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                except Exception:
+                    pass
+                return
+
+            ref_h = mitm_tls.host_from_header_value(headers.get("referer"))
+            ori_h = mitm_tls.host_from_header_value(headers.get("origin"))
+            try:
+                allowed = bool(self._authorize_referer(host, ref_h, ori_h))
+            except Exception as e:
+                print(f"[HostProxy] authorize_referer: {e}")
+                allowed = False
+            if not allowed:
+                self._notify_denied(host)
+                try:
+                    browser_tls.sendall(
+                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                except Exception:
+                    pass
+                return
+
+            self._notify_allowed(host)
+            raw = self._dial(host, port)
+            if not raw:
+                try:
+                    browser_tls.sendall(
+                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                except Exception:
+                    pass
+                return
+            ctx_s = mitm_tls.server_facing_ssl_context()
+            origin_tls = ctx_s.wrap_socket(raw, server_hostname=host)
+            origin_tls.sendall(req)
+            browser_tls.settimeout(None)
+            origin_tls.settimeout(None)
+            _splice(browser_tls, origin_tls)
+            browser_tls = None
+            origin_tls = None
         except Exception as e:
             print(f"[HostProxy] connect handler: {e}")
         finally:
-            for s in (conn, remote):
+            for s in (conn, remote, browser_tls, origin_tls):
                 if s:
                     try:
                         s.close()
@@ -305,12 +390,12 @@ class HostnameProxy:
             ).start()
 
     def _handle_sni(self, conn: socket.socket):
+        """Transparent SNI: solo túnel si ya está allowlist (sin MITM en v1)."""
         remote = None
         try:
             conn.settimeout(15)
             buf = b""
             sni = None
-            # Leer hasta poder parsear ClientHello (o tope)
             while len(buf) < 65536:
                 chunk = conn.recv(4096)
                 if not chunk:
@@ -319,7 +404,6 @@ class HostnameProxy:
                 sni = extract_sni(buf)
                 if sni or (len(buf) >= 5 and buf[0] != 0x16):
                     break
-                # record completo?
                 if len(buf) >= 5:
                     need = 5 + ((buf[3] << 8) | buf[4])
                     if len(buf) >= need:
@@ -327,26 +411,24 @@ class HostnameProxy:
                         break
 
             orig = _original_dst(conn)
-            dest_host = sni
             dest_port = 443
             dest_ip = None
             if orig:
                 dest_ip, dest_port = orig
 
             if not sni:
-                # Sin SNI no podemos name-gate con seguridad
                 print("[HostProxy] DENY (no SNI)")
                 return
-
-            if not self._check(sni):
+            if not self._pre_allowed(sni):
+                self._notify_denied(sni)
                 return
 
-            # Preferir dial por nombre (SNI); fallback IP original
             remote = self._dial(sni, dest_port) or (
                 self._dial(dest_ip, dest_port) if dest_ip else None
             )
             if not remote:
                 return
+            self._notify_allowed(sni)
             remote.sendall(buf)
             conn.settimeout(None)
             remote.settimeout(None)

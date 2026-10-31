@@ -67,9 +67,21 @@ else
     echo "  Sin gestor de firewall detectado."
 fi
 
-# [4/4] Eliminar archivos
+# [4/5] Quitar CA MITM del trust store
 echo
-echo "[4/4] Eliminando archivos..."
+echo "[4/5] Eliminando CA MITM del sistema..."
+rm -f /usr/local/share/ca-certificates/cibermonday-mitm-ca.crt
+if command -v update-ca-certificates >/dev/null 2>&1; then
+    update-ca-certificates --fresh >/dev/null 2>&1 || true
+fi
+if [ -f "$INSTALL_DIR/mitm_tls.py" ]; then
+    python3 -c "import sys; sys.path.insert(0, '$INSTALL_DIR'); import mitm_tls; mitm_tls.uninstall_ca_trust()" 2>/dev/null || true
+fi
+echo "  CA MITM eliminada (si existía)."
+
+# [5/5] Eliminar archivos
+echo
+echo "[5/5] Eliminando archivos..."
 read -p "  ¿Eliminar archivos del cliente en $INSTALL_DIR? (s/N): " DEL_FILES
 if [ "$DEL_FILES" = "s" ] || [ "$DEL_FILES" = "S" ]; then
     rm -rf "$INSTALL_DIR"

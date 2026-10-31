@@ -90,3 +90,6 @@ echo El servicio CiberMonday ha sido removido completamente.
 echo La PC ya no sera controlada por CiberMonday.
 echo.
 pause
+
+echo Removing MITM CA...
+certutil -delstore Root "CiberMonday Local MITM CA" >nul 2>&1

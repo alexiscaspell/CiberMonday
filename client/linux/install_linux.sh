@@ -33,51 +33,37 @@ echo "  $PYTHON_VERSION encontrado."
 # [2/7] Instalar dependencias Python
 echo
 echo "[2/7] Instalando dependencias Python..."
-if python3 -c "import requests" 2>/dev/null; then
-    echo "  'requests' ya disponible."
-else
-    installed=0
-    # Preferir paquete del distro (pip a system Python suele fallar por PEP 668)
+_install_py_mod() {
+    # $1=import_name $2=apt_pkg $3=pip_name
+    local imp="$1" apt_pkg="$2" pip_name="$3"
+    if python3 -c "import $imp" 2>/dev/null; then
+        echo "  '$imp' ya disponible."
+        return 0
+    fi
     if command -v apt-get >/dev/null 2>&1; then
-        echo "  Instalando python3-requests via apt..."
-        if apt-get install -y python3-requests; then
-            installed=1
-        fi
+        echo "  Instalando $apt_pkg via apt..."
+        apt-get install -y "$apt_pkg" || true
     elif command -v dnf >/dev/null 2>&1; then
-        echo "  Instalando python3-requests via dnf..."
-        if dnf install -y python3-requests; then
-            installed=1
-        fi
+        dnf install -y "$apt_pkg" || true
     elif command -v yum >/dev/null 2>&1; then
-        echo "  Instalando python3-requests via yum..."
-        if yum install -y python3-requests; then
-            installed=1
-        fi
+        yum install -y "$apt_pkg" || true
     elif command -v pacman >/dev/null 2>&1; then
-        echo "  Instalando python-requests via pacman..."
-        if pacman -Sy --noconfirm python-requests; then
-            installed=1
-        fi
+        pacman -Sy --noconfirm "python-${pip_name}" || true
     fi
-
-    if [ "$installed" -eq 0 ]; then
-        echo "  Intentando pip (fallback)..."
-        if python3 -m pip install --break-system-packages requests 2>/dev/null \
-            || pip3 install --break-system-packages requests 2>/dev/null \
-            || python3 -m pip install requests 2>/dev/null \
-            || pip3 install requests 2>/dev/null; then
-            installed=1
-        fi
+    if ! python3 -c "import $imp" 2>/dev/null; then
+        python3 -m pip install --break-system-packages "$pip_name" 2>/dev/null \
+            || pip3 install --break-system-packages "$pip_name" 2>/dev/null \
+            || python3 -m pip install "$pip_name" 2>/dev/null \
+            || pip3 install "$pip_name" 2>/dev/null || true
     fi
-
-    if ! python3 -c "import requests" 2>/dev/null; then
-        echo "ERROR: No se pudo instalar el módulo Python 'requests'."
-        echo "  Debian/Ubuntu: sudo apt install python3-requests"
-        echo "  Fedora/RHEL:   sudo dnf install python3-requests"
+    if ! python3 -c "import $imp" 2>/dev/null; then
+        echo "ERROR: No se pudo instalar el módulo Python '$imp' ($apt_pkg / pip $pip_name)."
         exit 1
     fi
-    echo "  'requests' instalado."
-fi
+    echo "  '$imp' instalado."
+}
+_install_py_mod requests python3-requests requests
+_install_py_mod cryptography python3-cryptography cryptography
 echo "  Dependencias verificadas."
 
 # [3/7] Copiar archivos
@@ -90,11 +76,11 @@ cp "$SCRIPT_DIR/client.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/client_base.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/client_linux.py" "$INSTALL_DIR/"
 # Allowlist / corte de internet (nft/iptables) — obligatorio para el timer
-for f in network_policy.py domain_match.py dns_learner.py allowlist_discover.py hostname_proxy.py; do
+for f in network_policy.py domain_match.py dns_learner.py allowlist_discover.py hostname_proxy.py mitm_tls.py; do
     if [ -f "$SCRIPT_DIR/$f" ]; then
         cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/"
     else
-        echo "  ERROR: falta $f (corte de internet / DNS learning no funcionará)."
+        echo "  ERROR: falta $f (corte de internet / DNS learning / MITM no funcionará)."
         exit 1
     fi
 done

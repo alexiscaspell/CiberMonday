@@ -352,25 +352,65 @@ def set_learned_callback(cb):
         _learner._on_learned = cb
 
 
-def _proxy_host_allowed(name: str) -> bool:
-    from domain_match import live_learn_target, name_is_allowed
+_mitm_ca_dir: str | None = None
+_mitm_ready = False
 
-    if name_is_allowed(name, _active_allowlist, _active_learned):
+
+def configure_mitm(ca_dir: str | None) -> None:
+    """Directorio para CA MITM (p.ej. base_path del cliente)."""
+    global _mitm_ca_dir
+    _mitm_ca_dir = ca_dir
+
+
+def _ensure_mitm_ca() -> bool:
+    global _mitm_ready
+    if _mitm_ready:
         return True
-    target = live_learn_target(name, _active_allowlist, _active_learned)
-    if not target:
+    try:
+        import mitm_tls
+        if _mitm_ca_dir:
+            mitm_tls.set_ca_dir(_mitm_ca_dir)
+        else:
+            import os
+            mitm_tls.set_ca_dir(os.path.join(os.path.expanduser("~"), ".cibermonday"))
+        mitm_tls.ensure_ca()
+        mitm_tls.install_ca_trust()
+        _mitm_ready = True
+        return True
+    except Exception as e:
+        print(f"[NetPolicy] MITM CA: {e}")
         return False
-    if target not in _active_learned:
-        _active_learned.append(target)
-        cb = _on_learned
-        if cb:
-            # No bloquear CONNECT con save_config a disco
-            threading.Thread(
-                target=lambda t=target: _safe_on_learned(cb, t),
-                name="cm-proxy-learned",
-                daemon=True,
-            ).start()
-    return True
+
+
+def _proxy_host_allowed(name: str) -> bool:
+    """Pre-allow: solo allowlist/learned (túnel sin MITM)."""
+    from domain_match import name_is_allowed
+
+    return name_is_allowed(name, _active_allowlist, _active_learned)
+
+
+def _proxy_authorize_referer(dest: str, referer_host: str | None, origin_host: str | None) -> bool:
+    """MITM: permitir destino si Referer/Origin está bajo allowlist/learned."""
+    from domain_match import learn_host_target, name_is_allowed
+
+    if name_is_allowed(dest, _active_allowlist, _active_learned):
+        return True
+    for src in (referer_host, origin_host):
+        if not src:
+            continue
+        if name_is_allowed(src, _active_allowlist, _active_learned):
+            target = learn_host_target(dest)
+            if target and target not in _active_learned:
+                _active_learned.append(target)
+                cb = _on_learned
+                if cb:
+                    threading.Thread(
+                        target=lambda t=target: _safe_on_learned(cb, t),
+                        name="cm-proxy-learned",
+                        daemon=True,
+                    ).start()
+            return True
+    return False
 
 
 def _safe_on_learned(cb, target: str):
@@ -398,12 +438,16 @@ def _start_host_proxy():
     except ImportError as e:
         print(f"[NetPolicy] hostname_proxy no disponible: {e}")
         return
+    mitm_ok = _ensure_mitm_ca()
     proxy = HostnameProxy(
         is_allowed=_proxy_host_allowed,
         on_denied=_on_denied,
+        authorize_referer=_proxy_authorize_referer if mitm_ok else None,
+        mitm_enabled=mitm_ok,
     )
     if proxy.start():
         _host_proxy = proxy
+        print(f"[NetPolicy] HostnameProxy MITM={'on' if mitm_ok else 'off'}")
     else:
         print("[NetPolicy] HostnameProxy no arrancó")
 
@@ -647,8 +691,9 @@ def _start_learner(allowlist, learned=None):
         on_ips=learn_ips,
         on_denied=_on_denied,
         on_learned=_on_learned,
+        passthrough=True,  # name-gate = CONNECT/MITM
     )
-    if learner.start(allowlist or [], _active_learned):
+    if learner.start(allowlist or [], _active_learned, passthrough=True):
         _learner = learner
         if getattr(learner, "listen_port_used", None) == 53:
             _save_and_set_dns_localhost()
@@ -679,7 +724,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
     al_key = "|".join(sorted(str(x).strip().lower() for x in (allowlist or []) if str(x).strip()))
     # learned NO va en el fingerprint: cada related nuevo (ytimg, clients4, …)
     # reventaba firewall/proxy a mitad de carga y YouTube nunca terminaba de abrir.
-    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|proxy2|{'|'.join(remotes)}"
+    fingerprint = f"{mode}|dns:{enable_dns}|al:{al_key}|proxy-mitm|{'|'.join(remotes)}"
     if fingerprint == _last_fingerprint:
         if _learner and enable_dns:
             _learner.update_allowlist(allowlist or [], _active_learned)
@@ -688,12 +733,16 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
             if _on_learned is not None:
                 _learner._on_learned = _on_learned
         if _host_proxy and enable_dns:
-            _host_proxy.update_callbacks(is_allowed=_proxy_host_allowed, on_denied=_on_denied)
+            _host_proxy.update_callbacks(
+                is_allowed=_proxy_host_allowed,
+                on_denied=_on_denied,
+                authorize_referer=_proxy_authorize_referer,
+            )
         return True
 
     print(
         f"[NetPolicy] Aplicando modo={mode} destinos={len(remotes)} "
-        f"learned={len(_active_learned or [])} dns_learn={enable_dns} host_proxy={enable_dns}"
+        f"learned={len(_active_learned or [])} dns_passthrough={enable_dns} host_proxy={enable_dns}"
     )
     _delete_our_rules()
     _set_outbound_block(True)
@@ -737,7 +786,7 @@ def apply_network_policy(mode, allowlist, server_url, on_denied=None, learned=No
 
 
 def clear_network_policy(force: bool = False):
-    global _last_fingerprint, _learned_ips
+    global _last_fingerprint, _learned_ips, _mitm_ready
     if not force and _last_fingerprint == "unrestricted":
         return True
     print("[NetPolicy] Limpiando política (unrestricted)")
@@ -749,7 +798,20 @@ def clear_network_policy(force: bool = False):
     _set_outbound_block(False)
     _learned_ips = set()
     _last_fingerprint = "unrestricted"
+    # CA permanece instalada (re-usada en la próxima sesión allowlist).
+    # Desinstalación explícita: uninstall / clear_mitm_trust().
     return True
+
+
+def clear_mitm_trust():
+    """Quita la CA del trust store (desinstalación)."""
+    global _mitm_ready
+    try:
+        import mitm_tls
+        mitm_tls.uninstall_ca_trust()
+    except Exception as e:
+        print(f"[NetPolicy] clear MITM trust: {e}")
+    _mitm_ready = False
 
 
 def internet_session_info_from_data(data):

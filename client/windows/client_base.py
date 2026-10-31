@@ -192,10 +192,16 @@ class CiberMondayClient(ABC):
                 clear_network_policy,
                 set_denied_callback,
                 set_learned_callback,
+                configure_mitm,
             )
         except ImportError as e:
             print(f"[NetPolicy] Módulo no disponible: {e}")
             return
+
+        try:
+            configure_mitm(os.path.join(self.base_path, "mitm_ca"))
+        except Exception as e:
+            print(f"[NetPolicy] configure_mitm: {e}")
 
         cfg = self.load_config() or {}
         filter_on = bool(cfg.get('network_filter_enabled', False))
@@ -1541,7 +1547,7 @@ class SyncManager:
 
 # ==================== DIAGNOSTIC HANDLER (factory) ====================
 
-CLIENT_VERSION = "0.7.16"
+CLIENT_VERSION = "0.7.17"
 
 
 def _make_diagnostic_handler(client):
