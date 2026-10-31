@@ -73,6 +73,8 @@ jobs:
             --hidden-import "allowlist_discover" `
             --hidden-import "hostname_proxy" `
             --hidden-import "mitm_tls" `
+            --hidden-import "client_log" `
+            --hidden-import "client_updater" `
             --hidden-import "cryptography" `
             --collect-all "cryptography" `
             --hidden-import "firewall_manager" `
@@ -140,9 +142,12 @@ jobs:
           cp client/linux/client.py client/linux/client_base.py client/linux/client_linux.py \
              client/linux/network_policy.py client/linux/domain_match.py client/linux/dns_learner.py \
              client/linux/allowlist_discover.py client/linux/hostname_proxy.py \
+             client/linux/mitm_tls.py client/linux/client_log.py client/linux/client_updater.py \
              client/linux/config_gui.py \
              client/linux/install_linux.sh client/linux/uninstall_linux.sh \
+             client/linux/show_logs.sh \
              client/linux/cibermonday-client.service cibermonday-linux/
+          chmod +x cibermonday-linux/show_logs.sh
           chmod +x cibermonday-linux/install_linux.sh cibermonday-linux/uninstall_linux.sh
           tar czf CiberMondayClient-Linux.tar.gz cibermonday-linux/
       - uses: actions/upload-artifact@v4

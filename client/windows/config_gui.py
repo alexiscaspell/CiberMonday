@@ -35,7 +35,7 @@ def show_config_window(client=None):
     # Crear ventana principal
     root = tk.Tk()
     root.title("CiberMonday - Configuración del Cliente")
-    root.geometry("550x530")
+    root.geometry("560x680")
     root.resizable(False, False)
     
     # Centrar ventana
@@ -188,6 +188,101 @@ def show_config_window(client=None):
         fg="gray"
     )
     timeouts_desc.pack(side=tk.LEFT, padx=(10, 0), pady=(0, 5))
+
+    # --- Actualización desde GitHub Releases ---
+    try:
+        from client_base import CLIENT_VERSION as _CLIENT_VERSION
+    except Exception:
+        _CLIENT_VERSION = "?"
+    try:
+        import client_updater
+    except ImportError:
+        client_updater = None
+
+    update_frame = ttk.LabelFrame(main_frame, text="Actualizar cliente", padding="8")
+    update_frame.pack(fill=tk.X, pady=(15, 0))
+
+    update_ver_label = tk.Label(
+        update_frame,
+        text=f"Versión instalada: {_CLIENT_VERSION}",
+        font=("Arial", 9),
+        fg="#333",
+    )
+    update_ver_label.pack(anchor=tk.W)
+
+    allow_prerelease_var = tk.BooleanVar(value=True)
+    prerelease_check = ttk.Checkbutton(
+        update_frame,
+        text="Incluir prereleases (recomendado)",
+        variable=allow_prerelease_var,
+    )
+    prerelease_check.pack(anchor=tk.W, pady=(6, 0))
+    ttk.Label(
+        update_frame,
+        text="Desmarcá para buscar solo releases stable.",
+        font=("Arial", 8),
+        foreground="gray",
+    ).pack(anchor=tk.W)
+
+    update_status_var = tk.StringVar(value="")
+    update_status_label = tk.Label(
+        update_frame,
+        textvariable=update_status_var,
+        font=("Arial", 8),
+        fg="#555",
+        wraplength=500,
+        justify=tk.LEFT,
+    )
+    update_status_label.pack(anchor=tk.W, pady=(6, 0))
+
+    update_btn = ttk.Button(update_frame, text="Buscar e instalar actualización", width=32)
+
+    def _set_update_status(msg: str):
+        update_status_var.set(msg)
+
+    def _run_github_update():
+        if client_updater is None:
+            messagebox.showerror("Error", "Módulo client_updater no disponible.")
+            return
+        channel = "prerelease+stable" if allow_prerelease_var.get() else "solo stable"
+        if not messagebox.askyesno(
+            "Confirmar actualización",
+            f"Se descargará e instalará la última release ({channel}) desde GitHub.\n\n"
+            "El servicio del cliente se reiniciará. ¿Continuar?",
+        ):
+            return
+        update_btn.configure(state=tk.DISABLED)
+        _set_update_status("Buscando release…")
+
+        def on_progress(msg: str):
+            root.after(0, lambda m=msg: _set_update_status(m))
+
+        def on_done(info, err):
+            def _finish():
+                update_btn.configure(state=tk.NORMAL)
+                if err is not None:
+                    _set_update_status(f"Error: {err}")
+                    messagebox.showerror("Actualización", str(err))
+                    return
+                tag = (info or {}).get("tag", "?")
+                ver = (info or {}).get("version", "?")
+                _set_update_status(f"Instalado {tag} (v{ver})")
+                messagebox.showinfo(
+                    "Actualización",
+                    f"Cliente actualizado a {tag}.\nReiniciá el servicio si no arrancó solo.",
+                )
+
+            root.after(0, _finish)
+
+        client_updater.run_update_async(
+            allow_prerelease=allow_prerelease_var.get(),
+            on_progress=on_progress,
+            on_done=on_done,
+            current_version=_CLIENT_VERSION,
+        )
+
+    update_btn.configure(command=_run_github_update)
+    update_btn.pack(anchor=tk.W, pady=(8, 0))
     
     # Frame para botones
     button_frame = ttk.Frame(main_frame)

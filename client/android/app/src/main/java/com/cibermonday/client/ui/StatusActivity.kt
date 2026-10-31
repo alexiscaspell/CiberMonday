@@ -2,11 +2,14 @@ package com.cibermonday.client.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.cibermonday.client.CiberMondayApp
 import com.cibermonday.client.R
@@ -15,7 +18,10 @@ import com.cibermonday.client.net.ApiClient
 import com.cibermonday.client.net.NetworkFilterVpnService
 import com.cibermonday.client.service.ClientService
 import com.cibermonday.client.session.SessionStore
+import com.cibermonday.client.update.ClientUpdater
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.checkbox.MaterialCheckBox
+import java.io.File
 
 class StatusActivity : AppCompatActivity() {
 
@@ -25,6 +31,10 @@ class StatusActivity : AppCompatActivity() {
     private lateinit var txtStatus: TextView
     private lateinit var txtClientId: TextView
     private lateinit var txtServerInfo: TextView
+    private lateinit var txtUpdateStatus: TextView
+    private lateinit var chkPrerelease: MaterialCheckBox
+    private lateinit var btnUpdateClient: MaterialButton
+    private var pendingApk: File? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -53,12 +63,24 @@ class StatusActivity : AppCompatActivity() {
         txtStatus = findViewById(R.id.txtStatusLabel)
         txtClientId = findViewById(R.id.txtClientId)
         txtServerInfo = findViewById(R.id.txtServerInfo)
+        txtUpdateStatus = findViewById(R.id.txtUpdateStatus)
+        chkPrerelease = findViewById(R.id.chkPrerelease)
+        btnUpdateClient = findViewById(R.id.btnUpdateClient)
+
+        val verName = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (_: PackageManager.NameNotFoundException) {
+            "?"
+        }
+        findViewById<TextView>(R.id.txtAppVersion).text = "Versión instalada: $verName"
 
         findViewById<MaterialButton>(R.id.btnOpenSetup).setOnClickListener {
             startActivity(
                 Intent(this, SetupActivity::class.java).putExtra(SetupActivity.EXTRA_FORCE_SETUP, true)
             )
         }
+
+        btnUpdateClient.setOnClickListener { startGithubUpdate() }
 
         // Mientras la UI está abierta, el servicio recibe push.
         // Si hay end_time local y cierras la app, el watchdog reabre el FGS.
@@ -67,6 +89,52 @@ class StatusActivity : AppCompatActivity() {
         store.addListener(storeListener)
         maybeRequestVpnConsent()
         refreshUi()
+    }
+
+    private fun startGithubUpdate() {
+        val channel = if (chkPrerelease.isChecked) "prerelease+stable" else "solo stable"
+        AlertDialog.Builder(this)
+            .setTitle("Confirmar actualización")
+            .setMessage(
+                "Se descargará la última release ($channel) desde GitHub y se abrirá el instalador.\n\n¿Continuar?"
+            )
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Actualizar") { _, _ ->
+                btnUpdateClient.isEnabled = false
+                txtUpdateStatus.text = "Buscando…"
+                ClientUpdater.runUpdateAsync(
+                    this,
+                    allowPrerelease = chkPrerelease.isChecked,
+                    onProgress = { msg -> runOnUiThread { txtUpdateStatus.text = msg } },
+                    onDone = { info, file, err ->
+                        runOnUiThread {
+                            btnUpdateClient.isEnabled = true
+                            if (err != null || file == null) {
+                                txtUpdateStatus.text = "Error: ${err?.message ?: "sin APK"}"
+                                Toast.makeText(this, err?.message ?: "Error", Toast.LENGTH_LONG).show()
+                                return@runOnUiThread
+                            }
+                            txtUpdateStatus.text = "Listo: ${info?.tag}"
+                            pendingApk = file
+                            if (!ClientUpdater.canRequestInstallPermission(this)) {
+                                Toast.makeText(
+                                    this,
+                                    "Permití instalar apps de esta fuente y volvé a tocar Actualizar",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                                startActivity(ClientUpdater.installPermissionSettingsIntent(this))
+                                return@runOnUiThread
+                            }
+                            try {
+                                ClientUpdater.launchInstaller(this, file)
+                            } catch (e: Exception) {
+                                txtUpdateStatus.text = "Error al abrir instalador: ${e.message}"
+                            }
+                        }
+                    },
+                )
+            }
+            .show()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -79,6 +147,14 @@ class StatusActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        val apk = pendingApk
+        if (apk != null && apk.exists() && ClientUpdater.canRequestInstallPermission(this)) {
+            try {
+                ClientUpdater.launchInstaller(this, apk)
+                pendingApk = null
+            } catch (_: Exception) {
+            }
+        }
         if (lockController.isLockNeeded()) {
             lockController.showLockActivity()
             return
