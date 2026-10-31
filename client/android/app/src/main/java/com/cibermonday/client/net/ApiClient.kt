@@ -263,7 +263,7 @@ class ApiClient(private val store: SessionStore) {
 
         val now = System.currentTimeMillis()
         synchronized(accessReqLock) {
-            val last = accessReqCooldown[name] ?: 0L
+            val last = accessReqData[name] ?: 0L
             if (now - last < ACCESS_REQ_COOLDOWN_MS) return
             accessReqData[name] = now
         }
