@@ -10,7 +10,9 @@ services:
       - FLASK_ENV=production
       - PORT=5000
       - HOST=0.0.0.0
-      - HOST_IP=${HOST_IP:-192.168.68.107}
+      # Dejar vacío para auto-detectar (recomendado: el DHCP cambia la IP).
+      # Si se setea y esa IP no está en el host, el server cae a auto-detect.
+      - HOST_IP=${HOST_IP:-}
       - ADMIN_ALLOW_LAN=${ADMIN_ALLOW_LAN:-true}
     volumes:
       - ../logs:/app/logs

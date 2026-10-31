@@ -7,6 +7,7 @@ Reutilizable por el servidor web y la app Android.
 from datetime import datetime, timedelta
 import uuid
 import json
+import os
 import socket
 import hashlib
 import threading
@@ -67,7 +68,7 @@ class ClientManager:
     # (sync default 30s; tras lock puede haber huecos — margen amplio)
     CLIENT_OFFLINE_TIMEOUT = 120
     
-    def __init__(self, server_port=5000):
+    def __init__(self, server_port=5000, data_dir=None):
         self.clients_db = {}
         self.client_sessions = {}
         self.internet_sessions = {}
@@ -83,6 +84,84 @@ class ClientManager:
         self._pending_admin_changes = {}  # client_id -> datetime
         # Pedidos de acceso a dominios fuera de allowlist
         self.access_requests = {}  # request_id -> dict
+
+        # Persistencia: sin esto un restart del server deja el panel vacío y
+        # no se puede asignar más tiempo a PCs que ya expiraron.
+        self._data_dir = (
+            data_dir
+            or os.environ.get('CM_DATA_DIR')
+            or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
+        )
+        self._state_path = os.path.join(self._data_dir, 'server_state.json')
+        self._persist_lock = threading.Lock()
+        self._dirty = False
+        self._persist_stop = threading.Event()
+        self._load_state()
+        self._persist_thread = threading.Thread(
+            target=self._persist_loop, name='cm-persist', daemon=True
+        )
+        self._persist_thread.start()
+
+    # ==================== PERSISTENCIA ====================
+
+    def _mark_dirty(self):
+        self._dirty = True
+
+    def _persist_loop(self):
+        while not self._persist_stop.wait(2.0):
+            if self._dirty:
+                self._save_state()
+
+    def flush_state(self):
+        """Guarda ya (shutdown / tests)."""
+        self._save_state()
+
+    def _load_state(self):
+        path = self._state_path
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return
+            self.clients_db = dict(data.get('clients_db') or {})
+            self.client_sessions = dict(data.get('client_sessions') or {})
+            self.internet_sessions = dict(data.get('internet_sessions') or {})
+            self.client_configs = dict(data.get('client_configs') or {})
+            self.servers_db = dict(data.get('servers_db') or {})
+            sc = data.get('server_config')
+            if isinstance(sc, dict) and sc:
+                self.server_config.update(sc)
+            self.access_requests = dict(data.get('access_requests') or {})
+            print(
+                f"[ClientManager] Estado restaurado: "
+                f"{len(self.clients_db)} cliente(s) desde {path}"
+            )
+        except Exception as e:
+            print(f"[ClientManager] No se pudo cargar estado ({path}): {e}")
+
+    def _save_state(self):
+        with self._persist_lock:
+            try:
+                os.makedirs(self._data_dir, exist_ok=True)
+                payload = {
+                    'saved_at': datetime.now().isoformat(),
+                    'clients_db': self.clients_db,
+                    'client_sessions': self.client_sessions,
+                    'internet_sessions': self.internet_sessions,
+                    'client_configs': self.client_configs,
+                    'servers_db': self.servers_db,
+                    'server_config': self.server_config,
+                    'access_requests': self.access_requests,
+                }
+                tmp = self._state_path + '.tmp'
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self._state_path)
+                self._dirty = False
+            except Exception as e:
+                print(f"[ClientManager] Error guardando estado: {e}")
 
     # Ya no hay familias CDN hardcoded: el cliente solo permite lo listado
     # (y subdominios). Los hosts relacionados se descubren del tráfico vía
@@ -527,6 +606,7 @@ class ClientManager:
         message = 'Cliente re-registrado' if is_reregister else 'Cliente registrado'
         print(f"[Registro] {message}: {client_id[:8]}... nombre={name}")
         
+        self._mark_dirty()
         return {
             'success': True,
             'client_id': client_id,
@@ -540,6 +620,7 @@ class ClientManager:
         """Actualiza last_seen del cliente. Llamar en cada interacción."""
         if client_id in self.clients_db:
             self.clients_db[client_id]['last_seen'] = datetime.now().isoformat()
+            self._mark_dirty()
     
     def _is_client_connected(self, client_id):
         """Verifica si el cliente se ha reportado recientemente."""
@@ -679,6 +760,7 @@ class ClientManager:
         
         # Notificar al cliente del cambio de sesión
         self._notify_client(client_id, 'session', session_info)
+        self._mark_dirty()
         
         return {
             'success': True,
@@ -715,6 +797,7 @@ class ClientManager:
         
         # Notificar al cliente que su sesión fue detenida
         self._notify_client(client_id, 'stop', {'message': 'Sesión detenida por el administrador'})
+        self._mark_dirty()
         
         return {'success': True, 'message': 'Sesión detenida'}
 
@@ -809,6 +892,7 @@ class ClientManager:
         if client_id in self.client_configs:
             del self.client_configs[client_id]
         del self.clients_db[client_id]
+        self._mark_dirty()
         
         return {'success': True, 'message': 'Cliente eliminado'}
     
@@ -1789,8 +1873,18 @@ class ClientManager:
         }
     
     @staticmethod
+    def _ipv4_on_host(ip_address: str) -> bool:
+        """True si ip_address está asignada a alguna interfaz local."""
+        if not ip_address or ip_address in ('127.0.0.1', '0.0.0.0'):
+            return False
+        try:
+            return bool(ClientManager._get_broadcast_from_interfaces(ip_address))
+        except Exception:
+            return False
+
+    @staticmethod
     def get_local_ip():
-        """Obtiene la IP local."""
+        """Obtiene la IP local (ruta por defecto a internet / LAN)."""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -1944,6 +2038,15 @@ class ClientManager:
             
             try:
                 local_ip = host_ip_override or self.get_local_ip()
+                # HOST_IP stale (DHCP renovó) → clientes descubren URL muerta y
+                # el broadcast puede ir a la máscara incorrecta (0 paquetes).
+                if host_ip_override and not self._ipv4_on_host(host_ip_override):
+                    detected = self.get_local_ip()
+                    print(
+                        f"[Broadcast] HOST_IP={host_ip_override} no está en este host; "
+                        f"usando {detected}"
+                    )
+                    local_ip = detected
                 if local_ip == "127.0.0.1" or not local_ip:
                     print(f"[Broadcast] IP no valida para broadcast: {local_ip}")
                     return

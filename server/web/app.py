@@ -496,9 +496,11 @@ def _notify_clients_new_server(server_url, data):
 
 def broadcast_server_presence(server_port=5000):
     """Inicia broadcast UDP usando ClientManager.start_broadcast()."""
-    host_ip = os.getenv('HOST_IP')
+    host_ip = (os.getenv('HOST_IP') or '').strip() or None
     if host_ip:
         print(f"[Broadcast] Usando IP del host desde HOST_IP: {host_ip}")
+    else:
+        print("[Broadcast] HOST_IP vacío — auto-detectando IP de LAN")
     manager.start_broadcast(host_ip_override=host_ip)
 
 

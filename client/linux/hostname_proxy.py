@@ -304,7 +304,7 @@ class HostnameProxy:
                 remote = None
                 return
 
-                        # Sin MITM: ventana sticky tras visitar un apex allowlist (CDNs de video).
+            # Sin MITM: ventana sticky tras visitar un apex allowlist (CDNs de video).
             if (not self._mitm_enabled or self._authorize_referer is None) and self._sticky_authorize:
                 try:
                     sticky_ok = bool(self._sticky_authorize(host))
@@ -325,7 +325,7 @@ class HostnameProxy:
                     remote = None
                     return
 
-if not self._mitm_enabled or self._authorize_referer is None:
+            if not self._mitm_enabled or self._authorize_referer is None:
                 self._notify_denied(host)
                 conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
                 return

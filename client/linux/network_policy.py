@@ -537,7 +537,7 @@ def _start_host_proxy():
     _stop_host_proxy()
     try:
         from hostname_proxy import HostnameProxy
-    except ImportError as e:
+    except Exception as e:
         print(f"[NetPolicy] hostname_proxy no disponible: {e}")
         return
     try:
