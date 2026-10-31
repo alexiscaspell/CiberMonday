@@ -227,6 +227,28 @@ def deny_access_request(client_id, request_id):
     return jsonify(result), status
 
 
+@app.route('/api/client/<client_id>/access-requests/approve-all', methods=['POST'])
+@admin_only
+def approve_all_access_requests(client_id):
+    """Admin aprueba todos los pedidos pendientes del cliente."""
+    result = manager.approve_all_access_requests(client_id)
+    status = 200 if result.get('success') else (
+        404 if 'no encontrado' in result.get('message', '') else 400
+    )
+    return jsonify(result), status
+
+
+@app.route('/api/client/<client_id>/access-requests/deny-all', methods=['POST'])
+@admin_only
+def deny_all_access_requests(client_id):
+    """Admin rechaza todos los pedidos pendientes del cliente."""
+    result = manager.deny_all_access_requests(client_id)
+    status = 200 if result.get('success') else (
+        404 if 'no encontrado' in result.get('message', '') else 400
+    )
+    return jsonify(result), status
+
+
 @app.route('/api/client/<client_id>/report-session', methods=['POST'])
 def report_client_session(client_id):
     """Permite al cliente reportar su sesión activa al servidor."""

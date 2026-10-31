@@ -459,6 +459,51 @@ export function ClientCard({ client, onChanged }: Props) {
     }
   };
 
+  const onApproveAllAccess = async () => {
+    const n = pendingRequests.length;
+    if (n < 1) return;
+    const ok = await confirm(`¿Aprobar los ${n} pedidos pendientes?`);
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const res = await api.approveAllAccessRequests(client.id);
+      if (res.success) {
+        if (res.config?.allowlist) {
+          setAllowlistText(res.config.allowlist.join('\n'));
+        }
+        notify(res.message || 'Todos aprobados');
+        onChanged();
+      } else {
+        notify(res.message || 'Error al aprobar todos');
+      }
+    } catch (e: any) {
+      notify(e.message || 'Error al aprobar todos');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onDenyAllAccess = async () => {
+    const n = pendingRequests.length;
+    if (n < 1) return;
+    const ok = await confirm(`¿Rechazar los ${n} pedidos pendientes?`);
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const res = await api.denyAllAccessRequests(client.id);
+      if (res.success) {
+        notify(res.message || 'Todos rechazados');
+        onChanged();
+      } else {
+        notify(res.message || 'Error al rechazar todos');
+      }
+    } catch (e: any) {
+      notify(e.message || 'Error al rechazar todos');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const unitOptions = useMemo<UnitOption[]>(
     () => [
       { value: 'minutes', label: 'Minutos' },
@@ -697,7 +742,27 @@ export function ClientCard({ client, onChanged }: Props) {
           </Text>
           {pendingRequests.length > 0 ? (
             <View style={styles.accessReqBox}>
-              <Text style={styles.fieldLabel}>Pedidos de acceso</Text>
+              <View style={styles.accessReqHeader}>
+                <Text style={styles.fieldLabel}>
+                  Pedidos de acceso ({pendingRequests.length})
+                </Text>
+                <View style={styles.accessReqActions}>
+                  <Button
+                    title="Aprobar todos"
+                    compact
+                    variant="success"
+                    disabled={busy}
+                    onPress={onApproveAllAccess}
+                  />
+                  <Button
+                    title="Rechazar todos"
+                    compact
+                    variant="ghost"
+                    disabled={busy}
+                    onPress={onDenyAllAccess}
+                  />
+                </View>
+              </View>
               {pendingRequests.map((req) => (
                 <View key={req.id} style={styles.accessReqRow}>
                   <Text style={styles.allowlistRuleText} numberOfLines={1}>
@@ -961,6 +1026,13 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     backgroundColor: colors.background,
   },
+  accessReqHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    flexWrap: 'wrap',
+  },
   accessReqRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -972,6 +1044,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.xs,
     flexShrink: 0,
+    flexWrap: 'wrap',
   },
   timeRow: {
     flexDirection: 'row',

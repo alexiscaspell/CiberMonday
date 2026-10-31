@@ -1187,6 +1187,97 @@ class ClientManager:
             'request': dict(req),
         }
 
+    def approve_all_access_requests(self, client_id):
+        """Aprueba todos los pending del cliente (un solo push de config)."""
+        if client_id not in self.clients_db:
+            return {'success': False, 'message': 'Cliente no encontrado'}
+        pending = [
+            req
+            for req in self.access_requests.values()
+            if req.get('client_id') == client_id and req.get('status') == 'pending'
+        ]
+        if not pending:
+            return {
+                'success': True,
+                'message': 'No hay pedidos pendientes',
+                'approved': 0,
+                'config': self.get_client_config(client_id),
+            }
+
+        cfg = self.get_client_config(client_id)
+        allow = list(cfg.get('allowlist') or [])
+        allow_set = {str(e).strip() for e in allow}
+        added = []
+        for req in pending:
+            domain = self._normalize_access_domain(req.get('domain'))
+            if not domain:
+                continue
+            # Reactivar si estaba comentado
+            reactivated = False
+            for i, entry in enumerate(allow):
+                e = str(entry).strip()
+                if e == f'# {domain}' or e == f'#{domain}':
+                    allow[i] = domain
+                    allow_set.add(domain)
+                    reactivated = True
+                    break
+            if not reactivated and domain not in allow_set:
+                allow.append(domain)
+                allow_set.add(domain)
+                added.append(domain)
+
+        result = self.set_client_config(
+            client_id, allowlist=allow, notify_client=True
+        )
+        if not result.get('success'):
+            return result
+
+        now = datetime.now().isoformat()
+        for req in pending:
+            req['status'] = 'approved'
+            req['resolved_at'] = now
+
+        try:
+            self._sync_with_other_servers()
+        except Exception:
+            pass
+        return {
+            'success': True,
+            'message': f'Aprobados {len(pending)} pedido(s)',
+            'approved': len(pending),
+            'added': added,
+            'config': result.get('config'),
+        }
+
+    def deny_all_access_requests(self, client_id):
+        """Rechaza todos los pending del cliente."""
+        if client_id not in self.clients_db:
+            return {'success': False, 'message': 'Cliente no encontrado'}
+        pending = [
+            req
+            for req in self.access_requests.values()
+            if req.get('client_id') == client_id and req.get('status') == 'pending'
+        ]
+        if not pending:
+            return {
+                'success': True,
+                'message': 'No hay pedidos pendientes',
+                'denied': 0,
+            }
+        now = datetime.now().isoformat()
+        for req in pending:
+            req['status'] = 'denied'
+            req['resolved_at'] = now
+        try:
+            self._sync_with_other_servers()
+        except Exception:
+            pass
+        return {
+            'success': True,
+            'message': f'Rechazados {len(pending)} pedido(s)',
+            'denied': len(pending),
+        }
+
     def _merge_access_requests_from_remote(self, clients_list):
         """Fusiona pedidos de acceso recibidos vía sync entre servidores."""
         for client_data in clients_list or []:

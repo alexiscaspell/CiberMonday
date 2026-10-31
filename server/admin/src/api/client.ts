@@ -130,6 +130,24 @@ export async function denyAccessRequest(
   );
 }
 
+export async function approveAllAccessRequests(
+  clientId: string,
+): Promise<ApiResult> {
+  return request<ApiResult>(
+    `/api/client/${clientId}/access-requests/approve-all`,
+    { method: 'POST', body: '{}' },
+  );
+}
+
+export async function denyAllAccessRequests(
+  clientId: string,
+): Promise<ApiResult> {
+  return request<ApiResult>(
+    `/api/client/${clientId}/access-requests/deny-all`,
+    { method: 'POST', body: '{}' },
+  );
+}
+
 export async function healthCheck(): Promise<boolean> {
   try {
     const data = await request<{ status: string }>('/api/health');

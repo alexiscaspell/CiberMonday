@@ -426,6 +426,16 @@ class CiberMondayHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"[CiberMonday HTTP] push config diferido falló: {e}")
 
+        elif path.endswith('/access-requests/approve-all'):
+            client_id = path.split('/')[3]
+            result = self.manager.approve_all_access_requests(client_id)
+            self._send_json(result, 200 if result.get('success') else 400)
+
+        elif path.endswith('/access-requests/deny-all'):
+            client_id = path.split('/')[3]
+            result = self.manager.deny_all_access_requests(client_id)
+            self._send_json(result, 200 if result.get('success') else 400)
+
         elif '/access-request/' in path and path.endswith('/approve'):
             # /api/client/<id>/access-request/<rid>/approve
             parts = path.strip('/').split('/')
